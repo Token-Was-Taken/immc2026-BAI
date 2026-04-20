@@ -27,6 +27,10 @@
                                     也可分步运行：
                                     [protection_pipeline.py] → output.json
                                     [visualize_output.py]    → 图片
+                                    │
+                                    ▼
+                              [run_with_iteration_output.py]  ← 迭代输出版
+                              优化 + 每轮迭代JSON输出 + 可视化
 ```
 
 ---
@@ -400,6 +404,92 @@ python run.py output.json --visualize-only --input input.json --out_dir ./figure
 ### 输出
 
 优化结果写入 `output.json`，图片写入 `--out_dir` 目录，文件名同 `visualize_output.py`（见第七节）。
+
+### 迭代过程输出（完整追溯）
+
+**文件**：`hexdynamic/run_with_iteration_output.py`
+
+在 DSSA 迭代过程中，每轮迭代生成 producer、follower、scout 的部署方案，并异步输出为 JSON 文件。适合分析迭代收敛过程或调试优化策略。
+
+#### 用法
+
+```bash
+cd hexdynamic
+
+# 基本用法：运行优化并输出每轮迭代结果
+python run_with_iteration_output.py input.json -o results/ --iterations 50
+
+# 向量化模式（大规模地图推荐，网格数 > 1000）
+python run_with_iteration_output.py input.json -o results/ --vectorized
+
+# 生成可视化图片
+python run_with_iteration_output.py input.json -o results/ --iterations 50 --visualize
+
+# 向量化 + 可视化（完整流程）
+python run_with_iteration_output.py input.json -o results/ --vectorized --visualize
+```
+
+#### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `input_json` | 必填 | 输入 JSON 路径 |
+| `-o, --output` | `./output_results` | 输出目录 |
+| `--iterations` | 从 input.json 读取 | DSSA 迭代次数，CLI 优先 |
+| `--vectorized` | 从 input.json 读取 | 使用向量化覆盖模型（>1000 格推荐），CLI 优先 |
+| `--visualize` | false | 生成可视化图片 |
+
+> **优先级**：命令行参数 > input.json 中的 dsssa_config > 默认值（50次迭代）
+
+#### 输出结构
+
+```
+results/
+├── final_output.json              # 最终优化结果
+├── iterations/                    # 每轮迭代的部署方案（非阻塞异步写入）
+│   ├── iteration_0000/
+│   │   ├── producers.json         # producer 个体列表
+│   │   ├── followers.json         # follower 个体列表
+│   │   └── scouts.json           # scout 个体列表
+│   ├── iteration_0001/
+│   └── ...
+├── visualization/                 # 转换后的可视化格式（可选）
+│   ├── iteration_0000/
+│   │   ├── producers.json
+│   │   └── ...
+│   └── ...
+└── figures/                       # 可视化图片（可选）
+```
+
+#### 迭代结果后处理
+
+**文件**：`hexdynamic/postprocess_iteration.py`
+
+将迭代输出转换为 `visualize_output.py` 可用的格式：
+
+```bash
+python hexdynamic/postprocess_iteration.py <迭代目录> <原始input_json> [-o 输出目录]
+
+# 示例
+python hexdynamic/postprocess_iteration.py ./results/iterations/iteration_0005 input.json -o ./viz/
+```
+
+#### DSSAConfig 新增参数
+
+在输入 JSON 的 `dssa_config` 中可配置迭代输出：
+
+```json
+"dssa_config": {
+  "population_size": 50,
+  "max_iterations": 100,
+  "producer_ratio": 0.2,
+  "scout_ratio": 0.2,
+  "ST": 0.8,
+  "output_dir": "./output_iterations"   // 迭代输出目录
+}
+```
+
+当 `output_dir` 设置后，DSSA 优化器会在每轮迭代结束后异步写入 JSON 文件，不阻塞主迭代流程。
 
 ### 批量 Pipeline（多场景优化+可视化）
 

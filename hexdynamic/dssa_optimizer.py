@@ -1,7 +1,10 @@
 import numpy as np
-from typing import Dict, List, Tuple, Callable
-from dataclasses import dataclass
+from typing import Dict, List, Tuple, Callable, Optional
+from dataclasses import dataclass, asdict
 import random
+import json
+import os
+import threading
 from coverage_model import CoverageModel, DeploymentSolution
 
 
@@ -14,6 +17,8 @@ class DSSAConfig:
     ST: float = 0.8
     R2: float = 0.5  # 已弃用：R2现在在每次迭代中随机生成，此参数保留用于向后兼容
     use_time_aware_fitness: bool = False  # 启用时间感知的适应度计算
+    output_dir: Optional[str] = None  # 输出目录，每轮迭代的JSON文件保存到这个目录
+    force_full_deployment: Optional[bool] = None
 
 
 class DSSAOptimizer:
@@ -35,6 +40,9 @@ class DSSAOptimizer:
         self.best_solution = None
         self.best_fitness = float('-inf')
         self.initial_solution = None  # 新增：保存初始解决方案，用于冻结资源
+
+        self.output_dir = self.config.output_dir
+        self._output_lock = threading.Lock()
 
     def _initialize_solution(self) -> DeploymentSolution:
         """初始化解决方案
@@ -368,6 +376,9 @@ class DSSAOptimizer:
         total_start = time.time()
         iter_times = []
 
+        num_producers = int(self.config.population_size * self.config.producer_ratio)
+        num_scouts = int(self.config.population_size * self.config.scout_ratio)
+
         for iteration in range(self.config.max_iterations):
             iter_start = time.time()
 
@@ -375,6 +386,12 @@ class DSSAOptimizer:
             escape_followers = self._update_followers()
             self._update_scouts()
             self._update_best_solution()
+
+            if self.output_dir:
+                producers = self.population[:num_producers]
+                followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
+                scouts = self.population[self.config.population_size - num_scouts:]
+                self._async_output_iteration_results(iteration, producers, followers, scouts)
             
             # 计算total benefit
             pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
@@ -430,3 +447,42 @@ class DSSAOptimizer:
             'camp_locations': [grid_id for grid_id, count in solution.camps.items() if count > 0],
             'fence_edges': [edge for edge, count in solution.fences.items() if count > 0]
         }
+
+    def _serialize_solution(self, solution: DeploymentSolution) -> Dict[str, any]:
+        return {
+            'cameras': {str(k): v for k, v in solution.cameras.items()},
+            'camps': {str(k): v for k, v in solution.camps.items()},
+            'drones': {str(k): v for k, v in solution.drones.items()},
+            'rangers': {str(k): v for k, v in solution.rangers.items()},
+            'fences': {f"{k[0]}-{k[1]}": v for k, v in solution.fences.items()},
+            'fitness': self.evaluate_fitness(solution),
+            'statistics': self.get_solution_statistics(solution)
+        }
+
+    def _async_output_iteration_results(self, iteration: int, producers: List[DeploymentSolution],
+                                     followers: List[DeploymentSolution], scouts: List[DeploymentSolution]):
+        if not self.output_dir:
+            return
+
+        def _write_files():
+            try:
+                iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
+                os.makedirs(iter_dir, exist_ok=True)
+
+                producers_data = [self._serialize_solution(s) for s in producers]
+                with open(os.path.join(iter_dir, "producers.json"), 'w', encoding='utf-8') as f:
+                    json.dump(producers_data, f, indent=2, ensure_ascii=False)
+
+                followers_data = [self._serialize_solution(s) for s in followers]
+                with open(os.path.join(iter_dir, "followers.json"), 'w', encoding='utf-8') as f:
+                    json.dump(followers_data, f, indent=2, ensure_ascii=False)
+
+                scouts_data = [self._serialize_solution(s) for s in scouts]
+                with open(os.path.join(iter_dir, "scouts.json"), 'w', encoding='utf-8') as f:
+                    json.dump(scouts_data, f, indent=2, ensure_ascii=False)
+
+            except Exception as e:
+                print(f"Warning: Failed to write iteration output: {e}")
+
+        thread = threading.Thread(target=_write_files, daemon=True)
+        thread.start()

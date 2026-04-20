@@ -759,7 +759,7 @@
     }
   },
   "constraints": {
-    "total_patrol": 1000,
+    "total_patrol": 20,
     "total_camps": 5,
     "max_rangers_per_camp": 5,
     "total_cameras": 10,
@@ -768,7 +768,7 @@
   },
   "coverage_params": {
     "patrol_radius": 3,
-    "drone_radius": 8,
+    "drone_radius": 6,
     "camera_radius": 1,
     "fence_protection": 0.5,
     "wp": 0.3,
@@ -782,7 +782,8 @@
     "producer_ratio": 0.25,
     "scout_ratio": 0.2,
     "ST": 0.75,
-    "R2": 0.5
+    "R2": 0.5,
+    "output_dir": "./output_iterations"
   },
   "grids": [
     {

@@ -7,11 +7,13 @@ DSSA (Dynamic Sparrow Search Algorithm) 是一种基于麻雀搜索算法的动�
 ### 1.1 问题定义
 
 给定一个六边形网格地图，每个网格具有以下属性：
+
 - 地形类型（SparseGrass、DenseGrass、SaltMarsh、WaterHole、Road）
 - 风险值（0-1）
 - 时间因子（昼夜 × 季节）
 
 需要部署以下资源：
+
 - 摄像头（Camera）
 - 无人机（Drone）
 - 营地（Camp）
@@ -20,7 +22,7 @@ DSSA (Dynamic Sparrow Search Algorithm) 是一种基于麻雀搜索算法的动�
 
 目标：在资源约束下最大化保护效益（Protection Benefit）。
 
----
+***
 
 ## 2. 核心数据结构
 
@@ -96,7 +98,7 @@ class DSSAConfig:
     use_time_aware_fitness: bool = False  # 启用时间感知适应度
 ```
 
----
+***
 
 ## 3. 六边形网格模型 (HexGridModel)
 
@@ -208,7 +210,7 @@ def get_edge_grids(self) -> List[int]:
     return sorted(edge_grids)
 ```
 
----
+***
 
 ## 4. 覆盖模型 (CoverageModel)
 
@@ -394,7 +396,7 @@ def calculate_time_aware_total_benefit(self, solution: DeploymentSolution) -> fl
     return total_benefit
 ```
 
----
+***
 
 ## 5. DSSA 优化器核心算法
 
@@ -754,7 +756,7 @@ def optimize(self, callback: Callable[[int, float, DeploymentSolution], None] = 
     return self.best_solution, self.best_fitness, self.fitness_history
 ```
 
----
+***
 
 ## 6. 约束处理与修复机制
 
@@ -901,7 +903,7 @@ def repair_solution(self, solution: DeploymentSolution,
     return repaired
 ```
 
----
+***
 
 ## 7. 冻结资源机制
 
@@ -927,31 +929,94 @@ def _apply_frozen_resources(self, solution: DeploymentSolution) -> DeploymentSol
     return solution
 ```
 
----
+***
 
 ## 8. 地形部署规则
 
 ### 8.1 地形类型与资源兼容性
 
-| 地形类型 | 巡逻 | 营地 | 无人机 | 摄像头 | 围栏 |
-|---------|------|------|--------|--------|------|
-| SaltMarsh | ❌ | ❌ | ✅ | ❌ | ❌ |
-| SparseGrass | ✅ | ❌ | ✅ | ✅ | ✅ |
-| DenseGrass | ❌ | ❌ | ✅ | ❌ | ✅ |
-| WaterHole | ❌ | ❌ | ✅ | ❌ | ❌ |
-| Road | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 地形类型        | 巡逻 | 营地 | 无人机 | 摄像头 | 围栏 |
+| ----------- | -- | -- | --- | --- | -- |
+| SaltMarsh   | ❌  | ❌  | ✅   | ❌   | ❌  |
+| SparseGrass | ✅  | ❌  | ✅   | ✅   | ✅  |
+| DenseGrass  | ❌  | ❌  | ✅   | ❌   | ✅  |
+| WaterHole   | ❌  | ❌  | ✅   | ❌   | ❌  |
+| Road        | ✅  | ✅  | ✅   | ✅   | ✅  |
 
 ### 8.2 地形可见性参数
 
-| 地形类型 | 无人机可见性 | 摄像头可见性 |
-|---------|-------------|-------------|
-| SparseGrass | 1.0 | 1.0{}
-| DenseGrass | 0.7 | 0.5 |
-| SaltMarsh | 0.9 | 0.6 |
-| WaterHole | 1.0 | 0.8 |
-| Road | 1.0 | 1.0 |
+可见性参数（Visibility）用于模拟地形对无人机和摄像头视野的影响，通过调整有效覆盖半径来体现。
 
----
+#### 8.2.1 参数取值
+
+| 地形类型 | 无人机可见性 | 摄像头可见性 | 说明 |
+|---------|------------|------------|------|
+| SparseGrass | 1.0 | 1.0 | 稀疏草地，视野完全无遮挡 |
+| DenseGrass | 0.7 | 0.5 | 茂密草地，视野受限（摄像头受影响更大） |
+| SaltMarsh | 0.9 | 0.6 | 盐沼地，略有遮挡 |
+| WaterHole | 1.0 | 0.8 | 水源地，无人机视野好，摄像头略有遮挡 |
+| Road | 1.0 | 1.0 | 道路，视野完全无遮挡 |
+
+#### 8.2.2 使用方式
+
+在覆盖计算中，visibility 参数用于调整有效覆盖半径：
+
+```python
+# 无人机覆盖计算
+visibility = self.visibility_params[grid_id]['drone']
+effective_radius = self.params.drone_radius * visibility
+
+# 摄像头覆盖计算
+visibility = self.visibility_params[grid_id]['camera']
+effective_radius = self.params.camera_radius * visibility
+```
+
+**公式**：`effective_radius = base_radius × visibility`
+
+#### 8.2.3 实际影响示例
+
+假设基础参数：
+- `drone_radius = 8.0`
+- `camera_radius = 3.0`
+
+| 地形类型 | 无人机有效半径 | 摄像头有效半径 |
+|---------|--------------|--------------|
+| SparseGrass | 8.0 × 1.0 = 8.0 | 3.0 × 1.0 = 3.0 |
+| DenseGrass | 8.0 × 0.7 = 5.6 | 3.0 × 0.5 = 1.5 |
+| SaltMarsh | 8.0 × 0.9 = 7.2 | 3.0 × 0.6 = 1.8 |
+| WaterHole | 8.0 × 1.0 = 8.0 | 3.0 × 0.8 = 2.4 |
+| Road | 8.0 × 1.0 = 8.0 | 3.0 × 1.0 = 3.0 |
+
+#### 8.2.4 设计意图
+
+这个设计模拟了真实世界中地形对视野的影响：
+
+1. **茂密植被遮挡**：DenseGrass 对摄像头影响更大（0.5 vs 0.7），因为：
+   - 无人机飞行高度较高，受植被遮挡影响较小
+   - 摄像头固定在地面，受植被遮挡影响更大
+
+2. **开阔地带视野最佳**：SparseGrass 和 Road 的 visibility = 1.0，表示无遮挡
+
+3. **水源地特性**：WaterHole 对无人机无遮挡（1.0），但对摄像头有轻微遮挡（0.8）
+
+#### 8.2.5 初始化代码
+
+```python
+def initialize_visibility_params(self):
+    terrain_visibility = {
+        'SparseGrass': {'drone': 1.0, 'camera': 1.0},
+        'DenseGrass':  {'drone': 0.7, 'camera': 0.5},
+        'SaltMarsh':   {'drone': 0.9, 'camera': 0.6},
+        'WaterHole':   {'drone': 1.0, 'camera': 0.8},
+        'Road':        {'drone': 1.0, 'camera': 1.0}
+    }
+
+    self.visibility_params = {}
+    for grid in self.grids:
+        self.visibility_params[grid.grid_id] = terrain_visibility[grid.terrain_type]
+```
+
+***
 
 ## 9. 使用示例
 
@@ -1061,17 +1126,17 @@ optimizer.initial_solution = baseline_solution
 new_solution, _, _ = optimizer.optimize()
 ```
 
----
+***
 
 ## 10. 算法参数调优建议
 
-### 10.1 种群大小 (population_size)
+### 10.1 种群大小 (population\_size)
 
 - 小规模问题（<100网格）：30-50
 - 中等规模（100-500网格）：50-100
 - 大规模问题（>500网格）：100-200
 
-### 10.2 迭代次数 (max_iterations)
+### 10.2 迭代次数 (max\_iterations)
 
 - 快速测试：50-100
 - 正常优化：100-200
@@ -1085,11 +1150,11 @@ new_solution, _, _ = optimizer.optimize()
 
 ### 10.4 生产者/侦察者比例
 
-- producer_ratio = 0.2（默认）：20%生产者
-- scout_ratio = 0.2（默认）：20%侦察者
+- producer\_ratio = 0.2（默认）：20%生产者
+- scout\_ratio = 0.2（默认）：20%侦察者
 - 剩余60%为跟随者
 
----
+***
 
 ## 11. 性能优化
 
@@ -1123,7 +1188,7 @@ tasks = [
 results = run_pipeline_parallel(tasks, vectorized=True)
 ```
 
----
+***
 
 ## 12. 输出结果说明
 
@@ -1162,33 +1227,33 @@ pb_per_grid = coverage_model.calculate_protection_benefit(best_solution)
 # {0: 0.12, 1: 0.25, 2: 0.08, ...}
 ```
 
----
+***
 
 ## 13. 数学公式汇总
 
 ### 13.1 覆盖强度
 
-$$C_i^{patrol} = 1 - \exp\left(-\sum_{j \in camps} r_j \cdot \exp\left(-\frac{d_{ij}}{R_p}\right)\right)$$
+$$C\_i^{patrol} = 1 - \exp\left(-\sum\_{j \in camps} r\_j \cdot \exp\left(-\frac{d\_{ij}}{R\_p}\right)\right)$$
 
-$$C_i^{drone} = \min\left(1, \sum_{j \in drones} \exp\left(-\frac{d_{ij}}{R_d \cdot v_i^{drone}}\right)\right)$$
+$$C\_i^{drone} = \min\left(1, \sum\_{j \in drones} \exp\left(-\frac{d\_{ij}}{R\_d \cdot v\_i^{drone}}\right)\right)$$
 
-$$C_i^{camera} = \min\left(1, \sum_{j \in cameras} n_j \cdot \exp\left(-\frac{d_{ij}}{R_c \cdot v_i^{camera}}\right)\right)$$
+$$C\_i^{camera} = \min\left(1, \sum\_{j \in cameras} n\_j \cdot \exp\left(-\frac{d\_{ij}}{R\_c \cdot v\_i^{camera}}\right)\right)$$
 
 ### 13.2 保护效果
 
-$$E_i = w_p \cdot C_i^{patrol} + w_d \cdot C_i^{drone} + w_c \cdot C_i^{camera} + w_f \cdot F_i$$
+$$E\_i = w\_p \cdot C\_i^{patrol} + w\_d \cdot C\_i^{drone} + w\_c \cdot C\_i^{camera} + w\_f \cdot F\_i$$
 
 ### 13.3 保护效益（适应度）
 
-$$B_i = R_i \cdot (1 - \exp(-E_i))$$
+$$B\_i = R\_i \cdot (1 - \exp(-E\_i))$$
 
-$$Fitness = \frac{\sum_i B_i}{\sum_i R_i}$$
+$$Fitness = \frac{\sum\_i B\_i}{\sum\_i R\_i}$$
 
 ### 13.4 时间感知适应度
 
-$$Fitness_{temporal} = \frac{\sum_i B_i}{\sum_i R_i \cdot T_t \cdot S_t}$$
+$$Fitness\_{temporal} = \frac{\sum\_i B\_i}{\sum\_i R\_i \cdot T\_t \cdot S\_t}$$
 
----
+***
 
 ## 14. 文件结构
 
@@ -1204,15 +1269,518 @@ hexdynamic/
 └── run.py                  # 运行脚本
 ```
 
----
+***
 
 ## 15. 参考文献
 
 1. Xue, J., & Shen, B. (2020). A novel swarm intelligence optimization approach: sparrow search algorithm. Systems Science & Control Engineering, 8(1), 22-34.
-
 2. Ouyang, X., et al. (2021). Dynamic sparrow search algorithm with multiple search strategies for global optimization problems. Mathematics, 9(24), 3193.
 
----
+***
 
-*文档版本: 1.0*
-*最后更新: 2026-04-17*
+## 16. 扩展功能
+
+### 16.1 强制部署模式
+
+当 `force_full_deployment=True` 时，优化器确保所有资源都部署到约束上限：
+
+```python
+optimizer = DSSAOptimizer(
+    coverage_model=coverage_model,
+    constraints=constraints,
+    config=config,
+    force_full_deployment=True  # 强制部署所有资源
+)
+```
+
+**实现逻辑**：
+
+1. 初始化时，遍历所有可用网格，部署资源直到达到上限
+2. 修复阶段，如果资源不足，自动补充到上限
+3. 确保每次迭代后的解决方案都满足资源总量约束
+
+### 16.2 固定围栏
+
+可以预设固定围栏位置，优化过程中保持不变：
+
+```python
+fixed_fences = {
+    (1, 2): 1,  # 在网格1和2之间部署围栏
+    (3, 4): 1,  # 在网格3和4之间部署围栏
+}
+
+optimizer = DSSAOptimizer(
+    coverage_model=coverage_model,
+    constraints=constraints,
+    config=config,
+    fixed_fences=fixed_fences
+)
+```
+
+### 16.3 围栏部署约束
+
+围栏只能部署在地图边缘，通过 `get_fencing_edges()` 方法获取可部署的边：
+
+```python
+def get_fencing_edges(self) -> List[Tuple[int, int, float]]:
+    """只返回至少一端是边缘格子的边，确保围栏只能部署在地图外围。"""
+    edge_grid_set = set(self.get_edge_grids())
+    fencing_edges = []
+    for grid_id in self.get_all_grid_ids():
+        for neighbor_id in self.get_neighbors(grid_id):
+            if grid_id < neighbor_id:
+                if grid_id in edge_grid_set or neighbor_id in edge_grid_set:
+                    fencing_edges.append((grid_id, neighbor_id, 1.0))
+    return fencing_edges
+```
+
+### 16.4 营地与巡逻人员互斥约束
+
+同一网格不能同时部署营地和独立巡逻人员：
+
+```python
+# 验证阶段检查
+for grid_id in self.grid_ids:
+    has_camp = solution.camps.get(grid_id, 0) > 0
+    has_ranger = solution.rangers.get(grid_id, 0) > 0
+    if has_camp and has_ranger:
+        violations.append(f"Patrol and camp cannot share the same grid: {grid_id}")
+
+# 修复阶段处理
+for grid_id in list(repaired.rangers.keys()):
+    if grid_id in repaired.camps:
+        repaired.rangers.pop(grid_id, None)
+```
+
+***
+
+## 17. 算法收敛性分析
+
+### 17.1 收敛特征
+
+DSSA算法具有以下收敛特征：
+
+1. **快速收敛阶段**（前20%迭代）：适应度快速提升
+2. **平稳优化阶段**（中间60%迭代）：适应度稳步提升
+3. **精细调整阶段**（后20%迭代）：适应度趋于稳定
+
+### 17.2 警戒机制的作用
+
+警戒更新（R2 >= ST）提供探索能力：
+
+- 当 R2 < ST：执行开发操作，向最优解靠拢
+- 当 R2 >= ST：执行探索操作，大范围随机搜索
+
+```python
+if R2 < self.config.ST:
+    # 开发模式：小范围搜索
+    new_vector = current_vector + np.random.uniform(-1, 1, current_vector.shape)
+else:
+    # 探索模式：大范围搜索
+    new_vector = current_vector + np.random.uniform(-2, 2, current_vector.shape)
+```
+
+### 17.3 侦察者重初始化
+
+适应度低于阈值的个体被重新初始化，避免陷入局部最优：
+
+```python
+if self.evaluate_fitness(solution) < self.config.ST * self.best_fitness:
+    self.population[i] = self._initialize_solution()
+```
+
+***
+
+## 18. 六边形网格坐标系统详解
+
+### 18.1 轴坐标系统
+
+使用轴坐标 (q, r) 表示六边形位置，其中 s = -q - r：
+
+```
+     / \\     / \\     / \\
+   /     \\ /     \\ /     \\
+  | -1,0  |  0,0  |  1,0  |
+   \\     / \\     / \\     /
+     \\ /     \\ /     \\ /
+      | -1,1  |  0,1  |
+       \\     / \\     /
+         \\ /     \\ /
+          |  0,2  |
+           \\     /
+             \\ /
+```
+
+### 18.2 六边形距离公式
+
+```python
+@staticmethod
+def hex_distance(grid1: GridData, grid2: GridData) -> int:
+    return (abs(grid1.q - grid2.q) + 
+            abs(grid1.q + grid1.r - grid2.q - grid2.r) + 
+            abs(grid1.r - grid2.r)) // 2
+```
+
+### 18.3 邻接方向
+
+六边形有六个相邻方向：
+
+```python
+directions = [
+    (1, 0), (1, -1), (0, -1),   # 右上、右、右下
+    (-1, 0), (-1, 1), (0, 1)    # 左下、左、左上
+]
+```
+
+### 18.4 笛卡尔坐标转换
+
+从轴坐标转换为笛卡尔坐标（用于可视化）：
+
+```python
+def get_grid_center_coords(self, grid_id: int, hex_size: float = 1.0) -> Tuple[float, float]:
+    grid = self.get_grid_by_id(grid_id)
+    col = grid.q + (grid.r // 2)
+    row = grid.r
+    
+    # pointy-topped 六边形
+    x = hex_size * np.sqrt(3) * (col + 0.5 * (row & 1))
+    y = hex_size * 3/2 * row
+    return (x, y)
+```
+
+***
+
+## 19. 时间因子计算
+
+### 19.1 时间因子组成
+
+时间因子由昼夜因子和季节因子组成：
+
+```
+temporal_factor = T_t × S_t
+```
+
+其中：
+
+- T\_t：昼夜因子（白天=1.0，夜间=1.3）
+- S\_t：季节因子（旱季=1.0，雨季=1.2）
+
+### 19.2 时间感知适应度
+
+```python
+def calculate_time_aware_total_benefit(self, solution: DeploymentSolution) -> float:
+    """
+    使用时间加权风险计算适应度
+    
+    公式：
+        fitness = total_protection_benefit / total_risk_weighted
+        where total_risk_weighted = Σ [R_i × T_t × S_t]
+    
+    效果：资源分配反映时间风险差异
+    """
+    protection_benefit = self.calculate_protection_benefit(solution)
+    total_risk_weighted = 0.0
+    
+    for grid_id in self.grid_ids:
+        normalized_risk = self.grid_model.get_grid_risk(grid_id)
+        temporal_factor = self.grid_model.get_grid_temporal_factor(grid_id)
+        total_risk_weighted += normalized_risk * temporal_factor
+    
+    total_benefit = sum(protection_benefit.values())
+    if total_risk_weighted > 0:
+        total_benefit = total_benefit / total_risk_weighted
+    
+    return total_benefit
+```
+
+***
+
+## 20. 常见问题与解决方案
+
+### 20.1 资源未完全部署
+
+**问题**：优化结果中某些资源未达到约束上限
+
+**解决方案**：启用强制部署模式
+
+```python
+optimizer = DSSAOptimizer(
+    coverage_model=coverage_model,
+    constraints=constraints,
+    config=config,
+    force_full_deployment=True
+)
+```
+
+### 20.2 适应度不收敛
+
+**问题**：迭代过程中适应度波动较大
+
+**解决方案**：
+
+1. 增加种群大小（population\_size）
+2. 增加迭代次数（max\_iterations）
+3. 调整安全阈值（ST=0.8\~0.9）
+
+### 20.3 围栏部署位置错误
+
+**问题**：围栏出现在地图内部
+
+**解决方案**：确保使用 `get_fencing_edges()` 获取可部署边
+
+```python
+fencing_edges = grid_model.get_fencing_edges()
+```
+
+### 20.4 营地与巡逻冲突
+
+**问题**：同一网格同时出现营地和巡逻人员
+
+**解决方案**：使用 `repair_solution()` 自动修复
+
+```python
+repaired = coverage_model.repair_solution(solution, constraints, force_full_deployment)
+```
+
+***
+
+## 21. 复杂度分析
+
+### 21.1 符号定义
+
+| 符号 | 含义 | 典型值 |
+|------|------|--------|
+| N | 网格总数 | 2648 |
+| P | 种群大小 (population_size) | 50 |
+| I | 最大迭代次数 (max_iterations) | 100 |
+| C_cam | 摄像头总数 | 4 |
+| C_drone | 无人机总数 | 2 |
+| C_camp | 营地总数 | 2 |
+| C_ranger | 巡逻人员总数 | 8 |
+| k | 每个网格平均邻居数 (≤6) | 6 |
+| d | 解向量维度 = 4N | 10592 |
+
+### 21.2 预处理阶段
+
+#### 21.2.1 邻接矩阵构建
+
+```python
+def _build_adjacency_matrix(self):
+    for grid in self.grids:          # N 次
+        for dq, dr in directions:    # 6 次
+            neighbor_grid = self._find_grid_by_coords(...)  # O(N) 线性查找
+```
+
+- **时间复杂度**: O(N² × 6) = O(N²)
+- **空间复杂度**: O(N × k) = O(N)（每个网格最多6个邻居）
+
+> 注：`_find_grid_by_coords` 使用线性遍历，可用哈希表优化至 O(1)。
+
+#### 21.2.2 距离矩阵构建
+
+```python
+def _build_distance_matrix(self):
+    for i, grid_i in enumerate(self.grids):    # N 次
+        for j, grid_j in enumerate(self.grids):  # N 次
+            distance_matrix[i][j] = self.hex_distance(grid_i, grid_j)  # O(1)
+```
+
+- **时间复杂度**: O(N²)
+- **空间复杂度**: O(N²)（存储完整距离矩阵）
+
+#### 21.2.3 预处理总计
+
+| 项目 | 时间复杂度 | 空间复杂度 |
+|------|-----------|-----------|
+| 邻接矩阵 | O(N²) | O(N) |
+| 距离矩阵 | O(N²) | O(N²) |
+| **合计** | **O(N²)** | **O(N²)** |
+
+### 21.3 适应度评估
+
+适应度评估是 DSSA 优化的核心开销，每次调用 `evaluate_fitness` 的复杂度如下：
+
+#### 21.3.1 巡逻覆盖 (Patrol Coverage)
+
+```python
+for grid_id in self.grid_ids:                    # N 次
+    for camp_id, camp_value in solution.camps:   # C_camp 次
+        distance = self.grid_model.get_distance(...)  # O(1) 查表
+        patrol_intensity += rangers * exp(...)
+    for ranger_id, ranger_count in solution.rangers:  # C_ranger 次
+        distance = self.grid_model.get_distance(...)  # O(1) 查表
+```
+
+- **时间复杂度**: O(N × (C_camp + C_ranger))
+
+#### 21.3.2 无人机覆盖 (Drone Coverage)
+
+```python
+for grid_id in self.grid_ids:                    # N 次
+    for drone_id, drone_value in solution.drones:  # C_drone 次
+        distance = self.grid_model.get_distance(...)  # O(1) 查表
+```
+
+- **时间复杂度**: O(N × C_drone)
+
+#### 21.3.3 摄像头覆盖 (Camera Coverage)
+
+```python
+for grid_id in self.grid_ids:                    # N 次
+    for cam_id, cam_count in solution.cameras:   # C_cam 次
+        distance = self.grid_model.get_distance(...)  # O(1) 查表
+```
+
+- **时间复杂度**: O(N × C_cam)
+
+#### 21.3.4 围栏保护 (Fence Protection)
+
+```python
+for grid_id in self.grid_ids:                    # N 次
+    neighbors = self.grid_model.get_neighbors(grid_id)  # O(1) 查表
+    for neighbor_id in neighbors:                # k 次 (≤6)
+```
+
+- **时间复杂度**: O(N × k) = O(N)
+
+#### 21.3.5 适应度评估总计
+
+```
+T_fitness = T_patrol + T_drone + T_camera + T_fence + T_benefit
+          = O(N × (C_camp + C_ranger)) + O(N × C_drone) + O(N × C_cam) + O(N) + O(N)
+          = O(N × (C_camp + C_ranger + C_drone + C_cam))
+```
+
+令 C = C_camp + C_ranger + C_drone + C_cam（部署资源总数），则：
+
+- **单次适应度评估时间复杂度**: O(N × C)
+
+> 注：由于 C ≤ N（资源数不超过网格数），最坏情况为 O(N²)。但在实际场景中 C ≪ N，因此通常为 O(N)。
+
+### 21.4 解向量编解码
+
+#### 21.4.1 编码 (solution_to_vector)
+
+```python
+for grid_id in self.grid_ids:  # 4 × N 次
+    vector.append(...)
+```
+
+- **时间复杂度**: O(N)
+- **空间复杂度**: O(d) = O(4N)
+
+#### 21.4.2 解码 (vector_to_solution)
+
+```python
+for grid_id in self.grid_ids:  # 4 × N 次
+    # 检查 deployment_matrix, 约束等
+```
+
+- **时间复杂度**: O(N)
+
+### 21.5 修复操作 (repair_solution)
+
+修复操作包含以下步骤：
+
+1. 清理非法部署：O(N)
+2. 截断单格上限：O(N)
+3. 截断总量上限：最坏 O(C)（C 为资源总数）
+4. 补充不足资源：O(N)
+
+- **时间复杂度**: O(N)
+- **空间复杂度**: O(N)（存储清理后的字典）
+
+### 21.6 单次迭代
+
+每次迭代包含：
+
+| 步骤 | 调用次数 | 单次时间 | 小计 |
+|------|---------|---------|------|
+| 生产者更新 | P_prod = P × 0.2 | 编解码 O(N) + 修复 O(N) + 适应度 O(N×C) | O(P_prod × N × C) |
+| 跟随者更新 | P_foll = P × 0.8 | 编解码 O(N) + 修复 O(N) + 适应度 O(N×C) | O(P_foll × N × C) |
+| 侦察者更新 | P_scout = P × 0.2 | 重新初始化 O(N) + 适应度 O(N×C) | O(P_scout × N × C) |
+| 最优解更新 | P | 适应度 O(N×C) | O(P × N × C) |
+| 保护效益计算 | 1 | O(N × C) | O(N × C) |
+
+**单次迭代时间复杂度**:
+
+```
+T_iter = O(P_prod × N × C) + O(P_foll × N × C) + O(P_scout × N × C) + O(P × N × C)
+       = O(P × N × C)
+```
+
+> 注：生产者和跟随者的适应度评估实际执行2次（新旧各一次），常数因子为2，不影响渐近复杂度。
+
+### 21.7 完整优化过程
+
+#### 21.7.1 时间复杂度
+
+```
+T_total = T_preprocess + T_init + T_iteration
+        = O(N²) + O(P × N × C) + I × O(P × N × C)
+        = O(N²) + O(I × P × N × C)
+```
+
+当 C ≪ N 时（实际场景）：
+
+```
+T_total = O(N²) + O(I × P × N)
+```
+
+当 C = O(N) 时（最坏情况）：
+
+```
+T_total = O(I × P × N²)
+```
+
+#### 21.7.2 空间复杂度
+
+| 数据结构 | 空间 | 说明 |
+|---------|------|------|
+| 距离矩阵 | O(N²) | N×N 浮点数组 |
+| 邻接矩阵 | O(N) | 每格最多6邻居 |
+| 种群 | O(P × N) | P 个解，每个 O(N) |
+| 解向量 | O(4N) | 临时编码向量 |
+| 适应度历史 | O(I) | 每代一个值 |
+| deployment_matrix | O(N) | 4种资源 × N |
+| visibility_params | O(N) | N 个网格 |
+
+**总空间复杂度**: O(N² + P × N)
+
+- 距离矩阵 O(N²) 是主要空间开销
+- 种群 O(P × N) 是次要开销
+
+### 21.8 实际性能参考
+
+基于 N=2648, P=50, I=100 的典型场景：
+
+| 阶段 | 计算量估计 | 实际耗时 |
+|------|-----------|---------|
+| 预处理 (距离矩阵) | N² ≈ 7M | ~2s |
+| 单次适应度评估 | N × C ≈ 2648 × 16 ≈ 42K | ~1ms |
+| 单次迭代 | P × N × C ≈ 2.1M | ~50ms |
+| 完整优化 | I × P × N × C ≈ 210M | ~5s |
+
+### 21.9 优化建议
+
+| 瓶颈 | 当前复杂度 | 优化方案 | 优化后复杂度 |
+|------|-----------|---------|-------------|
+| `_find_grid_by_coords` | O(N) 线性查找 | 使用 `{(q,r): grid}` 哈希表 | O(1) |
+| 距离矩阵存储 | O(N²) 空间 | 按需计算（六边形距离 O(1)） | O(1) 每次查询 |
+| 适应度评估 | O(N × C) | 向量化 numpy 运算 | O(N × C) 但常数更小 |
+| 种群存储 | O(P × N) 字典 | 使用 numpy 矩阵存储 | O(P × N) 但内存更紧凑 |
+
+***
+
+## 22. 版本历史
+
+| 版本  | 日期         | 变更内容                |
+| --- | ---------- | ------------------- |
+| 1.0 | 2026-04-17 | 初始版本                |
+| 1.1 | 2026-04-17 | 添加扩展功能、收敛性分析、坐标系统详解 |
+| 1.2 | 2026-04-16 | 添加复杂度分析（时间/空间） |
+
+***
+
+*文档版本: 1.2*
+*最后更新: 2026-04-16*

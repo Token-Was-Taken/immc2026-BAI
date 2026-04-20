@@ -48,12 +48,17 @@ htmlcov/
 *.tif
 *.ico
 
-# Pipeline 运行产物（中间/输出 JSON）
-hexdynamic/pipeline_input.json
-hexdynamic/pipeline_output.json
-hexdynamic/output_example.json
-hexdynamic/*_output.json
-hexdynamic/*_input.json
+# hexdynamic 脚本运行产物
+hexdynamic/output_results/
+hexdynamic/figures-*/
+hexdynamic/out*.json
+hexdynamic/output-*.json
+hexdynamic/big.json
+hexdynamic/sense*.json
+hexdynamic/pipeline_input*.json
+hexdynamic/pipeline_output*.json
+hexdynamic/input.json
+hexdynamic/output.json
 
 # marker 导出的坐标文件（非示例）
 marker/grid-coordinates*.json
@@ -77,5 +82,3 @@ find_deployment_tmp/input_patrol_10.json
 find_deployment_tmp/output_patrol_10.json
 find_deployment_tmp/output_patrol_20.json
 find_deployment_tmp/output_patrol_40.json
-hexdynamic/input.json
-hexdynamic/output.json

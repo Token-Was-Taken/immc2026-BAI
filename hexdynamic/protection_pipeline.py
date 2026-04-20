@@ -208,7 +208,7 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
     return loader
 
 
-def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None):
+def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None):
     print(f"[1/4] Read input: {input_path}")
     data = load_input(input_path)
 
@@ -251,18 +251,29 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             fixed_fences[tuple(sorted((gid1, gid2)))] = 1
 
     dc = data.get('dssa_config', {})
-    dssa_config = DSSAConfig(
-        population_size=dc.get('population_size', 50),
-        max_iterations=dc.get('max_iterations', 100),
-        producer_ratio=dc.get('producer_ratio', 0.2),
-        scout_ratio=dc.get('scout_ratio', 0.2),
-        ST=dc.get('ST', 0.8),
-        R2=dc.get('R2', 0.5),
-        use_time_aware_fitness=dc.get('use_time_aware_fitness', False)
-    )
+    if dssa_config is None:
+        dssa_config = DSSAConfig(
+            population_size=dc.get('population_size', 50),
+            max_iterations=dc.get('max_iterations', 100),
+            producer_ratio=dc.get('producer_ratio', 0.2),
+            scout_ratio=dc.get('scout_ratio', 0.2),
+            ST=dc.get('ST', 0.8),
+            R2=dc.get('R2', 0.5),
+            use_time_aware_fitness=dc.get('use_time_aware_fitness', False),
+            output_dir=dc.get('output_dir'),
+            force_full_deployment=dc.get('force_full_deployment', True)
+        )
+    else:
+        if dssa_config.output_dir is None:
+            dssa_config.output_dir = dc.get('output_dir')
+        if dssa_config.force_full_deployment is None:
+            dssa_config.force_full_deployment = dc.get('force_full_deployment', True)
 
-    # 强制部署模式：默认True，除非通过命令行参数设置为False
-    force_full_deployment = not allow_partial_deployment
+    # 部署模式优先级：CLI --allow-partial-deployment > JSON dssa_config.force_full_deployment > 默认 True
+    if allow_partial_deployment:
+        force_full_deployment = False
+    else:
+        force_full_deployment = dssa_config.force_full_deployment if dssa_config.force_full_deployment is not None else True
     if force_full_deployment:
         print("      [FORCE] 强制部署模式：所有资源将被部署到上限")
     else:
