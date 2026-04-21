@@ -205,6 +205,7 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
     edge_grids = temp_grid_model.get_edge_grids()
     loader.initialize_deployment_matrix(edge_grids=edge_grids)
     loader.initialize_visibility_params()
+    loader.initialize_coverage_effectiveness(data.get('coverage_effectiveness'))
     return loader
 
 
@@ -228,7 +229,8 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         grid_model,
         loader.coverage_params,
         loader.deployment_matrix,
-        loader.visibility_params
+        loader.visibility_params,
+        loader.coverage_effectiveness
     )
 
     constraints = {

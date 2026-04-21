@@ -20,6 +20,17 @@ class DSSAConfig:
     output_dir: Optional[str] = None  # 输出目录，每轮迭代的JSON文件保存到这个目录
     force_full_deployment: Optional[bool] = None
 
+    # --- Exploration range scheduling ---
+    initial_alpha: float = 3.0       # exploration range in early phase (iter < 30%)
+    mid_alpha: float = 2.0           # exploration range in mid phase (30%–70%)
+    final_alpha: float = 1.0         # exploration range in late phase (iter >= 70%)
+    exploitation_alpha: float = 1.0  # perturbation bound for exploitation-mode producers
+
+    # --- Stagnation detection and boost ---
+    stagnation_threshold: int = 10   # consecutive non-improving iters before boost
+    stagnation_tolerance: float = 1e-6  # minimum improvement to reset counter
+    stagnation_boost: float = 1.5    # multiplier applied to alpha during stagnation
+
 
 class DSSAOptimizer:
     def __init__(self, coverage_model: CoverageModel, constraints: Dict[str, any],
@@ -40,6 +51,10 @@ class DSSAOptimizer:
         self.best_solution = None
         self.best_fitness = float('-inf')
         self.initial_solution = None  # 新增：保存初始解决方案，用于冻结资源
+
+        # Stagnation tracking state
+        self.stagnation_count = 0
+        self.prev_best_fitness = float('-inf')
 
         self.output_dir = self.config.output_dir
         self._output_lock = threading.Lock()
@@ -206,6 +221,35 @@ class DSSAOptimizer:
         else:
             return self.coverage_model.calculate_total_benefit(solution)
 
+    def _get_exploration_alpha(self, iteration: int) -> float:
+        """Return the effective exploration alpha for this iteration.
+        
+        Applies a 3-phase schedule based on iteration progress and
+        a stagnation boost when the optimizer is stuck.
+        
+        Args:
+            iteration: Current iteration index (0-based)
+            
+        Returns:
+            The effective exploration range alpha
+        """
+        # Calculate progress through the optimization, handling max_iterations=1 edge case
+        progress = iteration / max(self.config.max_iterations - 1, 1)
+        
+        # 3-phase schedule
+        if progress < 0.3:
+            scheduled = self.config.initial_alpha
+        elif progress < 0.7:
+            scheduled = self.config.mid_alpha
+        else:
+            scheduled = self.config.final_alpha
+        
+        # Apply stagnation boost if threshold exceeded
+        if self.stagnation_count > self.config.stagnation_threshold:
+            return scheduled * self.config.stagnation_boost
+        
+        return scheduled
+
     def _solution_to_vector(self, solution: DeploymentSolution) -> np.ndarray:
         vector = []
         for grid_id in self.grid_ids:
@@ -257,7 +301,13 @@ class DSSAOptimizer:
             fences=dict(self.fixed_fences)
         )
 
-    def _update_producers(self, iteration: int):
+    def _update_producers(self, iteration: int, alpha: float):
+        """Update producer positions with dynamic exploration range.
+        
+        Args:
+            iteration: Current iteration index
+            alpha: Current exploration range bound
+        """
         num_producers = int(self.config.population_size * self.config.producer_ratio)
         producers = self.population[:num_producers]
         
@@ -275,13 +325,13 @@ class DSSAOptimizer:
                     new_vector = current_vector + np.random.uniform(0, 1, current_vector.shape) * (best_vector - current_vector)
                 else:
                     current_vector = self._solution_to_vector(solution)
-                    new_vector = current_vector + np.random.uniform(-1, 1, current_vector.shape)
+                    new_vector = current_vector + np.random.uniform(-self.config.exploitation_alpha, self.config.exploitation_alpha, current_vector.shape)
             else:
                 # 警戒更新（探索 / exploration）
                 escape_count += 1
                 current_vector = self._solution_to_vector(solution)
                 # 使用更大的随机扰动进行探索
-                new_vector = current_vector + np.random.uniform(-2, 2, current_vector.shape)
+                new_vector = current_vector + np.random.uniform(-alpha, alpha, current_vector.shape)
 
             new_solution = self.coverage_model.repair_solution(
                 self._vector_to_solution(new_vector),
@@ -297,7 +347,12 @@ class DSSAOptimizer:
         
         return escape_count
 
-    def _update_followers(self):
+    def _update_followers(self, alpha: float):
+        """Update follower positions with dynamic exploration range.
+        
+        Args:
+            alpha: Current exploration range bound
+        """
         num_producers = int(self.config.population_size * self.config.producer_ratio)
         num_followers = int(self.config.population_size * (1 - self.config.producer_ratio))
         followers = self.population[num_producers:num_producers + num_followers]
@@ -325,7 +380,7 @@ class DSSAOptimizer:
                 escape_count += 1
                 current_vector = self._solution_to_vector(solution)
                 # 使用更大的随机扰动进行探索
-                new_vector = current_vector + np.random.uniform(-2, 2, current_vector.shape)
+                new_vector = current_vector + np.random.uniform(-alpha, alpha, current_vector.shape)
 
             new_solution = self.coverage_model.repair_solution(
                 self._vector_to_solution(new_vector),
@@ -382,10 +437,20 @@ class DSSAOptimizer:
         for iteration in range(self.config.max_iterations):
             iter_start = time.time()
 
-            escape_producers = self._update_producers(iteration)
-            escape_followers = self._update_followers()
+            # Get the effective exploration alpha for this iteration
+            effective_alpha = self._get_exploration_alpha(iteration)
+            
+            escape_producers = self._update_producers(iteration, effective_alpha)
+            escape_followers = self._update_followers(effective_alpha)
             self._update_scouts()
             self._update_best_solution()
+
+            # Update stagnation tracking state
+            if self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance:
+                self.stagnation_count = 0
+            else:
+                self.stagnation_count += 1
+            self.prev_best_fitness = self.best_fitness
 
             if self.output_dir:
                 producers = self.population[:num_producers]
@@ -408,17 +473,23 @@ class DSSAOptimizer:
             
             # 打印迭代信息
             escape_total = escape_producers + escape_followers
+            
+            # Build log line with alpha and stagnation boost annotation
+            stagnation_annotation = " [STAGNATION_BOOST]" if self.stagnation_count > self.config.stagnation_threshold else ""
+            
             if escape_total > 0:
                 print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
                       f"  fitness={self.best_fitness:.6f}"
                       f"  benefit={total_benefit:.6f}"
-                      f"  [ESCAPE={escape_total}]"
+                      f"  α={effective_alpha:.2f}"
+                      f"  [ESCAPE={escape_total}]{stagnation_annotation}"
                       f"  iter={iter_elapsed*1000:.1f}ms"
                       f"  avg={avg_iter*1000:.1f}ms")
             else:
                 print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
                       f"  fitness={self.best_fitness:.6f}"
                       f"  benefit={total_benefit:.6f}"
+                      f"  α={effective_alpha:.2f}{stagnation_annotation}"
                       f"  iter={iter_elapsed*1000:.1f}ms"
                       f"  avg={avg_iter*1000:.1f}ms")
 
@@ -449,6 +520,9 @@ class DSSAOptimizer:
         }
 
     def _serialize_solution(self, solution: DeploymentSolution) -> Dict[str, any]:
+        pb_per_grid = self.coverage_model.calculate_protection_benefit(solution)
+        total_benefit = sum(pb_per_grid.values())
+        
         return {
             'cameras': {str(k): v for k, v in solution.cameras.items()},
             'camps': {str(k): v for k, v in solution.camps.items()},
@@ -456,6 +530,8 @@ class DSSAOptimizer:
             'rangers': {str(k): v for k, v in solution.rangers.items()},
             'fences': {f"{k[0]}-{k[1]}": v for k, v in solution.fences.items()},
             'fitness': self.evaluate_fitness(solution),
+            'total_protection_benefit': total_benefit,
+            'protection_benefit_per_grid': {str(k): round(v, 6) for k, v in pb_per_grid.items()},
             'statistics': self.get_solution_statistics(solution)
         }
 

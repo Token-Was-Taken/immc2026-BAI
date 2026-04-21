@@ -18,12 +18,17 @@ class TimeDynamicSolution:
 class DynamicCoverageModel:
     def __init__(self, grid_model: HexGridModel, coverage_params: CoverageParameters,
                  deployment_matrix: Dict[str, Dict[int, int]],
-                 visibility_params: Dict[int, Dict[str, float]]):
+                 visibility_params: Dict[int, Dict[str, float]],
+                 coverage_effectiveness: Dict[int, Dict[str, float]] = None):
         self.grid_model = grid_model
         self.params = coverage_params
         self.deployment_matrix = deployment_matrix
         self.visibility_params = visibility_params
+        self.coverage_effectiveness = coverage_effectiveness or {}
         self.grid_ids = grid_model.get_all_grid_ids()
+
+    def _effectiveness(self, grid_id: int, resource: str) -> float:
+        return self.coverage_effectiveness.get(grid_id, {}).get(resource, 1.0)
 
     def get_patrol_position(self, ranger_id: int, time: int, solution: TimeDynamicSolution) -> Optional[int]:
         if ranger_id not in solution.rangers:
@@ -47,10 +52,7 @@ class DynamicCoverageModel:
         patrol_coverage = {}
 
         for grid_id in self.grid_ids:
-            if self.deployment_matrix['patrol'][grid_id] == 0:
-                patrol_coverage[grid_id] = 0.0
-                continue
-
+            eff = self._effectiveness(grid_id, 'patrol')
             patrol_intensity = 0.0
             camp_positions = {positions[0][1] for positions in solution.rangers.values() if positions}
 
@@ -65,7 +67,7 @@ class DynamicCoverageModel:
                     distance = self.grid_model.get_distance(grid_id, pos)
                     patrol_intensity += np.exp(-distance / self.params.patrol_radius)
 
-            patrol_coverage[grid_id] = 1 - np.exp(-patrol_intensity)
+            patrol_coverage[grid_id] = eff * (1 - np.exp(-patrol_intensity))
 
         return patrol_coverage
 
@@ -73,18 +75,19 @@ class DynamicCoverageModel:
         drone_coverage = {}
 
         for grid_id in self.grid_ids:
+            eff = self._effectiveness(grid_id, 'drone')
             visibility = self.visibility_params[grid_id]['drone']
             effective_radius = self.params.drone_radius * visibility
 
             coverage = 0.0
             for drone_id in solution.drones:
                 pos = self.get_drone_position(drone_id, time, solution)
-                if pos is not None and self.deployment_matrix['drone'][grid_id] == 1:
+                if pos is not None:
                     distance = self.grid_model.get_distance(grid_id, pos)
                     if distance <= effective_radius * 2:
                         coverage += np.exp(-distance / effective_radius)
 
-            drone_coverage[grid_id] = min(1.0, coverage)
+            drone_coverage[grid_id] = eff * min(1.0, coverage)
 
         return drone_coverage
 
@@ -92,17 +95,18 @@ class DynamicCoverageModel:
         camera_coverage = {}
 
         for grid_id in self.grid_ids:
+            eff = self._effectiveness(grid_id, 'camera')
             visibility = self.visibility_params[grid_id]['camera']
             effective_radius = self.params.camera_radius * visibility
 
             coverage = 0.0
             for cam_id, cam_value in solution.cameras.items():
-                if cam_value > 0 and self.deployment_matrix['camera'][grid_id] == 1:
+                if cam_value > 0:
                     distance = self.grid_model.get_distance(grid_id, cam_id)
                     if distance <= effective_radius * 2:
                         coverage += cam_value * np.exp(-distance / effective_radius)
 
-            camera_coverage[grid_id] = min(1.0, coverage)
+            camera_coverage[grid_id] = eff * min(1.0, coverage)
 
         return camera_coverage
 
@@ -110,16 +114,16 @@ class DynamicCoverageModel:
         fence_protection = {}
 
         for grid_id in self.grid_ids:
+            eff = self._effectiveness(grid_id, 'fence')
             protection = 0.0
             neighbors = self.grid_model.get_neighbors(grid_id)
 
             for neighbor_id in neighbors:
                 edge_key = tuple(sorted((grid_id, neighbor_id)))
                 if edge_key in solution.fences and solution.fences[edge_key] == 1:
-                    if self.deployment_matrix['fence'][grid_id] == 1:
-                        protection += self.params.fence_protection
+                    protection += self.params.fence_protection
 
-            fence_protection[grid_id] = min(1.0, protection)
+            fence_protection[grid_id] = eff * min(1.0, protection)
 
         return fence_protection
 

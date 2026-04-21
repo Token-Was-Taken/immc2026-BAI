@@ -17,21 +17,24 @@ class DeploymentSolution:
 class CoverageModel:
     def __init__(self, grid_model: HexGridModel, coverage_params: CoverageParameters,
                  deployment_matrix: Dict[str, Dict[int, int]],
-                 visibility_params: Dict[int, Dict[str, float]]):
+                 visibility_params: Dict[int, Dict[str, float]],
+                 coverage_effectiveness: Dict[int, Dict[str, float]] = None):
         self.grid_model = grid_model
         self.params = coverage_params
         self.deployment_matrix = deployment_matrix
         self.visibility_params = visibility_params
+        # coverage_effectiveness[grid_id][resource] = multiplier (default 1.0)
+        self.coverage_effectiveness = coverage_effectiveness or {}
         self.grid_ids = grid_model.get_all_grid_ids()
+
+    def _effectiveness(self, grid_id: int, resource: str) -> float:
+        return self.coverage_effectiveness.get(grid_id, {}).get(resource, 1.0)
 
     def calculate_patrol_coverage(self, solution: DeploymentSolution) -> Dict[int, float]:
         patrol_coverage = {}
 
         for grid_id in self.grid_ids:
-            if self.deployment_matrix['patrol'][grid_id] == 0:
-                patrol_coverage[grid_id] = 0.0
-                continue
-
+            eff = self._effectiveness(grid_id, 'patrol')
             patrol_intensity = 0.0
 
             for camp_id, camp_value in solution.camps.items():
@@ -45,7 +48,7 @@ class CoverageModel:
                     distance = self.grid_model.get_distance(grid_id, ranger_id)
                     patrol_intensity += ranger_count * np.exp(-distance / self.params.patrol_radius)
 
-            patrol_coverage[grid_id] = 1 - np.exp(-patrol_intensity)
+            patrol_coverage[grid_id] = eff * (1 - np.exp(-patrol_intensity))
 
         return patrol_coverage
 
@@ -53,17 +56,18 @@ class CoverageModel:
         drone_coverage = {}
 
         for grid_id in self.grid_ids:
+            eff = self._effectiveness(grid_id, 'drone')
             visibility = self.visibility_params[grid_id]['drone']
             effective_radius = self.params.drone_radius * visibility
 
             coverage = 0.0
             for drone_id, drone_value in solution.drones.items():
-                if drone_value == 1 and self.deployment_matrix['drone'][grid_id] == 1:
+                if drone_value == 1:
                     distance = self.grid_model.get_distance(grid_id, drone_id)
                     if distance <= effective_radius * 2:
                         coverage += np.exp(-distance / effective_radius)
 
-            drone_coverage[grid_id] = min(1.0, coverage)
+            drone_coverage[grid_id] = eff * min(1.0, coverage)
 
         return drone_coverage
 
@@ -71,17 +75,18 @@ class CoverageModel:
         camera_coverage = {}
 
         for grid_id in self.grid_ids:
+            eff = self._effectiveness(grid_id, 'camera')
             visibility = self.visibility_params[grid_id]['camera']
             effective_radius = self.params.camera_radius * visibility
 
             coverage = 0.0
             for cam_id, cam_count in solution.cameras.items():
-                if cam_count > 0 and self.deployment_matrix['camera'][grid_id] == 1:
+                if cam_count > 0:
                     distance = self.grid_model.get_distance(grid_id, cam_id)
                     if distance <= effective_radius * 2:
                         coverage += cam_count * np.exp(-distance / effective_radius)
 
-            camera_coverage[grid_id] = min(1.0, coverage)
+            camera_coverage[grid_id] = eff * min(1.0, coverage)
 
         return camera_coverage
 
@@ -89,16 +94,16 @@ class CoverageModel:
         fence_protection = {}
 
         for grid_id in self.grid_ids:
+            eff = self._effectiveness(grid_id, 'fence')
             protection = 0.0
             neighbors = self.grid_model.get_neighbors(grid_id)
 
             for neighbor_id in neighbors:
                 edge_key = tuple(sorted((grid_id, neighbor_id)))
                 if edge_key in solution.fences and solution.fences[edge_key] == 1:
-                    if self.deployment_matrix['fence'][grid_id] == 1:
-                        protection += self.params.fence_protection
+                    protection += self.params.fence_protection
 
-            fence_protection[grid_id] = min(1.0, protection)
+            fence_protection[grid_id] = eff * min(1.0, protection)
 
         return fence_protection
 
@@ -196,6 +201,17 @@ class CoverageModel:
             if has_camp and has_ranger:
                 violations.append(f"Patrol and camp cannot share the same grid: {grid_id}")
 
+        # Check single resource type per grid
+        for grid_id in self.grid_ids:
+            count = sum([
+                solution.camps.get(grid_id, 0) > 0,
+                solution.rangers.get(grid_id, 0) > 0,
+                solution.cameras.get(grid_id, 0) > 0,
+                solution.drones.get(grid_id, 0) > 0,
+            ])
+            if count > 1:
+                violations.append(f"Multiple resource types on same grid: {grid_id}")
+
         for grid_id in self.grid_ids:
             cam_count = solution.cameras.get(grid_id, 0)
             max_cam = constraints.get('max_cameras_per_grid', 1)
@@ -254,6 +270,30 @@ class CoverageModel:
         for grid_id in list(repaired.rangers.keys()):
             if grid_id in repaired.camps:
                 repaired.rangers.pop(grid_id, None)
+
+        # Ensure only one resource type per grid (camera, drone, camp, patrol are mutually exclusive)
+        # Priority: patrol > drone > camera > camp
+        for grid_id in self.grid_ids:
+            types_present = []
+            if repaired.rangers.get(grid_id, 0) > 0:
+                types_present.append('patrol')
+            if repaired.drones.get(grid_id, 0) > 0:
+                types_present.append('drone')
+            if repaired.cameras.get(grid_id, 0) > 0:
+                types_present.append('camera')
+            if repaired.camps.get(grid_id, 0) > 0:
+                types_present.append('camp')
+
+            if len(types_present) > 1:
+                keep = types_present[0]  # highest priority wins
+                if keep != 'patrol':
+                    repaired.rangers.pop(grid_id, None)
+                if keep != 'drone':
+                    repaired.drones.pop(grid_id, None)
+                if keep != 'camera':
+                    repaired.cameras.pop(grid_id, None)
+                if keep != 'camp':
+                    repaired.camps.pop(grid_id, None)
 
         for edge_key in list(repaired.fences.keys()):
             gid1, gid2 = edge_key

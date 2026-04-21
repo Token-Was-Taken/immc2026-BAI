@@ -23,6 +23,23 @@ def load_input_grids(input_path: str) -> Dict[int, Dict]:
     return grid_map
 
 
+def load_risk_data(output_json_path: str) -> Dict[int, Dict]:
+    """Load pre-computed risk data from final output JSON."""
+    risk_map = {}
+    if os.path.exists(output_json_path):
+        try:
+            with open(output_json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            for g in data.get('grids', []):
+                risk_map[g['grid_id']] = {
+                    'risk_normalized': g.get('risk_normalized', 0.0),
+                    'raw_risk': g.get('raw_risk', 0.0)
+                }
+        except Exception as e:
+            print(f"Warning: Could not load risk data: {e}")
+    return risk_map
+
+
 def load_iteration_solution(solution_path: str) -> Dict[str, Any]:
     """Load a single solution JSON file."""
     with open(solution_path, 'r', encoding='utf-8') as f:
@@ -30,7 +47,7 @@ def load_iteration_solution(solution_path: str) -> Dict[str, Any]:
 
 
 def convert_to_visualize_format(solution: Dict[str, Any], grid_map: Dict[int, Dict],
-                            filename: str) -> Dict[str, Any]:
+                            risk_map: Dict[int, Dict], filename: str) -> Dict[str, Any]:
     """Convert iteration solution to visualize_output.py format."""
     
     grids = []
@@ -40,9 +57,21 @@ def convert_to_visualize_format(solution: Dict[str, Any], grid_map: Dict[int, Di
     rangers = solution.get('rangers', {})
     fences = solution.get('fences', {})
     fitness = solution.get('fitness', 0)
+    total_pb = solution.get('total_protection_benefit', 0)
+    pb_per_grid_raw = solution.get('protection_benefit_per_grid', {})
     stats = solution.get('statistics', {})
     
+    pb_vals = [v for v in pb_per_grid_raw.values()]
+    pb_min = 0.0  # always anchor at 0
+    pb_max = max(pb_vals) if pb_vals else 1
+    pb_range = pb_max - pb_min if pb_max > 0 else 1
+    
     for grid_id, grid_data in sorted(grid_map.items()):
+        risk_data = risk_map.get(grid_id, {})
+        pb_raw = pb_per_grid_raw.get(str(grid_id), 0.0)
+        pb_norm = (pb_raw - pb_min) / pb_range if pb_range > 0 else 0.0
+        risk_norm = risk_data.get('risk_normalized', grid_data.get('risk_normalized', 0.0))
+        
         entry = {
             'grid_id': grid_id,
             'q': grid_data.get('q', 0),
@@ -50,11 +79,11 @@ def convert_to_visualize_format(solution: Dict[str, Any], grid_map: Dict[int, Di
             'x': grid_data.get('x', 0),
             'y': grid_data.get('y', 0),
             'terrain_type': grid_data.get('terrain_type', 'unknown'),
-            'risk_normalized': grid_data.get('risk_normalized', 0.0),
-            'raw_risk': grid_data.get('raw_risk', 0.0),
-            'protection_benefit_raw': 0.0,
-            'protection_benefit_normalized': 0.0,
-            'residual_risk_normalized': grid_data.get('risk_normalized', 0.0),
+            'risk_normalized': risk_norm,
+            'raw_risk': risk_data.get('raw_risk', grid_data.get('raw_risk', 0.0)),
+            'protection_benefit_raw': pb_raw,
+            'protection_benefit_normalized': pb_norm,
+            'residual_risk_normalized': risk_norm * (1 - min(pb_raw / max(risk_norm, 0.001), 1)),
             'deployment': {
                 'patrol_rangers': rangers.get(str(grid_id), 0),
                 'camp': camps.get(str(grid_id), 0),
@@ -80,9 +109,9 @@ def convert_to_visualize_format(solution: Dict[str, Any], grid_map: Dict[int, Di
         'summary': {
             'total_grids': len(grids),
             'best_fitness': fitness,
-            'total_protection_benefit': fitness,
-            'average_protection_benefit': fitness / len(grids) if grids else 0,
-            'total_risk': 0,
+            'total_protection_benefit': total_pb,
+            'average_protection_benefit': total_pb / len(grids) if grids else 0,
+            'total_risk': sum(g.get('raw_risk', 0) for g in grids),
             'resources_deployed': {
                 'total_cameras': stats.get('total_cameras', 0),
                 'total_drones': stats.get('total_drones', 0),
@@ -96,10 +125,27 @@ def convert_to_visualize_format(solution: Dict[str, Any], grid_map: Dict[int, Di
     }
 
 
-def postprocess_iteration(iteration_dir: str, input_path: str, output_dir: Optional[str] = None):
+def postprocess_iteration(iteration_dir: str, input_path: str, output_dir: Optional[str] = None, 
+                         final_output_path: Optional[str] = None):
     """Post-process all solution types in an iteration directory."""
     
     grid_map = load_input_grids(input_path)
+    
+    # Try to load risk data from final output JSON
+    if final_output_path and os.path.exists(final_output_path):
+        risk_map = load_risk_data(final_output_path)
+    else:
+        # Fallback: try to find final output in common locations
+        possible_paths = [
+            os.path.join(os.path.dirname(iteration_dir), 'final_output.json'),
+            os.path.join(os.path.dirname(os.path.dirname(iteration_dir)), 'final_output.json'),
+        ]
+        risk_map = {}
+        for path in possible_paths:
+            if os.path.exists(path):
+                risk_map = load_risk_data(path)
+                if risk_map:
+                    break
     
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
@@ -121,7 +167,7 @@ def postprocess_iteration(iteration_dir: str, input_path: str, output_dir: Optio
         type_output_dir = output_dir if output_dir else iteration_dir
         
         for i, sol in enumerate(solutions):
-            output_data = convert_to_visualize_format(sol, grid_map, f"{sol_type}_{i}")
+            output_data = convert_to_visualize_format(sol, grid_map, risk_map, f"{sol_type}_{i}")
             
             if len(solutions) > 1:
                 out_path = os.path.join(type_output_dir, f'{sol_type}_{i:03d}.json')
@@ -143,6 +189,7 @@ if __name__ == '__main__':
     parser.add_argument('iteration_dir', help="Iteration directory (e.g., output/iteration_0005)")
     parser.add_argument('input_json', help="Input JSON with grid information")
     parser.add_argument('-o', '--output', help="Output directory (default: same as iteration_dir)")
+    parser.add_argument('-f', '--final-output', help="Path to final_output.json with computed risk data")
     
     args = parser.parse_args()
-    postprocess_iteration(args.iteration_dir, args.input_json, args.output)
+    postprocess_iteration(args.iteration_dir, args.input_json, args.output, final_output_path=args.final_output)

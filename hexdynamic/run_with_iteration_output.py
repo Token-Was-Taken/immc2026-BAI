@@ -29,6 +29,7 @@ def parse_args():
     parser.add_argument('--iterations', type=int, default=50, help="Number of DSSA iterations")
     parser.add_argument('--vectorized', action='store_true', help="Use vectorized coverage model (recommended for grid count > 1000)")
     parser.add_argument('--visualize', action='store_true', help="Generate visualizations")
+    parser.add_argument('--workers', type=int, default=4, help="Number of parallel workers for visualization (default: 4)")
     parser.add_argument('--best-only', action='store_true', help="Only visualize best solution")
     return parser.parse_args()
 
@@ -67,15 +68,38 @@ def prepare_input_with_config(input_path: str, cli_iterations: int = None, cli_o
     return temp_path.name, config_vectorized
 
 
-def _generate_iteration_visualizations(iter_viz_dir: str, input_path: str, iter_name: str, output_dir: str):
-    """Generate visualizations for all JSON files in an iteration directory."""
+def _generate_single_visualization(args_tuple):
+    """Worker function for parallel visualization generation (lightweight version)."""
+    json_path, input_path, out_dir = args_tuple
+    from visualize_iteration import main as visualize_main
+    import matplotlib
+    matplotlib.use('Agg')
+    import sys
+    
+    original_argv = sys.argv
     try:
-        from visualize_output import main as visualize_main
-        import matplotlib
-        matplotlib.use('Agg')
+        sys.argv = ['visualize_iteration.py', json_path, '--input', input_path, '--out_dir', out_dir]
+        visualize_main()
+        return True
+    except Exception as e:
+        print(f"Warning: Failed to visualize {json_path}: {e}")
+        return False
+    finally:
+        sys.argv = original_argv
+
+
+def _generate_iteration_visualizations(iter_viz_dir: str, input_path: str, iter_name: str, output_dir: str, max_workers: int = 4):
+    """Generate visualizations for all JSON files in an iteration directory using parallel processing."""
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    import multiprocessing
+    
+    try:
+        json_files = sorted([f for f in os.listdir(iter_viz_dir) if f.endswith('.json')])
+        if not json_files:
+            print(f"  No JSON files found in {iter_name}")
+            return
         
-        json_files = [f for f in os.listdir(iter_viz_dir) if f.endswith('.json')]
-        
+        tasks = []
         for json_file in json_files:
             json_path = os.path.join(iter_viz_dir, json_file)
             out_subdir = os.path.join(output_dir, 'figures', iter_name)
@@ -84,13 +108,23 @@ def _generate_iteration_visualizations(iter_viz_dir: str, input_path: str, iter_
             base_name = json_file.replace('.json', '')
             out_dir = os.path.join(out_subdir, base_name)
             
-            try:
-                sys.argv = ['visualize_output.py', json_path, '--input', input_path, '--out_dir', out_dir]
-                visualize_main()
-            except Exception as e:
-                print(f"    Warning: Failed to visualize {json_file}: {e}")
+            tasks.append((json_path, input_path, out_dir))
         
-        print(f"  Generated visualizations for {len(json_files)} solutions in {iter_name}")
+        print(f"  Generating {len(tasks)} visualizations in {iter_name} with {max_workers} workers...")
+        
+        with ProcessPoolExecutor(max_workers=min(max_workers, multiprocessing.cpu_count())) as executor:
+            futures = [executor.submit(_generate_single_visualization, task) for task in tasks]
+            completed = 0
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    pass
+                completed += 1
+                if completed % 10 == 0:
+                    print(f"    Progress: {completed}/{len(tasks)}")
+        
+        print(f"  Completed {len(tasks)} visualizations for {iter_name}")
     except Exception as e:
         print(f"  Warning: Failed to generate visualizations: {e}")
 
@@ -155,21 +189,24 @@ def main():
             
             print(f"Post-processing {iter_dir}...")
             try:
-                postprocess_iteration(iter_full_path, input_path, iter_viz_dir)
+                final_output = os.path.join(output_dir, 'final_output.json')
+                postprocess_iteration(iter_full_path, input_path, iter_viz_dir, final_output_path=final_output)
                 
                 if args.visualize:
                     print(f"  Generating visualizations for {iter_dir}...")
-                    _generate_iteration_visualizations(iter_viz_dir, input_path, iter_dir, output_dir)
+                    _generate_iteration_visualizations(iter_viz_dir, input_path, iter_dir, output_dir, max_workers=args.workers)
             except Exception as e:
                 print(f"  Warning: Failed to post-process {iter_dir}: {e}")
     else:
         print("Warning: No iteration output directory found")
     
     print("\n" + "=" * 60)
-    print("Step 3: Generating Visualizations")
+    print("Step 3: Generating Common Visualizations (shared by all iterations)")
     print("=" * 60)
     
     final_output = os.path.join(output_dir, 'final_output.json')
+    figures_dir = os.path.join(output_dir, 'figures')
+    os.makedirs(figures_dir, exist_ok=True)
     
     if args.visualize and os.path.exists(final_output):
         try:
@@ -177,11 +214,26 @@ def main():
             import matplotlib
             matplotlib.use('Agg')
             
-            sys.argv = ['visualize_output.py', final_output, '--input', input_path, '--out_dir', os.path.join(output_dir, 'figures')]
+            temp_dir = os.path.join(output_dir, '_temp_final_figures')
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            sys.argv = ['visualize_output.py', final_output, '--input', input_path, '--out_dir', temp_dir]
             visualize_main()
-            print(f"Visualizations saved to {os.path.join(output_dir, 'figures')}")
+            
+            import shutil
+            common_files = ['risk_heatmap.png', 'terrain_map.png', 'species_map.png']
+            for f in common_files:
+                src = os.path.join(temp_dir, f)
+                dst = os.path.join(figures_dir, f)
+                if os.path.exists(src):
+                    shutil.copy(src, dst)
+                    print(f"  copied: {f}")
+            
+            shutil.rmtree(temp_dir)
+            
+            print(f"Common visualizations saved to {figures_dir}")
         except Exception as e:
-            print(f"Warning: Failed to generate visualizations: {e}")
+            print(f"Warning: Failed to generate common visualizations: {e}")
     
     print("\n" + "=" * 60)
     print("Done!")

@@ -39,12 +39,18 @@ class CoverageParameters:
     wc: float = 0.2
     wf: float = 0.2
 
+# Default coverage effectiveness: terrain -> resource -> multiplier (1.0 = full effect)
+DEFAULT_COVERAGE_EFFECTIVENESS: Dict[str, Dict[str, float]] = {
+    'DenseGrass': {'patrol': 0.3, 'camp': 0.3},
+}
+
 
 class DataLoader:
     def __init__(self):
         self.grids: List[GridData] = []
         self.deployment_matrix: Dict[str, Dict[int, int]] = {}
         self.visibility_params: Dict[str, Dict[str, float]] = {}
+        self.coverage_effectiveness: Dict[str, Dict[str, float]] = {}
         self.constraints: ResourceConstraints = None
         self.coverage_params: CoverageParameters = None
 
@@ -144,6 +150,22 @@ class DataLoader:
                     # 其他资源使用地形规则
                     self.deployment_matrix[resource][grid.grid_id] = terrain_deployment[grid.terrain_type][resource]
 
+    def initialize_coverage_effectiveness(self, overrides: Dict[str, Dict[str, float]] = None):
+        """Build per-grid coverage effectiveness map.
+        
+        Merges DEFAULT_COVERAGE_EFFECTIVENESS with any overrides from config.
+        Result: self.coverage_effectiveness[grid_id][resource] = multiplier (0.0-1.0)
+        """
+        terrain_eff = {k: dict(v) for k, v in DEFAULT_COVERAGE_EFFECTIVENESS.items()}
+        if overrides:
+            for terrain, res_map in overrides.items():
+                terrain_eff.setdefault(terrain, {}).update(res_map)
+
+        self.coverage_effectiveness = {}
+        for grid in self.grids:
+            terrain = grid.terrain_type
+            self.coverage_effectiveness[grid.grid_id] = terrain_eff.get(terrain, {})
+
     def initialize_visibility_params(self):
         terrain_visibility = {
             'SparseGrass': {'drone': 1.0, 'camera': 1.0},
@@ -214,6 +236,7 @@ class DataLoader:
         
         self.initialize_deployment_matrix()
         self.initialize_visibility_params()
+        self.initialize_coverage_effectiveness(config.get('coverage_effectiveness'))
         
         if 'constraints' in config:
             c = config['constraints']

@@ -229,6 +229,13 @@ Optimization completed.  Best Fitness = 0.498100  Total = 8.45s  Avg/iter = 84.5
     "fence_protection": 0.5, "wp": 0.3, "wd": 0.3, "wc": 0.2, "wf": 0.2
   },
 
+  // 覆盖效果折扣系数（可选）
+  // 定义不同地形对各资源覆盖效果的折扣系数（0.0~1.0），不在此配置中的地形默认系数为 1.0
+  // 注意：此配置影响覆盖效果计算，与部署可行性矩阵（deployment_matrix）相互独立
+  "coverage_effectiveness": {
+    "DenseGrass": { "patrol": 0.3, "camp": 0.3 }
+  },
+
   // DSSA 优化参数（可选）
   "dssa_config": {
     "population_size": 50, "max_iterations": 100,
@@ -298,6 +305,33 @@ DSSA 优化器的资源部署受**四层约束**共同限制，按优先级从�
 #### 第四层：互斥规则
 
 - **巡逻员与营地互斥**：同一格子不能同时部署 patrol 和 camp。若优化过程中两者被分配到同一格，repair 阶段会自动移除该格的巡逻员。
+- **单格单资源类型**：同一格子只能部署一种资源类型（camera、drone、camp、patrol 四者互斥）。repair 阶段按优先级保留：patrol > drone > camera > camp，其余自动移除。
+
+#### 覆盖效果折扣系数（Coverage Effectiveness）
+
+> 与部署可行性矩阵相互独立，控制的是**覆盖效果**而非**部署权限**。
+
+某些地形虽然允许被资源覆盖（如 DenseGrass 可以被周边 patrol 覆盖），但由于植被遮挡等原因，实际覆盖效果会打折。通过 `coverage_effectiveness` 配置可以为每种地形的每种资源指定折扣系数：
+
+```jsonc
+"coverage_effectiveness": {
+  "DenseGrass": { "patrol": 0.3, "camp": 0.3 }
+}
+```
+
+| 地形 | 资源 | 默认系数 | 说明 |
+| :--- | :--- | :---: | :--- |
+| DenseGrass | patrol | 0.3 | 密林遮挡，巡逻覆盖效果仅 30% |
+| DenseGrass | camp | 0.3 | 密林遮挡，营地辐射覆盖效果仅 30% |
+| 其他所有地形 | 所有资源 | 1.0 | 默认无折扣 |
+
+折扣系数作用于覆盖度计算的最终结果：
+
+```
+patrol_coverage[grid_id] = effectiveness × (1 - exp(-patrol_intensity))
+```
+
+这意味着即使 DenseGrass 格子不能**部署** patrol，周边格子的 patrol 仍然可以**覆盖**到它，但效果只有 30%。
 
 #### 约束执行时机
 
@@ -349,7 +383,7 @@ DSSA 优化器的资源部署受**四层约束**共同限制，按优先级从�
 | :--- | :--- | :--- |
 | `risk_normalized` | riskIndex min-max 归一化 | 综合威胁程度，越高越需要保护 |
 | `protection_benefit_raw` | `R_i × (1 - e^(-E_i))` | 该格实际获得的保护收益 |
-| `protection_benefit_normalized` | min-max 归一化 | 相对保护收益，便于可视化 |
+| `protection_benefit_normalized` | min-max 归一化，vmin=0，vmax=max(pb) | 相对保护收益，便于可视化，0 表示无覆盖 |
 | `residual_risk_normalized` | `R_i × e^(-E_i)`，min-max 归一化 | 部署后剩余风险，越低说明保护越充分 |
 | Total Protection Benefit | `Σ protection_benefit_raw` | 全局保护收益总量 |
 | Average Protection Benefit | `Total / N` | 每格平均保护收益 |
@@ -425,8 +459,11 @@ python run_with_iteration_output.py input.json -o results/ --vectorized
 # 生成可视化图片
 python run_with_iteration_output.py input.json -o results/ --iterations 50 --visualize
 
-# 向量化 + 可视化（完整流程）
+# 向量化 + 可视化（完整流程，4个并行worker）
 python run_with_iteration_output.py input.json -o results/ --vectorized --visualize
+
+# 使用8个worker并行生成可视化（加快速度）
+python run_with_iteration_output.py input.json -o results/ --visualize --workers 8
 ```
 
 #### 命令行参数
@@ -438,6 +475,7 @@ python run_with_iteration_output.py input.json -o results/ --vectorized --visual
 | `--iterations` | 从 input.json 读取 | DSSA 迭代次数，CLI 优先 |
 | `--vectorized` | 从 input.json 读取 | 使用向量化覆盖模型（>1000 格推荐），CLI 优先 |
 | `--visualize` | false | 生成可视化图片 |
+| `--workers` | 4 | 可视化并行生成的工作进程数，默认为 4（避免占用全部 CPU） |
 
 > **优先级**：命令行参数 > input.json 中的 dsssa_config > 默认值（50次迭代）
 

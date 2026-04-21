@@ -355,40 +355,51 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path):
 def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
     grids = out["grids"]
     summary = out["summary"]
-    # 使用绿色色系：浅绿 → 深绿
-    # 保护效果越高，颜色越深；保护效果越低，颜色越浅
     cmap = matplotlib.colormaps.get_cmap("Greens")
-    norm = Normalize(vmin=0, vmax=1)
-
-    fig, ax, ax_cbar, ax_leg = make_figure(has_colorbar=True)
-
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g["protection_benefit_normalized"])))
-
-    setup_map_ax(ax, grids, hex_size)
-    draw_boundary(ax, grids, boundary_xy, hex_size)
-    ax.set_title("Protection Benefit", fontsize=13, fontweight="bold", pad=8)
-
-    add_colorbar(fig, ax_cbar, cmap, norm, "Protection Benefit (norm.)")
 
     summary_items = [
         ("Best Fitness", f"{summary['best_fitness']:.4f}"),
         ("Total PB",     f"{summary['total_protection_benefit']:.4f}"),
         ("Avg PB",       f"{summary['average_protection_benefit']:.4f}"),
     ]
-    y = 0.97
-    ax_leg.text(0.05, y, "Summary", transform=ax_leg.transAxes,
-                fontsize=9, fontweight="bold", va="top")
-    y -= 0.09
-    for k, v in summary_items:
-        ax_leg.text(0.05, y, f"{k}: {v}", transform=ax_leg.transAxes,
-                    fontsize=8, va="top", fontfamily="monospace")
-        y -= 0.09
 
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  saved: {save_path}")
+    def _draw(title, value_key, vmax, path):
+        norm = Normalize(vmin=0, vmax=vmax if vmax > 0 else 1)
+        fig, ax, ax_cbar, ax_leg = make_figure(has_colorbar=True)
+
+        for g in grids:
+            cx, cy = grid_center(g["q"], g["r"], hex_size)
+            draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g.get(value_key, 0))))
+
+        setup_map_ax(ax, grids, hex_size)
+        draw_boundary(ax, grids, boundary_xy, hex_size)
+        ax.set_title(title, fontsize=13, fontweight="bold", pad=8)
+        add_colorbar(fig, ax_cbar, cmap, norm, f"Protection Benefit ({value_key.split('_')[-1]})")
+
+        y = 0.97
+        ax_leg.text(0.05, y, "Summary", transform=ax_leg.transAxes,
+                    fontsize=9, fontweight="bold", va="top")
+        y -= 0.09
+        for k, v in summary_items:
+            ax_leg.text(0.05, y, f"{k}: {v}", transform=ax_leg.transAxes,
+                        fontsize=8, va="top", fontfamily="monospace")
+            y -= 0.09
+
+        fig.savefig(path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  saved: {path}")
+
+    # Normalized
+    norm_max = max((g.get("protection_benefit_normalized", 0) for g in grids), default=1)
+    _draw("Protection Benefit (Normalized)", "protection_benefit_normalized",
+          norm_max, save_path)
+
+    # Raw — derive save path by inserting _raw before extension
+    base, ext = os.path.splitext(save_path)
+    raw_path = f"{base}_raw{ext}"
+    raw_max = max((g.get("protection_benefit_raw", 0) for g in grids), default=1)
+    _draw("Protection Benefit (Raw)", "protection_benefit_raw",
+          raw_max, raw_path)
 
 
 def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
