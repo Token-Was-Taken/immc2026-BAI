@@ -68,17 +68,36 @@ def prepare_input_with_config(input_path: str, cli_iterations: int = None, cli_o
     return temp_path.name, config_vectorized
 
 
+def _compute_global_vmaxes(iter_viz_dir: str) -> tuple:
+    """Scan all JSON files in an iteration viz dir and return global vmax for norm and raw PB."""
+    norm_vmax = 0.0
+    raw_vmax = 0.0
+    for fname in os.listdir(iter_viz_dir):
+        if not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(iter_viz_dir, fname), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            for g in data.get('grids', []):
+                norm_vmax = max(norm_vmax, g.get('protection_benefit_normalized', 0))
+                raw_vmax  = max(raw_vmax,  g.get('protection_benefit_raw', 0))
+        except Exception:
+            pass
+    return norm_vmax or 1.0, raw_vmax or 1.0
+
+
 def _generate_single_visualization(args_tuple):
     """Worker function for parallel visualization generation (lightweight version)."""
-    json_path, input_path, out_dir = args_tuple
+    json_path, input_path, out_dir, pb_norm_vmax, pb_raw_vmax = args_tuple
     from visualize_iteration import main as visualize_main
     import matplotlib
     matplotlib.use('Agg')
     import sys
-    
+
     original_argv = sys.argv
     try:
-        sys.argv = ['visualize_iteration.py', json_path, '--input', input_path, '--out_dir', out_dir]
+        sys.argv = ['visualize_iteration.py', json_path, '--input', input_path, '--out_dir', out_dir,
+                    '--pb-norm-vmax', str(pb_norm_vmax), '--pb-raw-vmax', str(pb_raw_vmax)]
         visualize_main()
         return True
     except Exception as e:
@@ -88,30 +107,36 @@ def _generate_single_visualization(args_tuple):
         sys.argv = original_argv
 
 
-def _generate_iteration_visualizations(iter_viz_dir: str, input_path: str, iter_name: str, output_dir: str, max_workers: int = 4):
+def _generate_iteration_visualizations(iter_viz_dir: str, input_path: str, iter_name: str, output_dir: str,
+                                        max_workers: int = 4, pb_norm_vmax: float = None, pb_raw_vmax: float = None):
     """Generate visualizations for all JSON files in an iteration directory using parallel processing."""
     from concurrent.futures import ProcessPoolExecutor, as_completed
     import multiprocessing
-    
+
     try:
         json_files = sorted([f for f in os.listdir(iter_viz_dir) if f.endswith('.json')])
         if not json_files:
             print(f"  No JSON files found in {iter_name}")
             return
-        
+
+        # Fall back to per-iteration vmax if global not provided
+        if pb_norm_vmax is None or pb_raw_vmax is None:
+            pb_norm_vmax, pb_raw_vmax = _compute_global_vmaxes(iter_viz_dir)
+
         tasks = []
         for json_file in json_files:
             json_path = os.path.join(iter_viz_dir, json_file)
             out_subdir = os.path.join(output_dir, 'figures', iter_name)
             os.makedirs(out_subdir, exist_ok=True)
-            
+
             base_name = json_file.replace('.json', '')
             out_dir = os.path.join(out_subdir, base_name)
-            
-            tasks.append((json_path, input_path, out_dir))
-        
+
+            tasks.append((json_path, input_path, out_dir, pb_norm_vmax, pb_raw_vmax))
+
         print(f"  Generating {len(tasks)} visualizations in {iter_name} with {max_workers} workers...")
-        
+        print(f"  PB vmax — normalized: {pb_norm_vmax:.4f}, raw: {pb_raw_vmax:.4f}")
+
         with ProcessPoolExecutor(max_workers=min(max_workers, multiprocessing.cpu_count())) as executor:
             futures = [executor.submit(_generate_single_visualization, task) for task in tasks]
             completed = 0
@@ -123,7 +148,7 @@ def _generate_iteration_visualizations(iter_viz_dir: str, input_path: str, iter_
                 completed += 1
                 if completed % 10 == 0:
                     print(f"    Progress: {completed}/{len(tasks)}")
-        
+
         print(f"  Completed {len(tasks)} visualizations for {iter_name}")
     except Exception as e:
         print(f"  Warning: Failed to generate visualizations: {e}")
@@ -182,21 +207,32 @@ def main():
         ])
         
         print(f"Found {len(iteration_dirs)} iteration directories")
-        
+
+        # Pass 1: postprocess all iterations
         for iter_dir in iteration_dirs:
             iter_full_path = os.path.join(iteration_output_dir, iter_dir)
             iter_viz_dir = os.path.join(viz_base_dir, iter_dir)
-            
             print(f"Post-processing {iter_dir}...")
             try:
                 final_output = os.path.join(output_dir, 'final_output.json')
                 postprocess_iteration(iter_full_path, input_path, iter_viz_dir, final_output_path=final_output)
-                
-                if args.visualize:
-                    print(f"  Generating visualizations for {iter_dir}...")
-                    _generate_iteration_visualizations(iter_viz_dir, input_path, iter_dir, output_dir, max_workers=args.workers)
             except Exception as e:
                 print(f"  Warning: Failed to post-process {iter_dir}: {e}")
+
+        # Pass 2: compute global vmax across ALL iterations, then visualize
+        if args.visualize:
+            from visualize_iterations import compute_all_iterations_vmaxes
+            pb_norm_vmax, pb_raw_vmax = compute_all_iterations_vmaxes(viz_base_dir, iteration_dirs)
+
+            for iter_dir in iteration_dirs:
+                iter_viz_dir = os.path.join(viz_base_dir, iter_dir)
+                if not os.path.isdir(iter_viz_dir):
+                    continue
+                print(f"  Generating visualizations for {iter_dir}...")
+                _generate_iteration_visualizations(iter_viz_dir, input_path, iter_dir, output_dir,
+                                                   max_workers=args.workers,
+                                                   pb_norm_vmax=pb_norm_vmax,
+                                                   pb_raw_vmax=pb_raw_vmax)
     else:
         print("Warning: No iteration output directory found")
     

@@ -181,7 +181,8 @@ def draw_risk_comparison(out, out_map, hex_size, out_dir):
     plt.close(fig)
 
 
-def draw_protection_heatmap(out, out_map, hex_size, out_dir):
+def draw_protection_heatmap(out, out_map, hex_size, out_dir,
+                            global_norm_vmax=None, global_raw_vmax=None):
     """Draw protection benefit heatmap - both normalized and raw versions."""
     grids = [out_map[gid] for gid in sorted(out_map.keys())]
     summary = out.get('summary', {})
@@ -191,14 +192,14 @@ def draw_protection_heatmap(out, out_map, hex_size, out_dir):
         f"Avg PB: {summary.get('average_protection_benefit', 0):.4f}",
     ]
 
-    def _draw(title, value_key, filename, vmin, vmax):
+    def _draw(title, value_key, filename, vmax):
         fig = plt.figure(figsize=(14, 9))
         ax_map  = fig.add_axes([0.02, 0.06, 0.70, 0.86])
         ax_cbar = fig.add_axes([0.74, 0.12, 0.025, 0.62])
         ax_leg  = fig.add_axes([0.80, 0.06, 0.18, 0.86])
 
         setup_map_ax(ax_map, grids, hex_size)
-        norm = Normalize(vmin=vmin, vmax=vmax)
+        norm = Normalize(vmin=0, vmax=vmax if vmax > 0 else 1)
         cmap = cm.Greens
 
         for g in grids:
@@ -223,6 +224,11 @@ def draw_protection_heatmap(out, out_map, hex_size, out_dir):
         sm.set_array([])
         cbar = plt.colorbar(sm, cax=ax_cbar)
         cbar.ax.tick_params(labelsize=8)
+        # Mark the global vmax with a tick label
+        cbar.set_ticks([0, vmax * 0.25, vmax * 0.5, vmax * 0.75, vmax])
+        cbar.set_ticklabels([f'{0:.3f}', f'{vmax*0.25:.3f}',
+                             f'{vmax*0.5:.3f}', f'{vmax*0.75:.3f}',
+                             f'{vmax:.3f} ▲'])
 
         for i, text in enumerate(stats):
             ax_leg.text(0.1, 0.9 - i * 0.1, text, transform=ax_leg.transAxes, fontsize=11)
@@ -230,17 +236,15 @@ def draw_protection_heatmap(out, out_map, hex_size, out_dir):
         fig.savefig(os.path.join(out_dir, filename), dpi=150, bbox_inches='tight')
         plt.close(fig)
 
-    # Normalized [0, max]
     pb_norm_vals = [g.get('protection_benefit_normalized', 0) for g in grids]
+    norm_vmax = global_norm_vmax if global_norm_vmax is not None else (max(pb_norm_vals) if pb_norm_vals else 1)
     _draw("Protection Benefit Heatmap (Normalized)",
-          'protection_benefit_normalized', 'protection_heatmap.png',
-          vmin=0, vmax=max(pb_norm_vals) if pb_norm_vals else 1)
+          'protection_benefit_normalized', 'protection_heatmap.png', norm_vmax)
 
-    # Raw
     pb_raw_vals = [g.get('protection_benefit_raw', 0) for g in grids]
+    raw_vmax = global_raw_vmax if global_raw_vmax is not None else (max(pb_raw_vals) if pb_raw_vals else 1)
     _draw("Protection Benefit Heatmap (Raw)",
-          'protection_benefit_raw', 'protection_heatmap_raw.png',
-          vmin=0, vmax=max(pb_raw_vals) if pb_raw_vals else 1)
+          'protection_benefit_raw', 'protection_heatmap_raw.png', raw_vmax)
 
 
 def main():
@@ -248,6 +252,29 @@ def main():
     parser.add_argument('output_json', help="Output JSON file from iteration")
     parser.add_argument('--input', '-i', help="Input JSON (for grid info)", default=None)
     parser.add_argument('--out_dir', '-o', default='./figures', help="Output directory")
+    parser.add_argument('--pb-norm-vmax', type=float, default=None, help="Global vmax for normalized PB colorbar")
+    parser.add_argument('--pb-raw-vmax', type=float, default=None, help="Global vmax for raw PB colorbar")
+
+    args = parser.parse_args()
+
+    os.makedirs(args.out_dir, exist_ok=True)
+
+    out, out_map, hex_size = load_data(args.output_json, args.input)
+
+    print(f"Generating lightweight visualizations for iteration...")
+    draw_terrain_deployment_map(out, out_map, hex_size, args.out_dir)
+    print(f"  saved: terrain_deployment_map.png")
+
+    draw_risk_comparison(out, out_map, hex_size, args.out_dir)
+    print(f"  saved: risk_comparison.png")
+
+    draw_protection_heatmap(out, out_map, hex_size, args.out_dir,
+                            global_norm_vmax=args.pb_norm_vmax,
+                            global_raw_vmax=args.pb_raw_vmax)
+    print(f"  saved: protection_heatmap.png")
+    print(f"  saved: protection_heatmap_raw.png")
+
+    print("Done!")
     
     args = parser.parse_args()
     

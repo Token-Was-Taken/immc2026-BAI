@@ -31,6 +31,10 @@
                                     ▼
                               [run_with_iteration_output.py]  ← 迭代输出版
                               优化 + 每轮迭代JSON输出 + 可视化
+                                         │
+                                    已有迭代结果时：
+                                    [visualize_iterations.py] ← 独立可视化
+                                    后处理 + 批量出图（支持全局色阶）
 ```
 
 ---
@@ -475,9 +479,9 @@ python run_with_iteration_output.py input.json -o results/ --visualize --workers
 | `--iterations` | 从 input.json 读取 | DSSA 迭代次数，CLI 优先 |
 | `--vectorized` | 从 input.json 读取 | 使用向量化覆盖模型（>1000 格推荐），CLI 优先 |
 | `--visualize` | false | 生成可视化图片 |
-| `--workers` | 4 | 可视化并行生成的工作进程数，默认为 4（避免占用全部 CPU） |
+| `--workers` | 4 | 可视化并行生成的工作进程数 |
 
-> **优先级**：命令行参数 > input.json 中的 dsssa_config > 默认值（50次迭代）
+> **优先级**：命令行参数 > input.json 中的 `dssa_config` > 默认值（50次迭代）
 
 #### 输出结构
 
@@ -488,22 +492,32 @@ results/
 │   ├── iteration_0000/
 │   │   ├── producers.json         # producer 个体列表
 │   │   ├── followers.json         # follower 个体列表
-│   │   └── scouts.json           # scout 个体列表
+│   │   └── scouts.json            # scout 个体列表
 │   ├── iteration_0001/
 │   └── ...
-├── visualization/                 # 转换后的可视化格式（可选）
+├── visualization/                 # 转换后的可视化格式 JSON（postprocess 产物）
 │   ├── iteration_0000/
-│   │   ├── producers.json
+│   │   ├── producers_000.json
 │   │   └── ...
 │   └── ...
-└── figures/                       # 可视化图片（可选）
+└── figures/                       # 可视化图片
+    ├── iteration_0000/
+    │   ├── producers_000/
+    │   │   ├── terrain_deployment_map.png
+    │   │   ├── risk_comparison.png
+    │   │   ├── protection_heatmap.png      # 归一化保护收益（全局色阶）
+    │   │   └── protection_heatmap_raw.png  # 原始保护收益（全局色阶）
+    │   └── ...
+    └── ...
 ```
+
+> 同一迭代内所有解的保护收益热力图使用**全局统一色阶**（global vmax），确保不同解之间颜色可直接对比。
 
 #### 迭代结果后处理
 
 **文件**：`hexdynamic/postprocess_iteration.py`
 
-将迭代输出转换为 `visualize_output.py` 可用的格式：
+将迭代输出转换为可视化格式（单个迭代目录）：
 
 ```bash
 python hexdynamic/postprocess_iteration.py <迭代目录> <原始input_json> [-o 输出目录]
@@ -512,9 +526,50 @@ python hexdynamic/postprocess_iteration.py <迭代目录> <原始input_json> [-o
 python hexdynamic/postprocess_iteration.py ./results/iterations/iteration_0005 input.json -o ./viz/
 ```
 
-#### DSSAConfig 新增参数
+#### 批量迭代可视化（推荐）
 
-在输入 JSON 的 `dssa_config` 中可配置迭代输出：
+**文件**：`hexdynamic/visualize_iterations.py`
+
+对已有的迭代输出目录一键完成后处理 + 可视化，无需重新运行优化。
+
+```bash
+cd hexdynamic
+
+# 基本用法
+python visualize_iterations.py ./output_results/iterations --input sensitivity/base.json
+
+# 指定 final_output.json 以获取准确风险数据（推荐）
+python visualize_iterations.py ./output_results/iterations \
+    --input sensitivity/base.json \
+    --final-output ./output_results/final_output.json \
+    --out-dir ./output_results/figures \
+    --workers 8
+
+# 跳过后处理步骤（viz JSON 已存在时）
+python visualize_iterations.py ./output_results/iterations \
+    --input sensitivity/base.json \
+    --skip-postprocess
+
+# 只处理特定迭代
+python visualize_iterations.py ./output_results/iterations \
+    --input sensitivity/base.json \
+    --iterations iteration_0000 iteration_0099
+```
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `iterations_dir` | 必填 | 迭代输出目录（如 `output_results/iterations`） |
+| `--input, -i` | 必填 | 原始输入 JSON |
+| `--final-output, -f` | None | `final_output.json` 路径，用于准确的风险数据 |
+| `--viz-dir` | `<parent>/visualization` | 后处理 JSON 输出目录 |
+| `--out-dir, -o` | `<parent>/figures` | 图片输出目录 |
+| `--workers, -w` | 4 | 并行工作进程数 |
+| `--skip-postprocess` | false | 跳过后处理，直接使用已有 viz JSON |
+| `--iterations` | 全部 | 只处理指定迭代，空格分隔 |
+
+#### DSSAConfig 迭代输出参数
+
+在输入 JSON 的 `dssa_config` 中配置迭代输出目录：
 
 ```json
 "dssa_config": {
@@ -523,7 +578,7 @@ python hexdynamic/postprocess_iteration.py ./results/iterations/iteration_0005 i
   "producer_ratio": 0.2,
   "scout_ratio": 0.2,
   "ST": 0.8,
-  "output_dir": "./output_iterations"   // 迭代输出目录
+  "output_dir": "./output_iterations"
 }
 ```
 
@@ -908,7 +963,8 @@ python visualize_output.py output.json --input pipeline_input.json --out_dir ./f
 | :--- | :--- | :---: |
 | `risk_heatmap.png` | 部署前风险热力图，右侧显示 Total PB / Average PB / Best Fitness | YlOrRd |
 | `risk_comparison.png` | 部署前后风险对比（左：原始风险，右：剩余风险），同色阶便于直接对比 | YlOrRd |
-| `protection_heatmap.png` | 保护收益热力图，叠加摄像头/无人机/营地/巡逻员/围栏图标 | RdYlGn |
+| `protection_heatmap.png` | 保护收益热力图（归一化），叠加摄像头/无人机/营地/巡逻员/围栏图标 | Greens |
+| `protection_heatmap_raw.png` | 保护收益热力图（原始值），与归一化版使用相同布局，便于跨方案绝对值对比 | Greens |
 | `terrain_map.png` | 地形颜色地图 | — |
 | `terrain_deployment_map.png` | 地形底图 + 部署资源图标叠加 | — |
 | `species_map.png` | 地形底图 + 物种密度图标（大小正比于密度，形状区分物种） | — |
@@ -1056,4 +1112,142 @@ python sensitivity_report.py sensitivity_results/sensitivity_camera.json
 # 3. 批量生成所有资源的报告
 python sensitivity_analysis.py --input base_input.json --resource all --vectorized
 python sensitivity_report.py sensitivity_results/ --all --out_dir ./reports
+```
+
+---
+
+## 九、蒙特卡洛鲁棒性分析
+
+**文件**：`hexdynamic/monte_carlo_robust.py`
+
+对资源约束进行随机采样，运行 N 次 DSSA 优化试验，统计优化结果的分布，评估部署方案在不同资源配置下的鲁棒性。
+
+### 用法
+
+```bash
+cd hexdynamic
+
+# 基本用法（100 次试验，结果保存到 ./robust_results）
+python monte_carlo_robust.py base_config.json
+
+# 指定试验次数和输出目录
+python monte_carlo_robust.py base_config.json --num-trials 200 --output-dir ./mc_results
+
+# 固定随机种子（可复现）
+python monte_carlo_robust.py base_config.json --seed 42
+
+# 并行加速（使用 4 个进程）
+python monte_carlo_robust.py base_config.json --num-trials 500 --workers 4
+
+# 只生成汇总 JSON，跳过图表
+python monte_carlo_robust.py base_config.json --no-visualize
+```
+
+### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `base_config` | 必填 | 基础输入 JSON 路径（地图、地形、DSSA 配置等） |
+| `--num-trials N` | 100 | 蒙特卡洛试验次数 |
+| `--output-dir DIR` | `./robust_results` | 输出目录（试验 JSON + 图表） |
+| `--seed SEED` | None | 随机种子，设置后结果可复现 |
+| `--workers W` | `os.cpu_count()` | 并行工作进程数；`--workers 1` 为顺序执行 |
+| `--no-visualize` | false | 跳过图表生成，只写 `results_summary.json` |
+
+### 资源约束采样分布
+
+每次试验从以下均匀分布中独立采样（整数，端点包含）：
+
+| 参数 | 分布 | 范围 |
+| :--- | :--- | :--- |
+| `total_patrol` | Uniform | [15, 25] |
+| `total_drones` | Uniform | [2, 6] |
+| `total_cameras` | Uniform | [8, 15] |
+| `total_camps` | Uniform | [3, 7] |
+
+其余约束字段（`total_fence_length`、`max_rangers_per_camp` 等）保持基础配置不变。
+
+### 输出
+
+```
+robust_results/
+├── trial_0000_input.json      # 每次试验的输入 JSON（含采样约束）
+├── trial_0000_output.json     # 每次试验的优化输出 JSON
+├── trial_0001_input.json
+├── trial_0001_output.json
+├── ...
+├── results_summary.json       # 所有试验汇总
+└── robustness_analysis.png    # 鲁棒性分析图表
+```
+
+#### `results_summary.json` 格式
+
+```jsonc
+{
+  "meta": {
+    "base_config": "robust/base.json",
+    "num_trials": 100,
+    "seed": 42,
+    "workers": 8,
+    "successful_trials": 97,
+    "failed_trials": 3,
+    "elapsed_seconds": 142.7,
+    "trials_per_second": 0.68
+  },
+  "trials": [
+    {
+      "trial": 0,
+      "success": true,
+      "constraints": {
+        "total_patrol": 18,
+        "total_drones": 4,
+        "total_cameras": 11,
+        "total_camps": 5
+      },
+      "best_fitness": 0.423,
+      "total_protection_benefit": 12.7,
+      "error": null
+    }
+  ]
+}
+```
+
+#### `robustness_analysis.png` 图表布局
+
+3 行 × 2 列共 6 个子图：
+
+| 位置 | 内容 |
+| :--- | :--- |
+| 第 1 行左 | `best_fitness` 分布直方图（标注 mean / std / min / max） |
+| 第 1 行右 | `total_protection_benefit` 分布直方图（同上） |
+| 第 2 行左 | `total_patrol` vs `best_fitness` 散点图 + 线性趋势线 |
+| 第 2 行右 | `total_drones` vs `best_fitness` 散点图 + 线性趋势线 |
+| 第 3 行左 | `total_cameras` vs `best_fitness` 散点图 + 线性趋势线 |
+| 第 3 行右 | `total_camps` vs `best_fitness` 散点图 + 线性趋势线 |
+
+成功试验少于 2 次时跳过图表生成并打印警告。
+
+### 并行执行说明
+
+- 默认使用 `os.cpu_count()` 个进程并行运行试验（`ProcessPoolExecutor`）
+- 所有约束采样在主进程中预先生成，保证相同 `--seed` 下无论 `--workers` 取何值，采样序列完全一致
+- `--workers 1` 退化为顺序执行（无子进程开销），适合调试
+- 各试验的输入/输出 JSON 写入独立文件，进程间无共享状态
+
+### 典型工作流
+
+```bash
+# 1. 准备基础配置（可用 generate_map.py 或 marker 工具生成）
+python generate_map.py -m 15 -n 15 --seed 0 -o robust/base.json
+
+# 2. 运行蒙特卡洛分析（固定种子，4 进程并行）
+python monte_carlo_robust.py robust/base.json \
+    --num-trials 200 --seed 42 --workers 4 --output-dir ./mc_results
+
+# 3. 查看汇总结果
+#    mc_results/results_summary.json  — 所有试验数据
+#    mc_results/robustness_analysis.png — 分布图表
+
+# 4. 复现特定试验（直接用保存的 trial_XXXX_input.json）
+python run.py mc_results/trial_0003_input.json mc_results/trial_0003_rerun.json
 ```

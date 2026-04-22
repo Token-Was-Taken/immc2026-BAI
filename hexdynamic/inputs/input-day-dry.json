@@ -2802,7 +2802,7 @@
   },
   "dssa_config": {
     "population_size": 80,
-    "max_iterations": 100,
+    "max_iterations": 150,
     "producer_ratio": 0.25,
     "scout_ratio": 0.15,
     "ST": 0.7,
