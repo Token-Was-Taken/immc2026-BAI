@@ -51,6 +51,11 @@ def parse_args(argv=None):
         help="Random seed for reproducibility.",
     )
     parser.add_argument(
+        "--vectorized",
+        action="store_true",
+        help="Use the vectorized coverage model (recommended for grids > 1000).",
+    )
+    parser.add_argument(
         "--no-visualize",
         action="store_true",
         help="Skip chart generation; write summary JSON only.",
@@ -115,7 +120,8 @@ def sample_constraints(rng: np.random.Generator) -> dict:
 # Placeholder stubs (implemented in later tasks)
 # ---------------------------------------------------------------------------
 
-def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, output_dir: str) -> dict:
+def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, output_dir: str,
+              vectorized: bool = False) -> dict:
     """Execute one Monte Carlo trial.
 
     Deep-copies base_config, overrides the four constraint fields, writes
@@ -162,7 +168,7 @@ def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, outpu
             json.dump(trial_config, fh)
 
         # Run the pipeline
-        run_pipeline(input_path, output_path)
+        run_pipeline(input_path, output_path, vectorized=vectorized)
 
         # Read output and extract metrics
         with open(output_path, "r", encoding="utf-8") as fh:
@@ -186,15 +192,16 @@ def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, outpu
 def _parallel_worker(args_tuple):
     """Top-level picklable worker function for ProcessPoolExecutor.
 
-    Unpacks (base_config, constraints, trial_idx, output_dir) and delegates
+    Unpacks (base_config, constraints, trial_idx, output_dir, vectorized) and delegates
     to run_trial. Must be defined at module level so it can be pickled on
     Windows (spawn start method).
     """
-    base_config, constraints, trial_idx, output_dir = args_tuple
-    return run_trial(base_config, constraints, trial_idx, output_dir)
+    base_config, constraints, trial_idx, output_dir, vectorized = args_tuple
+    return run_trial(base_config, constraints, trial_idx, output_dir, vectorized=vectorized)
 
 
-def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed, workers: int = 1) -> list:
+def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed,
+                    workers: int = 1, vectorized: bool = False) -> list:
     """Orchestrate N Monte Carlo trials and return a list of trial records.
 
     Pre-generates all N Constraint_Sample dicts in the main process before
@@ -229,7 +236,7 @@ def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed, w
         # Sequential fallback — no subprocess overhead, useful for debugging/testing.
         for i in range(num_trials):
             try:
-                record = run_trial(base_config, all_constraints[i], i, output_dir)
+                record = run_trial(base_config, all_constraints[i], i, output_dir, vectorized=vectorized)
             except Exception as exc:  # noqa: BLE001
                 print(f"[Trial {i + 1}/{num_trials}] FAILED: {exc}")
                 record = {
@@ -245,7 +252,7 @@ def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed, w
     else:
         # Parallel execution via ProcessPoolExecutor.
         args_list = [
-            (base_config, all_constraints[i], i, output_dir)
+            (base_config, all_constraints[i], i, output_dir, vectorized)
             for i in range(num_trials)
         ]
 
@@ -394,7 +401,8 @@ def main(argv=None):
     base_config = load_base_config(args.base_config)
 
     t_start = time.monotonic()
-    results = run_monte_carlo(base_config, args.num_trials, args.output_dir, args.seed, args.workers)
+    results = run_monte_carlo(base_config, args.num_trials, args.output_dir, args.seed,
+                              args.workers, vectorized=args.vectorized)
     elapsed = time.monotonic() - t_start
 
     meta = {

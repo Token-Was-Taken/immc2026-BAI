@@ -1139,6 +1139,9 @@ python monte_carlo_robust.py base_config.json --seed 42
 # 并行加速（使用 4 个进程）
 python monte_carlo_robust.py base_config.json --num-trials 500 --workers 4
 
+# 向量化模式（大规模网格推荐）
+python monte_carlo_robust.py base_config.json --vectorized
+
 # 只生成汇总 JSON，跳过图表
 python monte_carlo_robust.py base_config.json --no-visualize
 ```
@@ -1152,6 +1155,7 @@ python monte_carlo_robust.py base_config.json --no-visualize
 | `--output-dir DIR` | `./robust_results` | 输出目录（试验 JSON + 图表） |
 | `--seed SEED` | None | 随机种子，设置后结果可复现 |
 | `--workers W` | `os.cpu_count()` | 并行工作进程数；`--workers 1` 为顺序执行 |
+| `--vectorized` | false | 使用向量化覆盖模型（网格数 >1000 推荐） |
 | `--no-visualize` | false | 跳过图表生成，只写 `results_summary.json` |
 
 ### 资源约束采样分布
@@ -1240,9 +1244,9 @@ robust_results/
 # 1. 准备基础配置（可用 generate_map.py 或 marker 工具生成）
 python generate_map.py -m 15 -n 15 --seed 0 -o robust/base.json
 
-# 2. 运行蒙特卡洛分析（固定种子，4 进程并行）
+# 2. 运行蒙特卡洛分析（固定种子，4 进程并行，向量化模式）
 python monte_carlo_robust.py robust/base.json \
-    --num-trials 200 --seed 42 --workers 4 --output-dir ./mc_results
+    --num-trials 200 --seed 42 --workers 4 --vectorized --output-dir ./mc_results
 
 # 3. 查看汇总结果
 #    mc_results/results_summary.json  — 所有试验数据
