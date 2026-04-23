@@ -79,6 +79,19 @@ A Monte Carlo robustness analysis script for the wildlife protection optimizatio
 5. THE Robustness_Analysis chart SHALL include scatter plots or line plots showing how fitness and protection benefit vary with each sampled resource parameter (patrol, drones, cameras, camps).
 6. WHEN fewer than 2 successful trials exist, THE Monte_Carlo_Script SHALL skip chart generation and print a warning message instead.
 
+### Requirement 7: Per-Unit Resource Efficiency Analysis
+
+**User Story:** As a researcher, I want to see per-unit resource efficiency metrics alongside the raw stability results, so that I can compare optimizer performance independent of resource scale.
+
+#### Acceptance Criteria
+
+1. WHEN computing trial results, THE Monte_Carlo_Script SHALL compute `resource_efficiency` for each successful trial as `total_protection_benefit / total_resource`, where `total_resource = total_patrol + total_drones + total_cameras + total_camps`.
+2. THE Monte_Carlo_Script SHALL store `resource_efficiency` and `total_resource` in each successful trial record.
+3. THE Robustness_Analysis chart SHALL include a histogram of the `resource_efficiency` distribution across all successful trials, annotated with mean, standard deviation, min, and max.
+4. THE Robustness_Analysis chart SHALL include scatter plots showing how `resource_efficiency` varies with each sampled resource parameter (patrol, drones, cameras, camps).
+5. THE Monte_Carlo_Script SHALL save a separate efficiency analysis chart as `efficiency_analysis.png` in the `--output-dir` containing the efficiency histogram and the four efficiency-vs-resource scatter plots.
+6. WHEN fewer than 2 successful trials exist, THE Monte_Carlo_Script SHALL skip efficiency chart generation and print a warning message instead.
+
 ### Requirement 6: Parallel Trial Execution
 
 **User Story:** As a researcher, I want trials to run in parallel across CPU cores, so that large Monte Carlo simulations complete in a fraction of the sequential time.

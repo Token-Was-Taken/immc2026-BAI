@@ -84,6 +84,17 @@ Uses `rng.randint(low, high+1)` (numpy RNG) so the endpoints are inclusive.
 5. Reads `output_path`, extracts `summary.best_fitness` and `summary.total_protection_benefit`
 6. Returns a trial record dict; on exception, returns a record with `success: false` and the error message
 
+### `compute_efficiency(record) -> dict`
+
+Computes per-unit resource efficiency fields for a successful trial record:
+
+```
+total_resource = total_patrol + total_drones + total_cameras + total_camps
+resource_efficiency = total_protection_benefit / total_resource
+```
+
+Returns a copy of the record augmented with `total_resource` and `resource_efficiency`. Called inside `run_trial` after a successful pipeline execution.
+
 ### Trial Record Schema
 
 ```json
@@ -98,6 +109,8 @@ Uses `rng.randint(low, high+1)` (numpy RNG) so the endpoints are inclusive.
   },
   "best_fitness": 0.423,
   "total_protection_benefit": 12.7,
+  "total_resource": 38,
+  "resource_efficiency": 0.3342,
   "error": null
 }
 ```
@@ -111,6 +124,15 @@ Generates a single figure with 3 rows × 2 columns (6 subplots):
 - Row 3: Scatter `total_cameras` vs fitness | Scatter `total_camps` vs fitness
 
 Each histogram annotates mean ± std, min, max in the plot title or as a text box. Scatter plots include a linear trend line (numpy polyfit degree 1). Figure saved as `robustness_analysis.png` at 150 dpi.
+
+### `plot_efficiency(results, output_dir)`
+
+Generates a separate efficiency analysis figure with 2 rows × 3 columns (but using a 1+4 layout):
+
+- Row 1 (spanning full width or left panel): Histogram of `resource_efficiency` with mean ± std, min, max annotation
+- Row 2 (4 panels): Scatter `total_patrol` vs efficiency | Scatter `total_drones` vs efficiency | Scatter `total_cameras` vs efficiency | Scatter `total_camps` vs efficiency
+
+Each scatter plot includes a linear trend line. Figure saved as `efficiency_analysis.png` at 150 dpi. Skips with a warning if fewer than 2 successful trials.
 
 ## Data Models
 
@@ -182,9 +204,15 @@ Property 6: Parallel results match sequential results
 *For any* base config, seed, and num_trials, running `run_monte_carlo` with `workers=1` (sequential) must produce the same ordered list of constraint samples as running with `workers > 1` (parallel). The fitness values may differ due to optimizer non-determinism, but the constraint sequences must be identical.
 **Validates: Requirements 6.2, 6.3**
 
-## Error Handling
+Property 7: Efficiency computation correctness
+*For any* successful trial record with `total_protection_benefit` B and constraints summing to R, the computed `resource_efficiency` must equal B / R and `total_resource` must equal the sum of the four constraint values.
+**Validates: Requirements 7.1, 7.2**
 
-- Missing/invalid base config: print error, `sys.exit(1)`
+Property 8: Efficiency non-negativity
+*For any* successful trial record, `resource_efficiency` must be greater than or equal to zero (since both benefit and total resource are non-negative).
+**Validates: Requirements 7.1**
+
+## Error Handling
 - Trial exception: catch, log `[Trial X/N] FAILED: <error>`, record `success: false`, continue
 - Fewer than 2 successful trials at chart time: print warning, skip `plot_robustness`
 - Output dir creation: `os.makedirs(output_dir, exist_ok=True)`
@@ -211,5 +239,7 @@ Each property test runs minimum 100 examples.
 - Property 4: `@given(...)` — for any successful trial record dict, all required fields are present and non-null
 - Property 5: `@given(st.lists(...))` — for any list of trial outcomes (some failing), result list length equals input length
 - Property 6: `@given(st.integers(0, 2**31), st.integers(1, 10))` — for any seed and num_trials, sequential and parallel runs produce identical constraint sequences (mock `run_trial` to return constraints only)
+- Property 7: `@given(st.floats(0, 1000), st.integers(15,25), st.integers(2,6), st.integers(8,15), st.integers(3,7))` — for any benefit and constraint values, `compute_efficiency` returns `benefit / (patrol+drones+cameras+camps)` and `total_resource` equals the sum
+- Property 8: `@given(st.floats(0, 1000), st.integers(15,25), st.integers(2,6), st.integers(8,15), st.integers(3,7))` — for any non-negative benefit and positive total resource, `resource_efficiency >= 0`
 
 Tag format: `# Feature: monte-carlo-robustness, Property N: <property_text>`

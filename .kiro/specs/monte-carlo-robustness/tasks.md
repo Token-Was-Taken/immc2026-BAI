@@ -115,6 +115,36 @@ Implement `hexdynamic/monte_carlo_robust.py` as a standalone script that runs N 
 - [x] 10. Final checkpoint — Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
+- [-] 11. Implement per-unit resource efficiency computation
+  - Add `compute_efficiency(record) -> dict` function that computes:
+    - `total_resource = total_patrol + total_drones + total_cameras + total_camps`
+    - `resource_efficiency = total_protection_benefit / total_resource`
+  - Call `compute_efficiency` inside `run_trial` after a successful pipeline execution and merge the result into the trial record
+  - _Requirements: 7.1, 7.2_
+
+- [ ]* 11.1 Write property test for efficiency computation correctness
+  - **Property 7: Efficiency computation correctness**
+  - **Validates: Requirements 7.1, 7.2**
+  - Use `@given(st.floats(0, 1000), st.integers(15,25), st.integers(2,6), st.integers(8,15), st.integers(3,7))` to verify `resource_efficiency == benefit / total_resource` and `total_resource == sum of four constraints`
+  - `# Feature: monte-carlo-robustness, Property 7: Efficiency computation correctness`
+
+- [ ]* 11.2 Write property test for efficiency non-negativity
+  - **Property 8: Efficiency non-negativity**
+  - **Validates: Requirements 7.1**
+  - Use `@given` with non-negative benefit and positive resource counts to verify `resource_efficiency >= 0`
+  - `# Feature: monte-carlo-robustness, Property 8: Efficiency non-negativity`
+
+- [ ] 12. Implement efficiency analysis chart
+  - Add `plot_efficiency(results, output_dir)` function:
+    - Filter to successful trials with non-null `resource_efficiency`; skip with warning if fewer than 2
+    - Create a 2-row figure: Row 1 = histogram of `resource_efficiency` with mean/std/min/max annotation; Row 2 = 4 scatter plots of each resource parameter vs `resource_efficiency`, each with a linear trend line
+    - Save as `{output_dir}/efficiency_analysis.png` at 150 dpi
+  - Call `plot_efficiency` from `main()` alongside `plot_robustness` (unless `--no-visualize`)
+  - _Requirements: 7.3, 7.4, 7.5, 7.6_
+
+- [ ] 13. Final checkpoint — Ensure all tests pass
+  - Ensure all tests pass, ask the user if questions arise.
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for a faster MVP

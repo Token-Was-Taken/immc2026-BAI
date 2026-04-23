@@ -117,7 +117,34 @@ def sample_constraints(rng: np.random.Generator) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Placeholder stubs (implemented in later tasks)
+# Efficiency computation
+# ---------------------------------------------------------------------------
+
+def compute_efficiency(record: dict) -> dict:
+    """Augment a successful trial record with per-unit resource efficiency fields.
+
+    Computes:
+        total_resource      = total_patrol + total_drones + total_cameras + total_camps
+        resource_efficiency = total_protection_benefit / total_resource
+
+    Args:
+        record: A successful trial record dict (success=True).
+
+    Returns:
+        The same record dict with `total_resource` and `resource_efficiency` added.
+    """
+    c = record["constraints"]
+    total_resource = (
+        c["total_patrol"] + c["total_drones"] + c["total_cameras"] + c["total_camps"]
+    )
+    benefit = record["total_protection_benefit"] or 0.0
+    record["total_resource"] = total_resource
+    record["resource_efficiency"] = benefit / total_resource if total_resource > 0 else 0.0
+    return record
+
+
+# ---------------------------------------------------------------------------
+# Trial execution
 # ---------------------------------------------------------------------------
 
 def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, output_dir: str,
