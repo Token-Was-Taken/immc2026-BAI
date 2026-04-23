@@ -85,12 +85,35 @@ A Monte Carlo robustness analysis script for the wildlife protection optimizatio
 
 #### Acceptance Criteria
 
-1. WHEN computing trial results, THE Monte_Carlo_Script SHALL compute `resource_efficiency` for each successful trial as `total_protection_benefit / total_resource`, where `total_resource = total_patrol + total_drones + total_cameras + total_camps`.
-2. THE Monte_Carlo_Script SHALL store `resource_efficiency` and `total_resource` in each successful trial record.
+1. WHEN computing trial results, THE Monte_Carlo_Script SHALL compute `resource_efficiency` for each successful trial as `total_protection_benefit / weighted_total_resource`, where `weighted_total_resource = w_patrol * total_patrol + w_drone * total_drones + w_camera * total_cameras + w_camp * total_camps`, and the weights are defined per Requirement 7.1.
+2. THE Monte_Carlo_Script SHALL store `resource_efficiency` and `weighted_total_resource` in each successful trial record.
 3. THE Robustness_Analysis chart SHALL include a histogram of the `resource_efficiency` distribution across all successful trials, annotated with mean, standard deviation, min, and max.
 4. THE Robustness_Analysis chart SHALL include scatter plots showing how `resource_efficiency` varies with each sampled resource parameter (patrol, drones, cameras, camps).
 5. THE Monte_Carlo_Script SHALL save a separate efficiency analysis chart as `efficiency_analysis.png` in the `--output-dir` containing the efficiency histogram and the four efficiency-vs-resource scatter plots.
 6. WHEN fewer than 2 successful trials exist, THE Monte_Carlo_Script SHALL skip efficiency chart generation and print a warning message instead.
+
+#### Requirement 7.1: Resource Weight Configuration
+
+**User Story:** As a researcher, I want to assign different importance weights to each resource type when computing efficiency, so that the efficiency metric reflects the relative cost or strategic value of each resource rather than treating all resources equally.
+
+**Rationale:** Different resource types have vastly different per-unit costs. A patrol ranger and a camera are not equivalent; weighting them equally would distort the efficiency metric. Weighted aggregation normalizes for cost differences.
+
+##### Acceptance Criteria
+
+1. THE Monte_Carlo_Script SHALL define default resource weights as follows:
+
+   | Resource | Default Weight | Rationale |
+   |----------|---------------|-----------|
+   | patrol   | 0.40          | Most labor-intensive; highest per-unit cost |
+   | camp     | 0.25          | Infrastructure cost; supports patrol logistics |
+   | drone    | 0.20          | Equipment + maintenance cost |
+   | camera   | 0.15          | Lowest per-unit cost; fixed infrastructure |
+
+2. THE sum of all resource weights SHALL equal 1.0. IF user-provided weights do not sum to 1.0, THE Monte_Carlo_Script SHALL normalize them by dividing each weight by the sum.
+3. THE Monte_Carlo_Script SHALL accept an optional `--weights` command-line argument as a comma-separated string `patrol:w,camp:w,drone:w,camera:w` (e.g., `--weights patrol:0.4,camp:0.25,drone:0.2,camera:0.15`). WHEN provided, these weights override the defaults.
+4. THE Monte_Carlo_Script SHALL also read weights from the Base_Config JSON under the key `robustness_weights` (e.g., `{"patrol": 0.4, "camp": 0.25, "drone": 0.2, "camera": 0.15}`). WHEN both CLI `--weights` and JSON `robustness_weights` are provided, CLI SHALL take precedence.
+5. THE Monte_Carlo_Script SHALL record the effective weights used (after normalization) in the `meta` block of `results_summary.json` for reproducibility.
+6. THE efficiency analysis chart SHALL display the effective weights in a subtitle or annotation.
 
 ### Requirement 6: Parallel Trial Execution
 

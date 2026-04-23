@@ -115,34 +115,62 @@ Implement `hexdynamic/monte_carlo_robust.py` as a standalone script that runs N 
 - [x] 10. Final checkpoint — Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
-- [-] 11. Implement per-unit resource efficiency computation
-  - Add `compute_efficiency(record) -> dict` function that computes:
-    - `total_resource = total_patrol + total_drones + total_cameras + total_camps`
-    - `resource_efficiency = total_protection_benefit / total_resource`
+- [x] 11. Implement per-unit resource efficiency computation
+  - Add `compute_efficiency(record, weights) -> dict` function that computes:
+    - `weighted_total_resource = w_patrol * total_patrol + w_drone * total_drones + w_camera * total_cameras + w_camp * total_camps`
+    - `resource_efficiency = total_protection_benefit / weighted_total_resource`
   - Call `compute_efficiency` inside `run_trial` after a successful pipeline execution and merge the result into the trial record
   - _Requirements: 7.1, 7.2_
 
-- [ ]* 11.1 Write property test for efficiency computation correctness
+- [x] 11.1 Write property test for efficiency computation correctness
+
   - **Property 7: Efficiency computation correctness**
   - **Validates: Requirements 7.1, 7.2**
-  - Use `@given(st.floats(0, 1000), st.integers(15,25), st.integers(2,6), st.integers(8,15), st.integers(3,7))` to verify `resource_efficiency == benefit / total_resource` and `total_resource == sum of four constraints`
+  - Use `@given(st.floats(0, 1000), st.integers(15,25), st.integers(2,6), st.integers(8,15), st.integers(3,7))` to verify `resource_efficiency == benefit / weighted_total_resource` and `weighted_total_resource == weighted sum of four constraints`
   - `# Feature: monte-carlo-robustness, Property 7: Efficiency computation correctness`
 
-- [ ]* 11.2 Write property test for efficiency non-negativity
+- [x] 11.2 Write property test for efficiency non-negativity
+
   - **Property 8: Efficiency non-negativity**
   - **Validates: Requirements 7.1**
   - Use `@given` with non-negative benefit and positive resource counts to verify `resource_efficiency >= 0`
   - `# Feature: monte-carlo-robustness, Property 8: Efficiency non-negativity`
 
-- [ ] 12. Implement efficiency analysis chart
-  - Add `plot_efficiency(results, output_dir)` function:
+- [ ] 11.3 Implement resource weight configuration
+  - Add `DEFAULT_WEIGHTS` dict: `{"patrol": 0.40, "camp": 0.25, "drone": 0.20, "camera": 0.15}`
+  - Add `--weights` CLI argument accepting format `patrol:w,camp:w,drone:w,camera:w`
+  - Add `resolve_weights(cli_weights, base_config) -> dict` function:
+    - If CLI weights provided, parse and use them
+    - Else if `robustness_weights` in base_config, use those
+    - Else use `DEFAULT_WEIGHTS`
+    - Normalize weights so they sum to 1.0 (divide each by sum)
+  - Pass resolved weights to `compute_efficiency` and record them in `meta` block
+  - _Requirements: 7.1.1, 7.1.2, 7.1.3, 7.1.4, 7.1.5_
+
+- [ ]* 11.4 Write property test for weight normalization
+  - **Property 9: Weight normalization**
+  - **Validates: Requirements 7.1.2**
+  - Use `@given` with arbitrary positive weight values to verify that after normalization, weights sum to 1.0
+  - `# Feature: monte-carlo-robustness, Property 9: Weight normalization`
+
+- [ ]* 11.5 Write property test for CLI weight precedence
+  - **Property 10: CLI weights override JSON weights**
+  - **Validates: Requirements 7.1.4**
+  - Verify that when both CLI and JSON weights are provided, CLI takes precedence
+  - `# Feature: monte-carlo-robustness, Property 10: CLI weights override JSON weights`
+
+- [ ] 14. Final checkpoint — Ensure all tests pass after weight implementation
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 12. Implement efficiency analysis chart
+  - Add `plot_efficiency(results, output_dir, weights)` function:
     - Filter to successful trials with non-null `resource_efficiency`; skip with warning if fewer than 2
-    - Create a 2-row figure: Row 1 = histogram of `resource_efficiency` with mean/std/min/max annotation; Row 2 = 4 scatter plots of each resource parameter vs `resource_efficiency`, each with a linear trend line
+    - Create a 2-row figure: Row 1 = histogram of `resource_efficiency` with mean/std/min/max annotation and weights subtitle; Row 2 = 4 scatter plots of each resource parameter vs `resource_efficiency`, each with a linear trend line
     - Save as `{output_dir}/efficiency_analysis.png` at 150 dpi
   - Call `plot_efficiency` from `main()` alongside `plot_robustness` (unless `--no-visualize`)
-  - _Requirements: 7.3, 7.4, 7.5, 7.6_
+  - _Requirements: 7.3, 7.4, 7.5, 7.6, 7.1.6_
 
-- [ ] 13. Final checkpoint — Ensure all tests pass
+- [x] 13. Final checkpoint — Ensure all tests pass
   - Ensure all tests pass, ask the user if questions arise.
 
 ## Notes

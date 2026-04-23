@@ -379,3 +379,106 @@ class TestParallelVsSequentialEquivalence:
             f"Sequential run constraint sequence doesn't match pre-generated sequence "
             f"for seed={seed}, num_trials={num_trials}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Property 7: Efficiency computation correctness
+# ---------------------------------------------------------------------------
+
+class TestEfficiencyComputationCorrectness:
+    """Property 7: compute_efficiency returns correct resource_efficiency and total_resource."""
+
+    # Feature: monte-carlo-robustness, Property 7: Efficiency computation correctness
+    @given(
+        st.floats(0, 1000, allow_nan=False, allow_infinity=False),
+        st.integers(15, 25),
+        st.integers(2, 6),
+        st.integers(8, 15),
+        st.integers(3, 7),
+    )
+    @settings(max_examples=100)
+    def test_efficiency_computation_correctness(self, benefit, patrol, drones, cameras, camps):
+        """Property 7: Efficiency computation correctness
+
+        For any total_protection_benefit B and constraint values summing to R,
+        compute_efficiency must satisfy:
+            total_resource      == patrol + drones + cameras + camps
+            resource_efficiency == B / total_resource
+
+        Validates: Requirements 7.1, 7.2
+        """
+        from monte_carlo_robust import compute_efficiency
+
+        record = {
+            "trial": 0,
+            "success": True,
+            "constraints": {
+                "total_patrol": patrol,
+                "total_drones": drones,
+                "total_cameras": cameras,
+                "total_camps": camps,
+            },
+            "best_fitness": 0.5,
+            "total_protection_benefit": benefit,
+            "error": None,
+        }
+
+        result = compute_efficiency(record)
+
+        expected_total = patrol + drones + cameras + camps
+        assert result["total_resource"] == expected_total, (
+            f"total_resource={result['total_resource']} != {expected_total}"
+        )
+
+        expected_efficiency = benefit / expected_total
+        assert abs(result["resource_efficiency"] - expected_efficiency) < 1e-9, (
+            f"resource_efficiency={result['resource_efficiency']} != {expected_efficiency}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Property 8: Efficiency non-negativity
+# ---------------------------------------------------------------------------
+
+class TestEfficiencyNonNegativity:
+    """Property 8: resource_efficiency is always >= 0 for non-negative benefit and positive resources."""
+
+    # Feature: monte-carlo-robustness, Property 8: Efficiency non-negativity
+    @given(
+        st.floats(0, 1000, allow_nan=False, allow_infinity=False),
+        st.integers(15, 25),
+        st.integers(2, 6),
+        st.integers(8, 15),
+        st.integers(3, 7),
+    )
+    @settings(max_examples=100)
+    def test_efficiency_non_negativity(self, benefit, patrol, drones, cameras, camps):
+        """Property 8: Efficiency non-negativity
+
+        For any non-negative total_protection_benefit and positive resource
+        counts, compute_efficiency must return resource_efficiency >= 0.
+
+        Validates: Requirements 7.1
+        """
+        from monte_carlo_robust import compute_efficiency
+
+        record = {
+            "trial": 0,
+            "success": True,
+            "constraints": {
+                "total_patrol": patrol,
+                "total_drones": drones,
+                "total_cameras": cameras,
+                "total_camps": camps,
+            },
+            "best_fitness": 0.5,
+            "total_protection_benefit": benefit,
+            "error": None,
+        }
+
+        result = compute_efficiency(record)
+
+        assert result["resource_efficiency"] >= 0, (
+            f"resource_efficiency={result['resource_efficiency']} is negative "
+            f"for benefit={benefit}, total_resource={result['total_resource']}"
+        )

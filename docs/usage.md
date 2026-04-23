@@ -1157,6 +1157,43 @@ python monte_carlo_robust.py base_config.json --no-visualize
 | `--workers W` | `os.cpu_count()` | 并行工作进程数；`--workers 1` 为顺序执行 |
 | `--vectorized` | false | 使用向量化覆盖模型（网格数 >1000 推荐） |
 | `--no-visualize` | false | 跳过图表生成，只写 `results_summary.json` |
+| `--weights W` | 见下表 | 资源权重配置，格式：`patrol:w,camp:w,drone:w,camera:w` |
+
+### 资源权重配置
+
+计算资源效率时，不同资源类型可配置不同的权重，反映其相对成本或战略价值：
+
+| 资源 | 默认权重 | 说明 |
+| :--- | :------: | :--- |
+| patrol | 0.40 | 最劳动密集，单位成本最高 |
+| camp | 0.25 | 基础设施成本，支持巡逻后勤 |
+| drone | 0.20 | 设备 + 维护成本 |
+| camera | 0.15 | 单位成本最低，固定基础设施 |
+
+**权重配置方式**（优先级从高到低）：
+
+1. **命令行参数** `--weights`：
+   ```bash
+   python monte_carlo_robust.py base.json --weights patrol:0.5,camp:0.2,drone:0.2,camera:0.1
+   ```
+
+2. **基础配置 JSON** 中的 `robustness_weights` 字段：
+   ```jsonc
+   {
+     "robustness_weights": {
+       "patrol": 0.4,
+       "camp": 0.25,
+       "drone": 0.2,
+       "camera": 0.15
+     },
+     "grids": [...],
+     "constraints": {...}
+   }
+   ```
+
+3. **默认权重**：上表所列默认值
+
+> 若提供的权重之和不为 1.0，系统会自动归一化（每个权重除以总和）。权重信息会记录在 `results_summary.json` 的 `meta` 块中，并在效率分析图表中显示。
 
 ### 资源约束采样分布
 
@@ -1181,7 +1218,8 @@ robust_results/
 ├── trial_0001_output.json
 ├── ...
 ├── results_summary.json       # 所有试验汇总
-└── robustness_analysis.png    # 鲁棒性分析图表
+├── robustness_analysis.png    # 鲁棒性分析图表
+└── efficiency_analysis.png    # 效率分析图表
 ```
 
 #### `results_summary.json` 格式
@@ -1196,7 +1234,13 @@ robust_results/
     "successful_trials": 97,
     "failed_trials": 3,
     "elapsed_seconds": 142.7,
-    "trials_per_second": 0.68
+    "trials_per_second": 0.68,
+    "weights": {
+      "patrol": 0.40,
+      "camp": 0.25,
+      "drone": 0.20,
+      "camera": 0.15
+    }
   },
   "trials": [
     {
@@ -1210,11 +1254,20 @@ robust_results/
       },
       "best_fitness": 0.423,
       "total_protection_benefit": 12.7,
+      "weighted_total_resource": 14.35,
+      "resource_efficiency": 0.885,
       "error": null
     }
   ]
 }
 ```
+
+#### 效率指标说明
+
+| 指标 | 公式 | 含义 |
+| :--- | :--- | :--- |
+| `weighted_total_resource` | `w_patrol × patrol + w_drone × drone + w_camera × camera + w_camp × camp` | 加权资源总量 |
+| `resource_efficiency` | `total_protection_benefit / weighted_total_resource` | 单位加权资源的保护收益 |
 
 #### `robustness_analysis.png` 图表布局
 
@@ -1230,6 +1283,17 @@ robust_results/
 | 第 3 行右 | `total_camps` vs `best_fitness` 散点图 + 线性趋势线 |
 
 成功试验少于 2 次时跳过图表生成并打印警告。
+
+#### `efficiency_analysis.png` 图表布局
+
+2 行布局：
+
+| 位置 | 内容 |
+| :--- | :--- |
+| 第 1 行 | `resource_efficiency` 分布直方图（标注 mean / std / min / max，副标题显示权重配置） |
+| 第 2 行 | 4 个散点图：各资源参数 vs `resource_efficiency`，每个带线性趋势线 |
+
+成功试验少于 2 次时跳过效率图表生成并打印警告。
 
 ### 并行执行说明
 
@@ -1248,10 +1312,17 @@ python generate_map.py -m 15 -n 15 --seed 0 -o robust/base.json
 python monte_carlo_robust.py robust/base.json \
     --num-trials 200 --seed 42 --workers 4 --vectorized --output-dir ./mc_results
 
-# 3. 查看汇总结果
+# 3. 使用自定义权重运行
+python monte_carlo_robust.py robust/base.json \
+    --num-trials 100 --seed 42 \
+    --weights patrol:0.5,camp:0.2,drone:0.2,camera:0.1 \
+    --output-dir ./mc_custom_weights
+
+# 4. 查看汇总结果
 #    mc_results/results_summary.json  — 所有试验数据
 #    mc_results/robustness_analysis.png — 分布图表
+#    mc_results/efficiency_analysis.png — 效率分析图表
 
-# 4. 复现特定试验（直接用保存的 trial_XXXX_input.json）
+# 5. 复现特定试验（直接用保存的 trial_XXXX_input.json）
 python run.py mc_results/trial_0003_input.json mc_results/trial_0003_rerun.json
 ```

@@ -176,6 +176,8 @@ def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, outpu
         "constraints": constraints_sample,
         "best_fitness": None,
         "total_protection_benefit": None,
+        "total_resource": None,
+        "resource_efficiency": None,
         "error": None,
     }
 
@@ -205,6 +207,7 @@ def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, outpu
         record["best_fitness"] = summary.get("best_fitness")
         record["total_protection_benefit"] = summary.get("total_protection_benefit")
         record["success"] = True
+        compute_efficiency(record)
 
     except Exception as exc:  # noqa: BLE001
         record["error"] = str(exc)
@@ -272,6 +275,8 @@ def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed,
                     "constraints": all_constraints[i],
                     "best_fitness": None,
                     "total_protection_benefit": None,
+                    "total_resource": None,
+                    "resource_efficiency": None,
                     "error": str(exc),
                 }
             print(f"[Trial {i + 1}/{num_trials} done]")
@@ -300,6 +305,8 @@ def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed,
                         "constraints": all_constraints[i],
                         "best_fitness": None,
                         "total_protection_benefit": None,
+                        "total_resource": None,
+                        "resource_efficiency": None,
                         "error": str(exc),
                     }
                 else:
@@ -415,6 +422,83 @@ def plot_robustness(results: list, output_dir: str) -> None:
     print(f"Robustness chart saved to {out_path}")
 
 
+def plot_efficiency(results: list, output_dir: str) -> None:
+    """Generate efficiency_analysis.png with a 2-row layout.
+
+    Layout:
+        Row 1 (1 panel, full width): Histogram of resource_efficiency
+        Row 2 (4 panels): Scatter of each resource parameter vs resource_efficiency
+
+    Each histogram is annotated with mean, std, min, max.
+    Each scatter plot includes a linear trend line.
+
+    Args:
+        results: List of trial record dicts (may include failed trials).
+        output_dir: Directory where efficiency_analysis.png is saved.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    successful = [
+        r for r in results
+        if r.get("success") and r.get("resource_efficiency") is not None
+    ]
+    if len(successful) < 2:
+        print(
+            f"Warning: only {len(successful)} successful trial(s) with efficiency data; "
+            "skipping efficiency chart generation (need at least 2)."
+        )
+        return
+
+    efficiency = np.array([r["resource_efficiency"] for r in successful], dtype=float)
+    patrol  = np.array([r["constraints"]["total_patrol"]  for r in successful], dtype=float)
+    drones  = np.array([r["constraints"]["total_drones"]  for r in successful], dtype=float)
+    cameras = np.array([r["constraints"]["total_cameras"] for r in successful], dtype=float)
+    camps   = np.array([r["constraints"]["total_camps"]   for r in successful], dtype=float)
+
+    # 2-row layout: row 1 = 1 wide histogram, row 2 = 4 scatter plots
+    fig = plt.figure(figsize=(14, 10))
+    fig.suptitle("Resource Efficiency Analysis", fontsize=14, fontweight="bold")
+
+    # Row 1: histogram spanning full width
+    ax_hist = fig.add_subplot(2, 1, 1)
+    ax_hist.hist(efficiency, bins=20, color="mediumseagreen", edgecolor="white", alpha=0.85)
+    ax_hist.set_xlabel("Resource Efficiency (benefit / total_resource)")
+    ax_hist.set_ylabel("Count")
+    stats_text = (
+        f"mean={efficiency.mean():.4f}  std={efficiency.std():.4f}\n"
+        f"min={efficiency.min():.4f}  max={efficiency.max():.4f}"
+    )
+    ax_hist.set_title(f"Resource Efficiency Distribution\n{stats_text}", fontsize=10)
+
+    # Row 2: 4 scatter plots
+    scatter_params = [
+        (patrol,  "Total Patrol"),
+        (drones,  "Total Drones"),
+        (cameras, "Total Cameras"),
+        (camps,   "Total Camps"),
+    ]
+
+    for col_idx, (x, xlabel) in enumerate(scatter_params):
+        ax = fig.add_subplot(2, 4, 5 + col_idx)
+        ax.scatter(x, efficiency, alpha=0.6, s=20, color="mediumseagreen")
+        if len(np.unique(x)) > 1:
+            coeffs = np.polyfit(x, efficiency, 1)
+            x_line = np.linspace(x.min(), x.max(), 200)
+            ax.plot(x_line, np.polyval(coeffs, x_line), color="tomato", linewidth=1.5)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Resource Efficiency")
+        ax.set_title(f"{xlabel} vs Efficiency", fontsize=9)
+
+    fig.tight_layout()
+    os.makedirs(output_dir, exist_ok=True)
+    out_path = os.path.join(output_dir, "efficiency_analysis.png")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"Efficiency chart saved to {out_path}")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -443,6 +527,7 @@ def main(argv=None):
 
     if not args.no_visualize:
         plot_robustness(results, args.output_dir)
+        plot_efficiency(results, args.output_dir)
 
 
 if __name__ == "__main__":
