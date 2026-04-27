@@ -79,7 +79,7 @@ This plan implements multi-fence edge deployment and visualization enhancement. 
 
 The following tasks address bugs found in the visualization:
 
-- [ ] 9. Fix Fence Edge Visualization - Only Draw Boundary Edges
+- [x] 9. Fix Fence Edge Visualization - Only Draw Boundary Edges
   - Modify `draw_deployed_fence_edges()` in `visualize_output.py`
   - Filter out internal edges (where both grid_id_1 and grid_id_2 are not None)
   - Only draw edges where grid_id_2 is None (boundary edges)
@@ -91,14 +91,21 @@ The following tasks address bugs found in the visualization:
   - **Property 7: Visualization Only Shows Boundary Edges**
   - **Validates: Requirements 3.5**
 
-- [ ] 10. Remove Redundant Pentagon Markers
+- [x] 10. Remove Redundant Pentagon Markers
   - Modify `_draw_resources()` in `visualize_output.py`
   - Remove the code that draws pentagon markers for fence deployment
+  - Update legend to show line instead of pentagon for fence
   - The bold fence edges are sufficient to indicate deployment
   - _Requirements: 5.1, 5.2, Property 8_
   - Related file: `hexdynamic/visualize_output.py`
 
-- [ ] 11. Checkpoint - Verify Visualization Fixes
+- [x] 11. Additional Fixes
+  - Fix optimizer to only deploy fences on boundary edges (dssa_optimizer.py)
+  - Fix output format to handle boundary edges (protection_pipeline.py)
+  - Fix postprocess_iteration.py to handle boundary edges
+  - Update legend to show bold line for fence instead of pentagon
+
+- [ ] 12. Checkpoint - Verify Visualization Fixes
   - Generate terrain deployment map
   - Verify bold edges only appear on boundary edges (not internal edges)
   - Verify no pentagon markers inside grid cells

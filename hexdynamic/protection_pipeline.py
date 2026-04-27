@@ -447,10 +447,19 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             entry['hex_size'] = src['hex_size']
         grid_results.append(entry)
 
-    fence_edges = [
-        {'grid_id_1': int(e[0]), 'grid_id_2': int(e[1])}
-        for e, v in best_solution.fences.items() if v == 1
-    ]
+    # FIX: Properly handle boundary edges (where e[1] is None)
+    # Fence edges are stored as (grid_id, None) for boundary edges
+    fence_edges = []
+    for e, v in best_solution.fences.items():
+        if v > 0:
+            grid_id_1 = int(e[0])
+            grid_id_2 = e[1]
+            if grid_id_2 is None:
+                # Boundary edge - use None for grid_id_2
+                fence_edges.append({'grid_id_1': grid_id_1, 'grid_id_2': None})
+            else:
+                # Internal edge (should not happen now, but handle for compatibility)
+                fence_edges.append({'grid_id_1': grid_id_1, 'grid_id_2': int(grid_id_2)})
 
     # 计算 summary 统计量
     all_gids = grid_model.get_all_grid_ids()

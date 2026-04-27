@@ -219,48 +219,41 @@ class DSSAOptimizer:
         
         fences_deployed = sum(fences.values())
         
+        # FIX: Only deploy fences on boundary edges (edge_type == 2.0)
+        # Internal edges between grids are NOT valid fence locations
         for edge in fencing_edges:
             if fences_deployed >= total_fence_length:
                 break
             
             grid_id_1, grid_id_2, edge_type = edge
             
-            if edge_type == 2.0:
-                # Boundary edge (grid_id_2 is None)
-                # Deploy fences on boundary edges
-                boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id_1)
-                num_boundary_edges = len(boundary_edges)
-                
-                # Determine how many fences to deploy on this grid
-                max_for_grid = min(
-                    num_boundary_edges,
-                    max_fences_per_grid,
-                    self.coverage_model.deployment_matrix['fence'].get(grid_id_1, 0)
-                )
-                
-                # Deploy as many fences as allowed, up to the remaining budget
-                remaining_budget = total_fence_length - fences_deployed
-                fences_to_deploy = min(max_for_grid, remaining_budget)
-                
-                if fences_to_deploy > 0:
-                    edge_key = (grid_id_1, None)
-                    # Don't overwrite fixed fences
-                    if edge_key not in self.fixed_fences:
-                        fences[edge_key] = fences_to_deploy
-                        fences_deployed += fences_to_deploy
+            # Only process boundary edges (edge_type == 2.0)
+            # Skip internal edges (edge_type == 1.0) - they are not valid fence locations
+            if edge_type != 2.0:
+                continue
             
-            else:
-                # Internal edge (between two grids)
-                edge_key = (min(grid_id_1, grid_id_2), max(grid_id_1, grid_id_2))
-                
-                # Check if both endpoints allow fence deployment
-                if (self.coverage_model.deployment_matrix['fence'].get(grid_id_1, 0) == 1 and
-                    self.coverage_model.deployment_matrix['fence'].get(grid_id_2, 0) == 1):
-                    
-                    # Don't overwrite fixed fences
-                    if edge_key not in self.fixed_fences:
-                        fences[edge_key] = 1
-                        fences_deployed += 1
+            # Boundary edge (grid_id_2 is None)
+            # Deploy fences on boundary edges
+            boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id_1)
+            num_boundary_edges = len(boundary_edges)
+            
+            # Determine how many fences to deploy on this grid
+            max_for_grid = min(
+                num_boundary_edges,
+                max_fences_per_grid,
+                self.coverage_model.deployment_matrix['fence'].get(grid_id_1, 0)
+            )
+            
+            # Deploy as many fences as allowed, up to the remaining budget
+            remaining_budget = total_fence_length - fences_deployed
+            fences_to_deploy = min(max_for_grid, remaining_budget)
+            
+            if fences_to_deploy > 0:
+                edge_key = (grid_id_1, None)
+                # Don't overwrite fixed fences
+                if edge_key not in self.fixed_fences:
+                    fences[edge_key] = fences_to_deploy
+                    fences_deployed += fences_to_deploy
         
         return fences
 

@@ -241,6 +241,10 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size):
     
     drawn_edges = set()  # Track drawn edges to avoid duplicates
     
+    # Count for debugging
+    boundary_edge_count = 0
+    internal_edge_skipped = 0
+    
     for edge in fence_edges:
         grid_id_1 = edge.get("grid_id_1")
         grid_id_2 = edge.get("grid_id_2")
@@ -255,57 +259,67 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size):
         
         cx1, cy1 = grid_center(g1["q"], g1["r"], hex_size)
         
+        # FIX: Only draw boundary edges (where grid_id_2 is None or not in grid set)
+        # Fences can ONLY be deployed on boundary edges, not internal edges between grids
         if grid_id_2 is not None and grid_id_2 in all_grid_ids:
-            # Internal edge between two grids
-            g2 = grid_by_id.get(grid_id_2)
-            if g2 is None:
-                continue
-            cx2, cy2 = grid_center(g2["q"], g2["r"], hex_size)
-            
-            # Create edge key for deduplication
-            edge_key = (min(grid_id_1, grid_id_2), max(grid_id_1, grid_id_2))
+            # Internal edge between two grids - SKIP (not a valid fence location)
+            internal_edge_skipped += 1
+            continue
+        
+        # Boundary edge (facing outside) - this is a valid fence location
+        # Use direction if provided, otherwise try to determine from edge data
+        if direction is not None:
+            edge_key = (grid_id_1, None, direction)
             if edge_key in drawn_edges:
                 continue
             drawn_edges.add(edge_key)
             
-            # Draw line from center to center (but only the segment on the shared edge)
-            # Calculate midpoint and draw the edge segment
-            mid_x = (cx1 + cx2) / 2
-            mid_y = (cy1 + cy2) / 2
-            
-            # Find the direction from g1 to g2
-            dq = g2["q"] - g1["q"]
-            dr = g2["r"] - g1["r"]
-            
-            # Find matching direction index
-            dir_idx = None
-            for i, (tdq, tdr) in enumerate(directions):
-                if tdq == dq and tdr == dr:
-                    dir_idx = i
-                    break
-            
-            if dir_idx is not None:
-                # Draw the edge segment using corner positions
-                vi, vj = dir_to_corners[dir_idx]
-                p1 = get_corner(cx1, cy1, hex_size, vi)
-                p2 = get_corner(cx1, cy1, hex_size, vj)
-                ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
-                        color=FENCE_COLOR, lw=FENCE_EDGE_LINEWIDTH, zorder=7,
-                        solid_capstyle="round")
+            vi, vj = dir_to_corners[direction]
+            p1 = get_corner(cx1, cy1, hex_size, vi)
+            p2 = get_corner(cx1, cy1, hex_size, vj)
+            ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                    color=FENCE_COLOR, lw=FENCE_EDGE_LINEWIDTH, zorder=7,
+                    solid_capstyle="round")
+            boundary_edge_count += 1
         else:
-            # Boundary edge (facing outside) - direction should be provided
-            if direction is not None:
-                edge_key = (grid_id_1, None, direction)
-                if edge_key in drawn_edges:
-                    continue
-                drawn_edges.add(edge_key)
+            # No direction provided - try to determine from grid_id_2 being None
+            # This handles the case where grid_id_2 is None (boundary edge)
+            edge_key = (grid_id_1, None)
+            if edge_key in drawn_edges:
+                continue
+            drawn_edges.add(edge_key)
+            
+            # For boundary edges without direction, we need to find which edge faces outside
+            # Check each direction to find the one without a neighbor
+            for dir_idx in range(6):
+                dq, dr = directions[dir_idx]
+                neighbor_q = g1["q"] + dq
+                neighbor_r = g1["r"] + dr
+                neighbor_key = (neighbor_q, neighbor_r)
                 
-                vi, vj = dir_to_corners[direction]
-                p1 = get_corner(cx1, cy1, hex_size, vi)
-                p2 = get_corner(cx1, cy1, hex_size, vj)
-                ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
-                        color=FENCE_COLOR, lw=FENCE_EDGE_LINEWIDTH, zorder=7,
-                        solid_capstyle="round")
+                # Check if this neighbor exists in our grid set
+                neighbor_id = None
+                for gid, g in grid_by_id.items():
+                    if g["q"] == neighbor_q and g["r"] == neighbor_r:
+                        neighbor_id = gid
+                        break
+                
+                if neighbor_id is None:
+                    # This is a boundary direction - draw the edge
+                    vi, vj = dir_to_corners[dir_idx]
+                    p1 = get_corner(cx1, cy1, hex_size, vi)
+                    p2 = get_corner(cx1, cy1, hex_size, vj)
+                    ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                            color=FENCE_COLOR, lw=FENCE_EDGE_LINEWIDTH, zorder=7,
+                            solid_capstyle="round")
+                    boundary_edge_count += 1
+    
+    # Debug output
+    if fence_edges:
+        print(f"[DEBUG] Fence edge visualization:")
+        print(f"  - Total fence edges in data: {len(fence_edges)}")
+        print(f"  - Boundary edges drawn: {boundary_edge_count}")
+        print(f"  - Internal edges skipped: {internal_edge_skipped}")
 
 
 def legend_in_ax(ax_leg, handles, title, y_start=1.0, fontsize=9, title_fontsize=9):
@@ -397,27 +411,14 @@ def _edge_grid_ids(grids, boundary_xy=None):
 
 
 def _draw_resources(ax, grids, out, hex_size, edge_ids):
-    """在 ax 上绘制所有资源图标（fence pentagon + 其他）
+    """在 ax 上绘制所有资源图标（除了围栏，围栏用加粗边显示）
     
-    围栏只在实际部署的边上显示，不是所有边缘网格都显示
+    围栏只在实际部署的边上显示（用加粗边），不再用五边形在网格内显示
     """
-    fence_edges = {(e["grid_id_1"], e["grid_id_2"]) for e in out.get("fence_edges", [])}
+    # NOTE: Fence deployment is now shown with bold edges in draw_deployed_fence_edges()
+    # No need to draw pentagon markers inside grid cells
+    
     centers = {g["grid_id"]: grid_center(g["q"], g["r"], hex_size) for g in grids}
-
-    # 只在实际部署的围栏边的端点上显示围栏标记
-    # 但只显示在边缘网格上的围栏
-    fenced = {gid for (a, b) in fence_edges for gid in (a, b) if gid in edge_ids}
-    
-    # 调试：打印围栏信息
-    if fence_edges:
-        print(f"[DEBUG] 实际部署的围栏边数: {len(fence_edges)}")
-        print(f"[DEBUG] 边缘网格数: {len(edge_ids)}")
-        print(f"[DEBUG] 显示围栏标记的网格数: {len(fenced)}")
-    
-    for gid in fenced:
-        cx, cy = centers[gid]
-        ax.scatter(cx, cy + hex_size * 0.38, marker="p", s=80, color=FENCE_COLOR,
-                   edgecolors="black", linewidths=0.5, zorder=4)
 
     for g in grids:
         cx, cy = centers[g["grid_id"]]
@@ -659,9 +660,11 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path):
                    markeredgecolor="black", markersize=8, label=l)
         for _, (m, c, l) in RESOURCE_MARKERS.items()
     ]
+    # Fence is now shown with bold edges, not pentagon markers
+    # Add a line handle for fence legend
     res_handles.append(
-        plt.Line2D([0], [0], marker="p", color="w", markerfacecolor=FENCE_COLOR,
-                   markeredgecolor="black", markersize=8, label="Fence")
+        plt.Line2D([0], [1], color=FENCE_COLOR, linewidth=FENCE_EDGE_LINEWIDTH * 2, 
+                   label="Fence (bold edge)")
     )
 
     y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=0.97)

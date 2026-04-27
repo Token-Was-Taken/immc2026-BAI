@@ -100,10 +100,19 @@ def convert_to_visualize_format(solution: Dict[str, Any], grid_map: Dict[int, Di
         if value > 0:
             parts = fence_key.split('-')
             if len(parts) == 2:
-                fence_edges.append({
-                    'grid_id_1': int(parts[0]),
-                    'grid_id_2': int(parts[1])
-                })
+                grid_id_1 = int(parts[0])
+                grid_id_2_str = parts[1]
+                # Handle boundary edges (where grid_id_2 is "None")
+                if grid_id_2_str == "None":
+                    fence_edges.append({
+                        'grid_id_1': grid_id_1,
+                        'grid_id_2': None
+                    })
+                else:
+                    fence_edges.append({
+                        'grid_id_1': grid_id_1,
+                        'grid_id_2': int(grid_id_2_str)
+                    })
     
     return {
         'summary': {
