@@ -67,15 +67,46 @@ This plan implements multi-fence edge deployment and visualization enhancement. 
 - [x] 7. Checkpoint - Run all tests
   - Ensure all tests pass, ask the user if questions arise.
 
-- [-] 8. Integration Testing
+- [x] 8. Integration Testing
   - Run full optimization with new fence model
   - Verify output JSON format
   - Generate visualization and verify fence edges display correctly
   - _Requirements: All_
 
+---
+
+## Visualization Bug Fix Tasks
+
+The following tasks address bugs found in the visualization:
+
+- [ ] 9. Fix Fence Edge Visualization - Only Draw Boundary Edges
+  - Modify `draw_deployed_fence_edges()` in `visualize_output.py`
+  - Filter out internal edges (where both grid_id_1 and grid_id_2 are not None)
+  - Only draw edges where grid_id_2 is None (boundary edges)
+  - Add debug logging to verify only boundary edges are drawn
+  - _Requirements: 3.5, Property 7_
+  - Related file: `hexdynamic/visualize_output.py`
+
+- [ ] 9.1 Write property test for boundary edge filtering
+  - **Property 7: Visualization Only Shows Boundary Edges**
+  - **Validates: Requirements 3.5**
+
+- [ ] 10. Remove Redundant Pentagon Markers
+  - Modify `_draw_resources()` in `visualize_output.py`
+  - Remove the code that draws pentagon markers for fence deployment
+  - The bold fence edges are sufficient to indicate deployment
+  - _Requirements: 5.1, 5.2, Property 8_
+  - Related file: `hexdynamic/visualize_output.py`
+
+- [ ] 11. Checkpoint - Verify Visualization Fixes
+  - Generate terrain deployment map
+  - Verify bold edges only appear on boundary edges (not internal edges)
+  - Verify no pentagon markers inside grid cells
+  - Ask the user to review the visualization
+
 ## Notes
 
+- Tasks 9-11 address specific bugs found in the visualization output
 - Each task references specific requirements for traceability
-- Checkpoints ensure incremental validation
 - Property tests validate universal correctness properties
-- Unit tests validate specific examples and edge cases
+- Checkpoints ensure incremental validation

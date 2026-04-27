@@ -10,6 +10,7 @@ This document describes the requirements for enhancing the fence deployment mech
 - **Boundary Edge**: An edge of a hexagonal grid that faces outside the protected area (no neighboring grid on that side)
 - **Fence Edge**: A pair of grid IDs representing a potential fence deployment location between two adjacent grids
 - **Fencing Edge**: An edge where at least one endpoint is an edge grid, eligible for fence deployment
+- **Internal Edge**: An edge between two adjacent grids within the protected area (NOT a valid fence location)
 
 ## Requirements
 
@@ -44,6 +45,7 @@ This document describes the requirements for enhancing the fence deployment mech
 2. THE fence edge line width SHALL be noticeably thicker than regular grid edges
 3. THE fence edge color SHALL be distinct from other map elements
 4. WHEN a grid has multiple deployed fences, THE System SHALL display each fence edge separately
+5. THE System SHALL ONLY draw boundary edges as fence edges, NOT internal edges between grids
 
 ### Requirement 4: Backward Compatibility
 
@@ -54,3 +56,12 @@ This document describes the requirements for enhancing the fence deployment mech
 1. WHEN an input file does not specify max_fences_per_grid, THE System SHALL use the default value of 6
 2. WHEN existing code uses the fence deployment matrix, THE System SHALL handle both binary (0/1) and multi-value (0-6) formats
 3. THE System SHALL maintain compatibility with existing output JSON format for fence_edges
+
+### Requirement 5: Remove Redundant Fence Indicators
+
+**User Story:** As a wildlife protection planner, I want a clean visualization without redundant indicators, so that the map is easier to read.
+
+#### Acceptance Criteria
+
+1. WHEN fence edges are displayed with bold lines, THE System SHALL NOT also display pentagon markers inside grid cells to indicate fence deployment
+2. THE bold fence edge lines alone SHALL be sufficient to indicate fence deployment locations

@@ -112,9 +112,16 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size):
     Draw deployed fence edges as bold lines on the map.
     
     Each fence edge is drawn as a thick line segment between
-    the two grid centers or from grid center to boundary.
+    the grid center and the boundary (for boundary edges only).
+    
+    IMPORTANT: Only draw boundary edges (where grid_id_2 is None).
+    Internal edges between two grids are NOT valid fence locations.
     """
 ```
+
+#### Modified: `_draw_resources()`
+
+Remove pentagon markers for fence deployment since bold edges already indicate fence locations.
 
 ## Data Models
 
@@ -213,6 +220,22 @@ Rationale: Backward compatibility requires sensible defaults.
 
 Rationale: Existing configurations must continue to work without modification.
 
+### Property 7: Visualization Only Shows Boundary Edges
+
+*For any* fence edge visualization, the System SHALL ONLY draw edges where one endpoint is None (boundary edges), NOT internal edges between two grids.
+
+**Validates: Requirements 3.5**
+
+Rationale: Fences can only be deployed on boundary edges. Internal edges between grids are not valid fence locations.
+
+### Property 8: No Redundant Fence Indicators
+
+*For any* deployment map with fence visualization enabled, the System SHALL NOT draw pentagon markers inside grid cells when bold fence edges are displayed.
+
+**Validates: Requirements 5.1, 5.2**
+
+Rationale: Bold fence edges are sufficient to indicate fence deployment. Pentagons would be redundant.
+
 ## Error Handling
 
 ### Invalid Fence Deployment
@@ -251,6 +274,10 @@ Rationale: Existing configurations must continue to work without modification.
    - Verify protection increases with more fences
    - Verify protection is capped at maximum
 
+4. **Test visualization**
+   - Verify only boundary edges are drawn as fence edges
+   - Verify pentagon markers are not drawn when fence edges are displayed
+
 ### Property-Based Tests
 
 1. **Property 1**: Boundary edge count consistency
@@ -265,6 +292,10 @@ Rationale: Existing configurations must continue to work without modification.
    - Generate random solutions
    - Verify total fence count doesn't exceed constraint
 
+4. **Property 7**: Visualization only shows boundary edges
+   - Generate random fence deployments
+   - Verify visualization code filters out internal edges
+
 ### Integration Tests
 
 1. **End-to-end deployment flow**
@@ -275,3 +306,8 @@ Rationale: Existing configurations must continue to work without modification.
 2. **Backward compatibility**
    - Test with existing input files
    - Verify output matches expected format
+
+3. **Visual verification**
+   - Generate visualization and verify:
+     - Bold edges only appear on boundary edges
+     - No pentagon markers inside grid cells

@@ -760,7 +760,7 @@
   },
   "constraints": {
     "total_patrol": 20,
-    "total_camps": 0,
+    "total_camps": 3,
     "max_rangers_per_camp": 5,
     "total_cameras": 10,
     "total_drones": 3,
