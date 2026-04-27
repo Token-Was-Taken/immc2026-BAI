@@ -60,6 +60,11 @@ hexdynamic/pipeline_output*.json
 hexdynamic/input.json
 hexdynamic/output.json
 
+# 全局运行产物
+sobol_results/
+output_iterations/
+hexdynamic/output_iterations/
+
 # marker 导出的坐标文件（非示例）
 marker/grid-coordinates*.json
 !marker/grid-coordinates.json

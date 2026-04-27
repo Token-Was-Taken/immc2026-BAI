@@ -91,6 +91,16 @@ class CoverageModel:
         return camera_coverage
 
     def calculate_fence_protection(self, solution: DeploymentSolution) -> Dict[int, float]:
+        """
+        Calculate fence protection for each grid.
+        
+        Each fence on a boundary edge provides protection to the grid.
+        Multiple fences on the same grid provide cumulative protection.
+        
+        Supports both:
+        - Internal edges: (grid_id_1, grid_id_2) with count 1
+        - Boundary edges: (grid_id, None) with count 0-6
+        """
         fence_protection = {}
 
         for grid_id in self.grid_ids:
@@ -98,10 +108,18 @@ class CoverageModel:
             protection = 0.0
             neighbors = self.grid_model.get_neighbors(grid_id)
 
+            # Check internal edges (between two grids)
             for neighbor_id in neighbors:
                 edge_key = tuple(sorted((grid_id, neighbor_id)))
-                if edge_key in solution.fences and solution.fences[edge_key] == 1:
-                    protection += self.params.fence_protection
+                if edge_key in solution.fences:
+                    fence_count = solution.fences[edge_key]
+                    protection += fence_count * self.params.fence_protection
+
+            # Check boundary edges (grid_id, None) - multi-fence support
+            boundary_edge_key = (grid_id, None)
+            if boundary_edge_key in solution.fences:
+                fence_count = solution.fences[boundary_edge_key]
+                protection += fence_count * self.params.fence_protection
 
             fence_protection[grid_id] = eff * min(1.0, protection)
 
@@ -228,9 +246,40 @@ class CoverageModel:
             if fence_count <= 0:
                 continue
             gid1, gid2 = edge_key
-            if (self.deployment_matrix['fence'].get(gid1, 0) != 1 or
-                    self.deployment_matrix['fence'].get(gid2, 0) != 1):
-                violations.append(f"Fence deployment infeasible at edge {edge_key}")
+            
+            # Handle boundary edges (gid2 is None) - multi-fence support
+            if gid2 is None:
+                # Check if grid is an edge grid with fence deployment allowed
+                max_fences = self.deployment_matrix['fence'].get(gid1, 0)
+                if max_fences == 0:
+                    violations.append(f"Fence deployment infeasible at grid {gid1} (not an edge grid)")
+                else:
+                    # Check fence count doesn't exceed boundary edge count
+                    boundary_edges = self.grid_model.get_boundary_edges_for_grid(gid1)
+                    num_boundary_edges = len(boundary_edges)
+                    if fence_count > num_boundary_edges:
+                        violations.append(
+                            f"Fence count ({fence_count}) exceeds boundary edges ({num_boundary_edges}) at grid {gid1}"
+                        )
+                    # Check fence count doesn't exceed max_fences_per_grid
+                    max_per_grid = constraints.get('max_fences_per_grid', 6)
+                    if fence_count > max_per_grid:
+                        violations.append(
+                            f"Fence count ({fence_count}) exceeds max_fences_per_grid ({max_per_grid}) at grid {gid1}"
+                        )
+            else:
+                # Internal edge - check both endpoints
+                if (self.deployment_matrix['fence'].get(gid1, 0) != 1 or
+                        self.deployment_matrix['fence'].get(gid2, 0) != 1):
+                    violations.append(f"Fence deployment infeasible at edge {edge_key}")
+
+        # Check total fence length constraint
+        total_fences = sum(solution.fences.values())
+        total_fence_length = constraints.get('total_fence_length', float('inf'))
+        if total_fences > total_fence_length:
+            violations.append(
+                f"Total fence length exceeded: {total_fences} > {total_fence_length}"
+            )
 
         return (len(violations) == 0, violations)
 
@@ -295,11 +344,53 @@ class CoverageModel:
                 if keep != 'camp':
                     repaired.camps.pop(grid_id, None)
 
+        # --- Fence: Handle multi-fence edges ---
+        # First, clean up invalid fence deployments
         for edge_key in list(repaired.fences.keys()):
             gid1, gid2 = edge_key
-            if (self.deployment_matrix['fence'].get(gid1, 0) != 1 or
-                    self.deployment_matrix['fence'].get(gid2, 0) != 1):
-                del repaired.fences[edge_key]
+            
+            # Handle boundary edges (gid2 is None) - multi-fence support
+            if gid2 is None:
+                # Check if grid is an edge grid with fence deployment allowed
+                max_fences = self.deployment_matrix['fence'].get(gid1, 0)
+                if max_fences == 0:
+                    del repaired.fences[edge_key]
+                else:
+                    # Limit fence count to boundary edge count and max_fences_per_grid
+                    boundary_edges = self.grid_model.get_boundary_edges_for_grid(gid1)
+                    num_boundary_edges = len(boundary_edges)
+                    max_per_grid = constraints.get('max_fences_per_grid', 6)
+                    max_allowed = min(num_boundary_edges, max_per_grid, max_fences)
+                    
+                    if repaired.fences[edge_key] > max_allowed:
+                        repaired.fences[edge_key] = max_allowed
+            else:
+                # Internal edge - check both endpoints
+                if (self.deployment_matrix['fence'].get(gid1, 0) != 1 or
+                        self.deployment_matrix['fence'].get(gid2, 0) != 1):
+                    del repaired.fences[edge_key]
+        
+        # Enforce total fence length constraint
+        total_fence_length = constraints.get('total_fence_length', float('inf'))
+        total_fences = sum(repaired.fences.values())
+        
+        while total_fences > total_fence_length:
+            # Remove fences from grids with most fences first
+            fence_counts = [(k, v) for k, v in repaired.fences.items() if v > 0]
+            if not fence_counts:
+                break
+            
+            # Sort by fence count descending
+            fence_counts.sort(key=lambda x: x[1], reverse=True)
+            
+            for edge_key, count in fence_counts:
+                if total_fences <= total_fence_length:
+                    break
+                if repaired.fences.get(edge_key, 0) > 0:
+                    repaired.fences[edge_key] -= 1
+                    total_fences -= 1
+                    if repaired.fences[edge_key] <= 0:
+                        del repaired.fences[edge_key]
 
         # --- Camera: 先截单格上限，再截总量 ---
         max_cam = constraints.get('max_cameras_per_grid', 1)

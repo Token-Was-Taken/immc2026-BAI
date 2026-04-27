@@ -198,7 +198,8 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
         max_cameras_per_grid=c.get('max_cameras_per_grid', 1),
         max_drones_per_grid=c.get('max_drones_per_grid', 1),
         max_camps_per_grid=c.get('max_camps_per_grid', 1),
-        max_rangers_per_grid=c.get('max_rangers_per_grid', 1)
+        max_rangers_per_grid=c.get('max_rangers_per_grid', 1),
+        max_fences_per_grid=c.get('max_fences_per_grid', 6)
     )
 
     temp_grid_model = HexGridModel(loader.grids)
@@ -243,6 +244,7 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         'max_cameras_per_grid': loader.constraints.max_cameras_per_grid,
         'max_drones_per_grid': loader.constraints.max_drones_per_grid,
         'max_camps_per_grid': loader.constraints.max_camps_per_grid,
+        'max_fences_per_grid': loader.constraints.max_fences_per_grid,
     }
 
     fixed_fences = {}

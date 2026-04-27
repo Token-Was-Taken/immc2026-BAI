@@ -64,11 +64,14 @@ class DSSAOptimizer:
         
         如果 force_full_deployment=True，强制部署所有资源到上限
         否则使用原来的逻辑（可能部分部署）
+        
+        支持多围栏部署：每个边缘格子可以在其边界边上部署多个围栏
         """
         cameras = {}
         camps = {}
         drones = {}
         rangers = {}
+        fences = dict(self.fixed_fences)  # Start with fixed fences
 
         grid_ids_shuffled = self.grid_ids.copy()
         random.shuffle(grid_ids_shuffled)
@@ -140,6 +143,9 @@ class DSSAOptimizer:
                     self.coverage_model.deployment_matrix['patrol'][grid_id] == 1):
                     rangers[grid_id] = rangers.get(grid_id, 0) + 1
                     ranger_deployed += 1
+
+            # 5. 部署围栏到边界边（多围栏支持）
+            fences = self._initialize_fences()
         
         else:
             # 原来的逻辑：允许部分部署
@@ -178,14 +184,85 @@ class DSSAOptimizer:
                         rangers[grid_id] = rangers.get(grid_id, 0) + 1
                         remaining_rangers -= 1
 
+            # 部署围栏（部分部署模式）
+            fences = self._initialize_fences()
+
         solution = DeploymentSolution(
             cameras=cameras,
             camps=camps,
             drones=drones,
             rangers=rangers,
-            fences=dict(self.fixed_fences)
+            fences=fences
         )
         return self.coverage_model.repair_solution(solution, self.constraints, self.force_full_deployment)
+
+    def _initialize_fences(self) -> Dict[Tuple[int, int], int]:
+        """初始化围栏部署，支持多围栏边缘部署
+        
+        遍历所有边缘格子，在其边界边上部署围栏。
+        每个边缘格子可以部署多个围栏（每个边界边一个）。
+        
+        Returns:
+            Dict[Tuple[int, int], int]: 围栏部署字典
+            - 内部边: (grid_id_1, grid_id_2) -> count (通常为1)
+            - 边界边: (grid_id, None) -> count (0到边界边数量)
+        """
+        fences = dict(self.fixed_fences)  # Start with fixed fences
+        total_fence_length = self.constraints.get('total_fence_length', float('inf'))
+        max_fences_per_grid = self.constraints.get('max_fences_per_grid', 6)
+        
+        # Get all fencing edges (both internal and boundary)
+        fencing_edges = self.fencing_edges
+        
+        # Shuffle for random deployment order
+        random.shuffle(fencing_edges)
+        
+        fences_deployed = sum(fences.values())
+        
+        for edge in fencing_edges:
+            if fences_deployed >= total_fence_length:
+                break
+            
+            grid_id_1, grid_id_2, edge_type = edge
+            
+            if edge_type == 2.0:
+                # Boundary edge (grid_id_2 is None)
+                # Deploy fences on boundary edges
+                boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id_1)
+                num_boundary_edges = len(boundary_edges)
+                
+                # Determine how many fences to deploy on this grid
+                max_for_grid = min(
+                    num_boundary_edges,
+                    max_fences_per_grid,
+                    self.coverage_model.deployment_matrix['fence'].get(grid_id_1, 0)
+                )
+                
+                # Deploy as many fences as allowed, up to the remaining budget
+                remaining_budget = total_fence_length - fences_deployed
+                fences_to_deploy = min(max_for_grid, remaining_budget)
+                
+                if fences_to_deploy > 0:
+                    edge_key = (grid_id_1, None)
+                    # Don't overwrite fixed fences
+                    if edge_key not in self.fixed_fences:
+                        fences[edge_key] = fences_to_deploy
+                        fences_deployed += fences_to_deploy
+            
+            else:
+                # Internal edge (between two grids)
+                edge_key = (min(grid_id_1, grid_id_2), max(grid_id_1, grid_id_2))
+                
+                # Check if both endpoints allow fence deployment
+                if (self.coverage_model.deployment_matrix['fence'].get(grid_id_1, 0) == 1 and
+                    self.coverage_model.deployment_matrix['fence'].get(grid_id_2, 0) == 1):
+                    
+                    # Don't overwrite fixed fences
+                    if edge_key not in self.fixed_fences:
+                        fences[edge_key] = 1
+                        fences_deployed += 1
+        
+        return fences
 
     def initialize_population(self):
         self.population = []
@@ -251,6 +328,15 @@ class DSSAOptimizer:
         return scheduled
 
     def _solution_to_vector(self, solution: DeploymentSolution) -> np.ndarray:
+        """Convert solution to vector for optimization.
+        
+        Vector structure:
+        - cameras: one value per grid (count 0-max_cameras_per_grid)
+        - camps: one value per grid (0 or 1)
+        - drones: one value per grid (0 or 1)
+        - rangers: one value per grid (count 0-max_rangers_per_grid)
+        - fences: one value per grid (count 0-max_fences_per_grid for boundary edges)
+        """
         vector = []
         for grid_id in self.grid_ids:
             vector.append(solution.cameras.get(grid_id, 0))
@@ -260,13 +346,30 @@ class DSSAOptimizer:
             vector.append(solution.drones.get(grid_id, 0))
         for grid_id in self.grid_ids:
             vector.append(solution.rangers.get(grid_id, 0))
+        # Add fence counts per grid (for boundary edge fences)
+        for grid_id in self.grid_ids:
+            # Sum fences for this grid (both internal edges and boundary edges)
+            fence_count = 0
+            # Check boundary edge fences: (grid_id, None)
+            fence_count += solution.fences.get((grid_id, None), 0)
+            # Check internal edge fences where this grid is involved
+            for neighbor_id in self.grid_model.get_neighbors(grid_id):
+                edge_key = (min(grid_id, neighbor_id), max(grid_id, neighbor_id))
+                if edge_key in solution.fences:
+                    fence_count += solution.fences[edge_key]
+            vector.append(fence_count)
         return np.array(vector)
 
     def _vector_to_solution(self, vector: np.ndarray) -> DeploymentSolution:
+        """Convert vector back to solution.
+        
+        Handles fence counts from vector, creating appropriate fence edge entries.
+        """
         cameras = {}
         camps = {}
         drones = {}
         rangers = {}
+        fences = dict(self.fixed_fences)  # Start with fixed fences
 
         idx = 0
         max_cam = self.constraints.get('max_cameras_per_grid', 1)
@@ -293,12 +396,37 @@ class DSSAOptimizer:
                 rangers[grid_id] = min(val, max_ranger)
             idx += 1
 
+        # Decode fence counts
+        max_fences_per_grid = self.constraints.get('max_fences_per_grid', 6)
+        for grid_id in self.grid_ids:
+            fence_count = int(round(vector[idx]))
+            idx += 1
+            
+            if fence_count <= 0:
+                continue
+            
+            # Check if this grid can have fences (is an edge grid)
+            if self.coverage_model.deployment_matrix['fence'].get(grid_id, 0) == 0:
+                continue
+            
+            # Get boundary edges for this grid
+            boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id)
+            num_boundary_edges = len(boundary_edges)
+            
+            if num_boundary_edges > 0:
+                # Limit fence count
+                actual_count = min(fence_count, num_boundary_edges, max_fences_per_grid)
+                edge_key = (grid_id, None)
+                # Don't overwrite fixed fences
+                if edge_key not in self.fixed_fences:
+                    fences[edge_key] = actual_count
+
         return DeploymentSolution(
             cameras=cameras,
             camps=camps,
             drones=drones,
             rangers=rangers,
-            fences=dict(self.fixed_fences)
+            fences=fences
         )
 
     def _update_producers(self, iteration: int, alpha: float):

@@ -181,6 +181,133 @@ def draw_boundary(ax, grids, boundary_xy, hex_size):
                         color="#1a1a1a", lw=1.8, zorder=6, solid_capstyle="round")
 
 
+def draw_deployed_fence_edges(ax, grids, out, hex_size):
+    """
+    Draw deployed fence edges as bold lines on the map.
+    
+    Each fence edge is drawn as a thick line segment between
+    the two grid centers or from grid center to boundary.
+    
+    Args:
+        ax: Matplotlib axes to draw on
+        grids: List of grid dictionaries from output JSON
+        out: Output JSON data containing fence_edges
+        hex_size: Size of hexagonal grid cells
+    """
+    fence_edges = out.get("fence_edges", [])
+    if not fence_edges:
+        return
+    
+    # Build grid lookup
+    grid_by_id = {g["grid_id"]: g for g in grids}
+    
+    # Build set of all grid IDs for checking if a neighbor exists
+    all_grid_ids = set(grid_by_id.keys())
+    
+    # Hexagonal directions (same as used in grid_model.py)
+    # Direction mapping for pointy-topped hexagons:
+    # 0: (1, 0)   - East
+    # 1: (1, -1)  - Northeast  
+    # 2: (0, -1)  - Northwest
+    # 3: (-1, 0)  - West
+    # 4: (-1, 1)  - Southwest
+    # 5: (0, 1)   - Southeast
+    directions = [
+        (1, 0),   # 0: East
+        (1, -1),  # 1: Northeast
+        (0, -1),  # 2: Northwest
+        (-1, 0),  # 3: West
+        (-1, 1),  # 4: Southwest
+        (0, 1)    # 5: Southeast
+    ]
+    
+    # Each direction corresponds to an edge between two corner vertices
+    # For pointy-topped hexagon, corners are at angles: 30, 90, 150, 210, 270, 330 degrees
+    # Direction -> (corner_index_start, corner_index_end)
+    dir_to_corners = {
+        0: (0, 5),  # East: corners 0 and 5
+        1: (1, 0),  # Northeast: corners 1 and 0
+        2: (2, 1),  # Northwest: corners 2 and 1
+        3: (3, 2),  # West: corners 3 and 2
+        4: (4, 3),  # Southwest: corners 4 and 3
+        5: (5, 4),  # Southeast: corners 5 and 4
+    }
+    
+    def get_corner(cx, cy, size, i):
+        """Get corner coordinates for pointy-topped hexagon."""
+        # Corners at 30, 90, 150, 210, 270, 330 degrees (pointy-top)
+        a = math.pi / 3 * i + math.pi / 6
+        return cx + size * math.cos(a), cy + size * math.sin(a)
+    
+    drawn_edges = set()  # Track drawn edges to avoid duplicates
+    
+    for edge in fence_edges:
+        grid_id_1 = edge.get("grid_id_1")
+        grid_id_2 = edge.get("grid_id_2")
+        direction = edge.get("direction")  # May be None for internal edges
+        
+        if grid_id_1 is None:
+            continue
+            
+        g1 = grid_by_id.get(grid_id_1)
+        if g1 is None:
+            continue
+        
+        cx1, cy1 = grid_center(g1["q"], g1["r"], hex_size)
+        
+        if grid_id_2 is not None and grid_id_2 in all_grid_ids:
+            # Internal edge between two grids
+            g2 = grid_by_id.get(grid_id_2)
+            if g2 is None:
+                continue
+            cx2, cy2 = grid_center(g2["q"], g2["r"], hex_size)
+            
+            # Create edge key for deduplication
+            edge_key = (min(grid_id_1, grid_id_2), max(grid_id_1, grid_id_2))
+            if edge_key in drawn_edges:
+                continue
+            drawn_edges.add(edge_key)
+            
+            # Draw line from center to center (but only the segment on the shared edge)
+            # Calculate midpoint and draw the edge segment
+            mid_x = (cx1 + cx2) / 2
+            mid_y = (cy1 + cy2) / 2
+            
+            # Find the direction from g1 to g2
+            dq = g2["q"] - g1["q"]
+            dr = g2["r"] - g1["r"]
+            
+            # Find matching direction index
+            dir_idx = None
+            for i, (tdq, tdr) in enumerate(directions):
+                if tdq == dq and tdr == dr:
+                    dir_idx = i
+                    break
+            
+            if dir_idx is not None:
+                # Draw the edge segment using corner positions
+                vi, vj = dir_to_corners[dir_idx]
+                p1 = get_corner(cx1, cy1, hex_size, vi)
+                p2 = get_corner(cx1, cy1, hex_size, vj)
+                ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                        color=FENCE_COLOR, lw=FENCE_EDGE_LINEWIDTH, zorder=7,
+                        solid_capstyle="round")
+        else:
+            # Boundary edge (facing outside) - direction should be provided
+            if direction is not None:
+                edge_key = (grid_id_1, None, direction)
+                if edge_key in drawn_edges:
+                    continue
+                drawn_edges.add(edge_key)
+                
+                vi, vj = dir_to_corners[direction]
+                p1 = get_corner(cx1, cy1, hex_size, vi)
+                p2 = get_corner(cx1, cy1, hex_size, vj)
+                ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
+                        color=FENCE_COLOR, lw=FENCE_EDGE_LINEWIDTH, zorder=7,
+                        solid_capstyle="round")
+
+
 def legend_in_ax(ax_leg, handles, title, y_start=1.0, fontsize=9, title_fontsize=9):
     """在 ax_leg 里手动绘制图例，返回下一个可用 y 位置"""
     ax_leg.text(0.05, y_start, title, transform=ax_leg.transAxes,
@@ -239,6 +366,7 @@ RESOURCE_MARKERS = {
 }
 
 FENCE_COLOR = "#c0392b"
+FENCE_EDGE_LINEWIDTH = 1.0  # 2.5x regular edge width (0.4 * 2.5 = 1.0)
 
 SPECIES_STYLE = {
     "rhino":    {"marker": "^", "color": "#8B4513", "size_scale": 120},
@@ -519,6 +647,7 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path):
         draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"))
 
     _draw_resources(ax, grids, out, hex_size, edge_ids)
+    draw_deployed_fence_edges(ax, grids, out, hex_size)
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
     ax.set_title("Terrain Map with Deployment", fontsize=13, fontweight="bold", pad=8)

@@ -26,6 +26,7 @@ class ResourceConstraints:
     max_drones_per_grid: int = 1
     max_camps_per_grid: int = 1
     max_rangers_per_grid: int = 1
+    max_fences_per_grid: int = 6  # Default: one per hexagonal side
 
 
 @dataclass
@@ -119,11 +120,13 @@ class DataLoader:
             if grid.grid_id in risk_map:
                 grid.risk = risk_map[grid.grid_id]
 
-    def initialize_deployment_matrix(self, edge_grids: List[int] = None):
+    def initialize_deployment_matrix(self, edge_grids: List[int] = None, grid_model=None):
         """初始化部署矩阵
         
         Args:
             edge_grids: 边缘网格ID列表，Fence只能在这些网格部署
+            grid_model: HexGridModel实例，用于获取边界边数量。如果提供，
+                        fence部署矩阵值将设置为该网格的边界边数量（0-6）
         """
         terrain_deployment = {
             'SaltMarsh':  {'patrol': 0, 'camp': 0, 'drone': 1, 'camera': 0, 'fence': 0},
@@ -145,7 +148,22 @@ class DataLoader:
                     else:
                         # 如果没有提供边缘网格列表，使用地形规则
                         can_deploy = terrain_deployment[grid.terrain_type][resource] == 1
-                    self.deployment_matrix[resource][grid.grid_id] = 1 if can_deploy else 0
+                    
+                    if can_deploy:
+                        if grid_model is not None:
+                            # 使用边界边数量作为部署矩阵值（0-6）
+                            boundary_edges = grid_model.get_boundary_edges_for_grid(grid.grid_id)
+                            num_boundary_edges = len(boundary_edges)
+                            # 限制为max_fences_per_grid（如果已设置约束）
+                            max_fences = 6
+                            if self.constraints is not None:
+                                max_fences = self.constraints.max_fences_per_grid
+                            self.deployment_matrix[resource][grid.grid_id] = min(num_boundary_edges, max_fences)
+                        else:
+                            # 如果没有grid_model，使用默认值1（向后兼容）
+                            self.deployment_matrix[resource][grid.grid_id] = 1
+                    else:
+                        self.deployment_matrix[resource][grid.grid_id] = 0
                 else:
                     # 其他资源使用地形规则
                     self.deployment_matrix[resource][grid.grid_id] = terrain_deployment[grid.terrain_type][resource]
@@ -185,7 +203,8 @@ class DataLoader:
                        max_cameras_per_grid: int = 1,
                        max_drones_per_grid: int = 1,
                        max_camps_per_grid: int = 1,
-                       max_rangers_per_grid: int = 1):
+                       max_rangers_per_grid: int = 1,
+                       max_fences_per_grid: int = 6):
         self.constraints = ResourceConstraints(
             total_patrol=total_patrol,
             total_camps=total_camps,
@@ -196,7 +215,8 @@ class DataLoader:
             max_cameras_per_grid=max_cameras_per_grid,
             max_drones_per_grid=max_drones_per_grid,
             max_camps_per_grid=max_camps_per_grid,
-            max_rangers_per_grid=max_rangers_per_grid
+            max_rangers_per_grid=max_rangers_per_grid,
+            max_fences_per_grid=max_fences_per_grid
         )
 
     def set_coverage_parameters(self, patrol_radius: float = 5.0, drone_radius: float = 8.0,
@@ -246,7 +266,12 @@ class DataLoader:
                 max_rangers_per_camp=c.get('max_rangers_per_camp', 5),
                 total_cameras=c.get('total_cameras', 10),
                 total_drones=c.get('total_drones', 3),
-                total_fence_length=c.get('total_fence_length', 50.0)
+                total_fence_length=c.get('total_fence_length', 50.0),
+                max_cameras_per_grid=c.get('max_cameras_per_grid', 1),
+                max_drones_per_grid=c.get('max_drones_per_grid', 1),
+                max_camps_per_grid=c.get('max_camps_per_grid', 1),
+                max_rangers_per_grid=c.get('max_rangers_per_grid', 1),
+                max_fences_per_grid=c.get('max_fences_per_grid', 6)
             )
         
         if 'coverage_params' in config:

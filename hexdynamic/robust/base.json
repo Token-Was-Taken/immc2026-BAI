@@ -778,9 +778,9 @@
   },
   "dssa_config": {
     "population_size": 60,
-    "max_iterations": 100,
+    "max_iterations": 60,
     "producer_ratio": 0.25,
-    "scout_ratio": 0.2,
+    "scout_ratio": 0.30,
     "ST": 0.75,
     "R2": 0.5,
     "output_dir": "./output_iterations"
