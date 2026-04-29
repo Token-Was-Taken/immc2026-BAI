@@ -227,11 +227,16 @@ Optimization completed.  Best Fitness = 0.498100  Total = 8.45s  Avg/iter = 84.5
     "max_rangers_per_grid": 1    // 单格最大巡逻人员数（默认 1）
   },
 
-  // 覆盖参数（可选）
-  "coverage_params": {
-    "patrol_radius": 5.0, "drone_radius": 8.0, "camera_radius": 3.0,
-    "fence_protection": 0.5, "wp": 0.3, "wd": 0.3, "wc": 0.2, "wf": 0.2
-  },
+   // 覆盖参数（可选）
+   "coverage_params": {
+     "patrol_radius": 5.0, "drone_radius": 8.0, "camera_radius": 3.0,
+     "fence_protection": 0.5,
+     "wp": 0.3, "wd": 0.3, "wc": 0.2, "wf": 0.2,
+     // 协同增强参数：值域 [0.0, 1.0]
+     //   alpha_pd: Patrol + Drone 协同系数（推荐 0.3~0.5，默认 0.4）
+     //   alpha_pc: Patrol + Camera 协同系数（推荐 0.1~0.2，默认 0.15）
+     "alpha_pd": 0.4, "alpha_pc": 0.15
+   },
 
   // 覆盖效果折扣系数（可选）
   // 定义不同地形对各资源覆盖效果的折扣系数（0.0~1.0），不在此配置中的地形默认系数为 1.0

@@ -5,6 +5,7 @@ import random
 import json
 import os
 import threading
+import concurrent.futures
 from coverage_model import CoverageModel, DeploymentSolution
 
 
@@ -58,6 +59,12 @@ class DSSAOptimizer:
 
         self.output_dir = self.config.output_dir
         self._output_lock = threading.Lock()
+
+        # Thread pool for parallel fitness evaluation
+        self._fitness_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(16, self.config.population_size),
+            thread_name_prefix='fitness'
+        )
 
     def _initialize_solution(self) -> DeploymentSolution:
         """初始化解决方案
@@ -280,6 +287,12 @@ class DSSAOptimizer:
         
         return solution
 
+    def _evaluate_fitness_parallel(self, solutions: List[DeploymentSolution]) -> List[float]:
+        """Evaluate fitness for multiple solutions in parallel using thread pool."""
+        futures = [self._fitness_executor.submit(self.evaluate_fitness, sol)
+                   for sol in solutions]
+        return [f.result() for f in concurrent.futures.as_completed(futures)]
+
     def evaluate_fitness(self, solution: DeploymentSolution) -> float:
         is_valid, violations = self.coverage_model.validate_solution(solution, self.constraints)
         if not is_valid:
@@ -424,22 +437,24 @@ class DSSAOptimizer:
 
     def _update_producers(self, iteration: int, alpha: float):
         """Update producer positions with dynamic exploration range.
-        
+
         Args:
             iteration: Current iteration index
             alpha: Current exploration range bound
         """
         num_producers = int(self.config.population_size * self.config.producer_ratio)
         producers = self.population[:num_producers]
-        
+
         escape_count = 0  # 统计警戒更新次数
 
+        new_solutions = []
+        old_solutions = []
+        indices = []
+
         for i, solution in enumerate(producers):
-            # R2 在每次迭代中随机生成 [0, 1]
             R2 = random.uniform(0, 1)
-            
+
             if R2 < self.config.ST:
-                # 正常更新（开发 / exploitation）
                 if i == 0:
                     current_vector = self._solution_to_vector(solution)
                     best_vector = self._solution_to_vector(self.best_solution)
@@ -448,10 +463,8 @@ class DSSAOptimizer:
                     current_vector = self._solution_to_vector(solution)
                     new_vector = current_vector + np.random.uniform(-self.config.exploitation_alpha, self.config.exploitation_alpha, current_vector.shape)
             else:
-                # 警戒更新（探索 / exploration）
                 escape_count += 1
                 current_vector = self._solution_to_vector(solution)
-                # 使用更大的随机扰动进行探索
                 new_vector = current_vector + np.random.uniform(-alpha, alpha, current_vector.shape)
 
             new_solution = self.coverage_model.repair_solution(
@@ -459,33 +472,43 @@ class DSSAOptimizer:
                 self.constraints,
                 self.force_full_deployment
             )
-            
-            # 应用冻结资源
             new_solution = self._apply_frozen_resources(new_solution)
 
-            if self.evaluate_fitness(new_solution) > self.evaluate_fitness(solution):
-                self.population[i] = new_solution
-        
+            new_solutions.append(new_solution)
+            old_solutions.append(solution)
+            indices.append(i)
+
+        all_solutions = new_solutions + old_solutions
+        all_fitnesses = self._evaluate_fitness_parallel(all_solutions)
+        new_fitnesses = all_fitnesses[:len(new_solutions)]
+        old_fitnesses = all_fitnesses[len(new_solutions):]
+
+        for i, new_fit, old_fit in zip(indices, new_fitnesses, old_fitnesses):
+            if new_fit > old_fit:
+                self.population[i] = new_solutions[i]
+
         return escape_count
 
     def _update_followers(self, alpha: float):
         """Update follower positions with dynamic exploration range.
-        
+
         Args:
             alpha: Current exploration range bound
         """
         num_producers = int(self.config.population_size * self.config.producer_ratio)
         num_followers = int(self.config.population_size * (1 - self.config.producer_ratio))
         followers = self.population[num_producers:num_producers + num_followers]
-        
+
         escape_count = 0  # 统计警戒更新次数
 
+        new_solutions = []
+        old_solutions = []
+        indices = []
+
         for i, solution in enumerate(followers):
-            # R2 在每次迭代中随机生成 [0, 1]
             R2 = random.uniform(0, 1)
-            
+
             if R2 < self.config.ST:
-                # 正常更新（开发 / exploitation）
                 if i > self.config.population_size / 2:
                     current_vector = self._solution_to_vector(solution)
                     best_vector = self._solution_to_vector(self.best_solution)
@@ -497,10 +520,8 @@ class DSSAOptimizer:
                     producer_vector = self._solution_to_vector(producer)
                     new_vector = current_vector + np.random.uniform(0, 1, current_vector.shape) * (producer_vector - current_vector)
             else:
-                # 警戒更新（探索 / exploration）
                 escape_count += 1
                 current_vector = self._solution_to_vector(solution)
-                # 使用更大的随机扰动进行探索
                 new_vector = current_vector + np.random.uniform(-alpha, alpha, current_vector.shape)
 
             new_solution = self.coverage_model.repair_solution(
@@ -508,13 +529,21 @@ class DSSAOptimizer:
                 self.constraints,
                 self.force_full_deployment
             )
-            
-            # 应用冻结资源
             new_solution = self._apply_frozen_resources(new_solution)
 
-            if self.evaluate_fitness(new_solution) > self.evaluate_fitness(solution):
-                self.population[num_producers + i] = new_solution
-        
+            new_solutions.append(new_solution)
+            old_solutions.append(solution)
+            indices.append(num_producers + i)
+
+        all_solutions = new_solutions + old_solutions
+        all_fitnesses = self._evaluate_fitness_parallel(all_solutions)
+        new_fitnesses = all_fitnesses[:len(new_solutions)]
+        old_fitnesses = all_fitnesses[len(new_solutions):]
+
+        for i, new_fit, old_fit in zip(indices, new_fitnesses, old_fitnesses):
+            if new_fit > old_fit:
+                self.population[i] = new_solutions[i - num_producers]
+
         return escape_count
 
     def _update_scouts(self):
@@ -527,8 +556,8 @@ class DSSAOptimizer:
                 self.population[i] = self._initialize_solution()
 
     def _update_best_solution(self):
-        for solution in self.population:
-            fitness = self.evaluate_fitness(solution)
+        fitnesses = self._evaluate_fitness_parallel(self.population)
+        for solution, fitness in zip(self.population, fitnesses):
             if fitness > self.best_fitness:
                 self.best_fitness = fitness
                 self.best_solution = solution
@@ -541,8 +570,8 @@ class DSSAOptimizer:
         # 保存初始解决方案（用于冻结资源）
         self.initial_solution = self._initialize_solution()
 
-        for solution in self.population:
-            fitness = self.evaluate_fitness(solution)
+        fitnesses = self._evaluate_fitness_parallel(self.population)
+        for solution, fitness in zip(self.population, fitnesses):
             if fitness > self.best_fitness:
                 self.best_fitness = fitness
                 self.best_solution = solution
@@ -623,6 +652,8 @@ class DSSAOptimizer:
               f"  Total Benefit = {final_total_benefit:.6f}"
               f"  Total = {total_elapsed:.2f}s"
               f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
+
+        self._fitness_executor.shutdown(wait=True)
 
         return self.best_solution, self.best_fitness, self.fitness_history
 

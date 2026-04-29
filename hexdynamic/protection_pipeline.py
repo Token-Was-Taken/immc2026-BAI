@@ -184,7 +184,9 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
         wp=cp.get('wp', 0.3),
         wd=cp.get('wd', 0.3),
         wc=cp.get('wc', 0.2),
-        wf=cp.get('wf', 0.2)
+        wf=cp.get('wf', 0.2),
+        alpha_pd=cp.get('alpha_pd', 0.4),
+        alpha_pc=cp.get('alpha_pc', 0.15)
     )
 
     c = data['constraints']

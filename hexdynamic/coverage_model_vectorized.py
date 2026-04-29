@@ -194,8 +194,19 @@ class VectorizedCoverageModel(CoverageModel):
         cc = np.array([camera_cov[gid] for gid in self.grid_ids])
         fp = np.array([fence_prot[gid] for gid in self.grid_ids])
 
+        # Base contributions
         E = (self.params.wp * pc + self.params.wd * dc +
              self.params.wc * cc + self.params.wf * fp)
+
+        # Synergy: Patrol + Drone
+        denom_pd = 1.0 + pc + dc
+        synergy_pd = self.params.alpha_pd * (pc * dc) / denom_pd
+
+        # Synergy: Patrol + Camera
+        denom_pc = 1.0 + pc + cc
+        synergy_pc = self.params.alpha_pc * (pc * cc) / denom_pc
+
+        E = E + synergy_pd + synergy_pc
 
         benefit = self._risk_vec * (1.0 - np.exp(-E))
         total = float(benefit.sum())

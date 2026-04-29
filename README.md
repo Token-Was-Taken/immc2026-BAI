@@ -45,12 +45,23 @@ Patrol intensity = Σ [rangers × exp(-distance / patrol_radius)]
 Patrol coverage = 1 - exp(-patrol intensity)
 ```
 
-#### 3. Comprehensive Protection Benefit
+#### 3. Comprehensive Protection Benefit (with Synergy)
+
 ```
-E_i = wp × patrol_coverage + wd × drone_coverage + wc × camera_coverage + wf × fence_protection
+Base model:
+  E_i = wp × patrol_cov + wd × drone_cov + wc × camera_cov + wf × fence_prot
+
+Collaborative enhancement (Patrol + Drone, Patrol + Camera):
+  E_i = Base + α_pd × (P×D)/(1+P+D) + α_pc × (P×C)/(1+P+C)
+
+Where:
+  P = patrol_coverage, D = drone_coverage, C = camera_coverage
+  α_pd ∈ [0.3, 0.5] (default 0.4) — Patrol/Drone synergy coefficient
+  α_pc ∈ [0.1, 0.2] (default 0.15) — Patrol/Camera synergy coefficient
+
+Normalized synergy form prevents explosive growth while preserving collaborative benefits.
 
 Protection benefit B_i = Risk value R_i × (1 - exp(-E_i))
-
 Total protection benefit = ΣB_i / ΣR_i (normalized)
 ```
 
@@ -67,6 +78,8 @@ Total protection benefit = ΣB_i / ΣR_i (normalized)
 | `wd` | 0.3 | UAV weight |
 | `wc` | 0.2 | Camera weight |
 | `wf` | 0.2 | Fence weight |
+| `alpha_pd` | 0.4 | **Patrol+Drone synergy coefficient** (range: 0.3–0.5) |
+| `alpha_pc` | 0.15 | **Patrol+Camera synergy coefficient** (range: 0.1–0.2) |
 
 #### DSSA Algorithm Parameters (`DSSAConfig`)
 | Parameter | Default | Description |

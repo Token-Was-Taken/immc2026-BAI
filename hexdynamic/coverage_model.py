@@ -134,10 +134,22 @@ class CoverageModel:
         protection_effect = {}
 
         for grid_id in self.grid_ids:
-            E_i = (self.params.wp * patrol_cov[grid_id] +
-                   self.params.wd * drone_cov[grid_id] +
-                   self.params.wc * camera_cov[grid_id] +
-                   self.params.wf * fence_prot[grid_id])
+            P = patrol_cov[grid_id]
+            D = drone_cov[grid_id]
+            C = camera_cov[grid_id]
+            F = fence_prot[grid_id]
+
+            # Base contributions
+            base = (self.params.wp * P +
+                    self.params.wd * D +
+                    self.params.wc * C +
+                    self.params.wf * F)
+
+            # Synergy terms (normalized to prevent explosive growth)
+            synergy_pd = self.params.alpha_pd * (P * D) / (1.0 + P + D) if (P > 0 or D > 0) else 0.0
+            synergy_pc = self.params.alpha_pc * (P * C) / (1.0 + P + C) if (P > 0 or C > 0) else 0.0
+
+            E_i = base + synergy_pd + synergy_pc
 
             protection_effect[grid_id] = E_i
 

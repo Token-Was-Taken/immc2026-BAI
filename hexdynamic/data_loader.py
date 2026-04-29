@@ -39,6 +39,9 @@ class CoverageParameters:
     wd: float = 0.3
     wc: float = 0.2
     wf: float = 0.2
+    # Synergy parameters for collaborative resource model
+    alpha_pd: float = 0.4  # Patrol + Drone synergy (default: midpoint of 0.3-0.5)
+    alpha_pc: float = 0.15  # Patrol + Camera synergy (default: midpoint of 0.1-0.2)
 
 # Default coverage effectiveness: terrain -> resource -> multiplier (1.0 = full effect)
 DEFAULT_COVERAGE_EFFECTIVENESS: Dict[str, Dict[str, float]] = {
@@ -221,13 +224,15 @@ class DataLoader:
 
     def set_coverage_parameters(self, patrol_radius: float = 5.0, drone_radius: float = 8.0,
                                camera_radius: float = 3.0, fence_protection: float = 0.5,
-                               wp: float = 0.3, wd: float = 0.3, wc: float = 0.2, wf: float = 0.2):
+                               wp: float = 0.3, wd: float = 0.3, wc: float = 0.2, wf: float = 0.2,
+                               alpha_pd: float = 0.4, alpha_pc: float = 0.15):
         self.coverage_params = CoverageParameters(
             patrol_radius=patrol_radius,
             drone_radius=drone_radius,
             camera_radius=camera_radius,
             fence_protection=fence_protection,
-            wp=wp, wd=wd, wc=wc, wf=wf
+            wp=wp, wd=wd, wc=wc, wf=wf,
+            alpha_pd=alpha_pd, alpha_pc=alpha_pc
         )
 
     def get_grid_by_id(self, grid_id: int) -> GridData:
@@ -272,8 +277,8 @@ class DataLoader:
                 max_camps_per_grid=c.get('max_camps_per_grid', 1),
                 max_rangers_per_grid=c.get('max_rangers_per_grid', 1),
                 max_fences_per_grid=c.get('max_fences_per_grid', 6)
-            )
-        
+             )
+
         if 'coverage_params' in config:
             cp = config['coverage_params']
             self.set_coverage_parameters(
@@ -284,5 +289,7 @@ class DataLoader:
                 wp=cp.get('wp', 0.3),
                 wd=cp.get('wd', 0.3),
                 wc=cp.get('wc', 0.2),
-                wf=cp.get('wf', 0.2)
+                wf=cp.get('wf', 0.2),
+                alpha_pd=cp.get('alpha_pd', 0.4),
+                alpha_pc=cp.get('alpha_pc', 0.15)
             )
