@@ -242,16 +242,18 @@ def create_video(image_paths: List[str], output_path: str, fps: float = 10.0,
     """
     if backend == 'cv2' and HAS_CV2:
         create_video_with_cv2(image_paths, output_path, fps, resize_factor)
-    elif backend == 'ffmpeg' or HAS_PIL:
+    elif backend == 'ffmpeg':
         create_video_with_ffmpeg(image_paths, output_path, fps, resize_factor)
     elif HAS_CV2:
         create_video_with_cv2(image_paths, output_path, fps, resize_factor)
+    elif HAS_PIL:
+        create_video_with_ffmpeg(image_paths, output_path, fps, resize_factor)
     else:
         print("错误: 没有可用的后端!")
         print("请安装以下之一:")
-        print("  - ffmpeg (推荐)")
+        print("  - opencv-python (推荐, pip install opencv-python)")
+        print("  - ffmpeg")
         print("  - Pillow (pip install pillow)")
-        print("  - opencv-python (pip install opencv-python)")
 
 
 def main():
