@@ -21,6 +21,11 @@ class DSSAConfig:
     output_dir: Optional[str] = None  # 输出目录，每轮迭代的JSON文件保存到这个目录
     force_full_deployment: Optional[bool] = None
     save_iteration_visualization: bool = False  # 是否保存每轮迭代的 deployment map 可视化
+    
+    # --- 风险优先部署配置 ---
+    use_risk_priority: bool = False  # 是否启用风险优先部署
+    high_risk_percentage: float = 0.3  # 高风险网格占比（0-1），默认 30%
+    high_risk_perturbation_priority: float = 0.7  # 高风险网格扰动优先级（0-1），值越高越高风险网格越容易被扰动
 
     # --- Exploration range scheduling ---
     initial_alpha: float = 3.0       # exploration range in early phase (iter < 30%)
@@ -65,6 +70,14 @@ class DSSAOptimizer:
         # 保存构建输出 JSON 所需的参数
         self.input_grids = input_grids
         self.raw_risk_map = raw_risk_map
+        
+        # --- 风险优先部署：初始化高/低风险网格分组 ---
+        self._high_risk_grids = []
+        self._low_risk_grids = []
+        self._grid_to_risk = {}  # grid_id -> normalized_risk
+        
+        if self.config.use_risk_priority:
+            self._initialize_risk_groups()
 
         # Thread pool for parallel fitness evaluation
         self._fitness_executor = concurrent.futures.ThreadPoolExecutor(
@@ -78,7 +91,7 @@ class DSSAOptimizer:
         如果 force_full_deployment=True，强制部署所有资源到上限
         否则使用原来的逻辑（可能部分部署）
         
-        支持多围栏部署：每个边缘格子可以在其边界边上部署多个围栏
+        如果启用了风险优先部署，将优先从高风险网格部署资源
         """
         cameras = {}
         camps = {}
@@ -86,8 +99,8 @@ class DSSAOptimizer:
         rangers = {}
         fences = dict(self.fixed_fences)  # Start with fixed fences
 
-        grid_ids_shuffled = self.grid_ids.copy()
-        random.shuffle(grid_ids_shuffled)
+        # 获取优先级网格顺序：高风险网格在前，低风险网格在后
+        grid_ids_ordered = self._get_prioritized_grid_order()
 
         if self.force_full_deployment:
             # 强制部署模式：确保所有资源都部署到上限
@@ -97,7 +110,7 @@ class DSSAOptimizer:
             cam_target = self.constraints['total_cameras']
             cam_deployed = 0
             
-            for grid_id in grid_ids_shuffled:
+            for grid_id in grid_ids_ordered:
                 if cam_deployed >= cam_target:
                     break
                 if self.coverage_model.deployment_matrix['camera'][grid_id] == 1:
@@ -108,7 +121,7 @@ class DSSAOptimizer:
             # 如果还没部署完，继续尝试（可能需要多次遍历）
             attempt = 0
             while cam_deployed < cam_target and attempt < 3:
-                for grid_id in grid_ids_shuffled:
+                for grid_id in grid_ids_ordered:
                     if cam_deployed >= cam_target:
                         break
                     if self.coverage_model.deployment_matrix['camera'][grid_id] == 1:
@@ -124,7 +137,7 @@ class DSSAOptimizer:
             drone_target = self.constraints['total_drones']
             drone_deployed = 0
             
-            for grid_id in grid_ids_shuffled:
+            for grid_id in grid_ids_ordered:
                 if drone_deployed >= drone_target:
                     break
                 if self.coverage_model.deployment_matrix['drone'][grid_id] == 1:
@@ -137,7 +150,7 @@ class DSSAOptimizer:
             camp_target = self.constraints['total_camps']
             camp_deployed = 0
             
-            for grid_id in grid_ids_shuffled:
+            for grid_id in grid_ids_ordered:
                 if camp_deployed >= camp_target:
                     break
                 if self.coverage_model.deployment_matrix['camp'][grid_id] == 1:
@@ -149,7 +162,7 @@ class DSSAOptimizer:
             ranger_target = self.constraints['total_patrol']
             ranger_deployed = 0
             
-            for grid_id in grid_ids_shuffled:
+            for grid_id in grid_ids_ordered:
                 if ranger_deployed >= ranger_target:
                     break
                 if (grid_id not in camps and 
@@ -164,7 +177,7 @@ class DSSAOptimizer:
             # 原来的逻辑：允许部分部署
             max_cam = self.constraints.get('max_cameras_per_grid', 1)
             cam_deployed = 0
-            for grid_id in grid_ids_shuffled:
+            for grid_id in grid_ids_ordered:
                 if cam_deployed >= self.constraints['total_cameras']:
                     break
                 if self.coverage_model.deployment_matrix['camera'][grid_id] == 1:
@@ -172,21 +185,21 @@ class DSSAOptimizer:
                     cameras[grid_id] = count
                     cam_deployed += count
 
-            drones_to_deploy = min(self.constraints['total_drones'], len(grid_ids_shuffled))
+            drones_to_deploy = min(self.constraints['total_drones'], len(grid_ids_ordered))
             for i in range(drones_to_deploy):
-                grid_id = grid_ids_shuffled[(i + cam_deployed) % len(grid_ids_shuffled)]
+                grid_id = grid_ids_ordered[(i + cam_deployed) % len(grid_ids_ordered)]
                 if self.coverage_model.deployment_matrix['drone'][grid_id] == 1:
                     drones[grid_id] = 1
 
-            camps_to_deploy = min(self.constraints['total_camps'], len(grid_ids_shuffled))
+            camps_to_deploy = min(self.constraints['total_camps'], len(grid_ids_ordered))
             for i in range(camps_to_deploy):
-                grid_id = grid_ids_shuffled[(i + cam_deployed + drones_to_deploy) % len(grid_ids_shuffled)]
+                grid_id = grid_ids_ordered[(i + cam_deployed + drones_to_deploy) % len(grid_ids_ordered)]
                 if self.coverage_model.deployment_matrix['camp'][grid_id] == 1:
                     camps[grid_id] = 1
 
             if self.constraints['total_patrol'] > 0 and sum(rangers.values()) < self.constraints['total_patrol']:
                 remaining_rangers = self.constraints['total_patrol'] - sum(rangers.values())
-                for grid_id in grid_ids_shuffled:
+                for grid_id in grid_ids_ordered:
                     if remaining_rangers <= 0:
                         break
                     if (grid_id not in cameras and
@@ -835,7 +848,12 @@ class DSSAOptimizer:
             try:
                 import sys
                 import os
+                import gc
                 from visualize_output import plot_terrain_deployment_map
+                # Import matplotlib and ensure proper cleanup
+                import matplotlib
+                import matplotlib.pyplot as plt
+                matplotlib.rcParams["figure.max_open_warning"] = 0
 
                 iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
                 os.makedirs(iter_dir, exist_ok=True)
@@ -853,11 +871,70 @@ class DSSAOptimizer:
                 if boundary_xy and out['grids']:
                     plot_terrain_deployment_map(out, hex_size, boundary_xy, 
                                                 os.path.join(iter_dir, "deployment_map.png"))
+                
+                # Force cleanup
+                plt.close('all')
+                gc.collect()
 
             except Exception as e:
                 print(f"Warning: Failed to plot iteration {iteration} deployment: {e}")
                 import traceback
                 traceback.print_exc()
+                try:
+                    import matplotlib.pyplot as plt
+                    plt.close('all')
+                    import gc
+                    gc.collect()
+                except:
+                    pass
 
         thread = threading.Thread(target=_plot, daemon=True)
         thread.start()
+    
+    def _initialize_risk_groups(self):
+        """初始化高/低风险网格分组
+        
+        按照归一化风险值排序，前 high_risk_percentage 的网格为高风险网格，
+        剩余的为低风险网格。
+        """
+        # 收集所有网格及其风险值
+        grid_risk_list = []
+        for grid_id in self.grid_ids:
+            risk = self.grid_model.get_grid_risk(grid_id)
+            self._grid_to_risk[grid_id] = risk
+            grid_risk_list.append((grid_id, risk))
+        
+        # 按风险值从高到低排序
+        grid_risk_list.sort(key=lambda x: x[1], reverse=True)
+        
+        # 分割为高/低风险网格
+        num_high_risk = int(len(grid_risk_list) * self.config.high_risk_percentage)
+        self._high_risk_grids = [grid_id for grid_id, risk in grid_risk_list[:num_high_risk]]
+        self._low_risk_grids = [grid_id for grid_id, risk in grid_risk_list[num_high_risk:]]
+        
+        print(f"[Risk Priority] 网格分组完成：")
+        print(f"  - 总网格数：{len(self.grid_ids)}")
+        print(f"  - 高风险网格：{len(self._high_risk_grids)}（前 {self.config.high_risk_percentage*100:.0f}%）")
+        print(f"  - 低风险网格：{len(self._low_risk_grids)}")
+        if self._high_risk_grids:
+            max_risk = max(self._grid_to_risk[gid] for gid in self._high_risk_grids)
+            min_risk = min(self._grid_to_risk[gid] for gid in self._high_risk_grids)
+            print(f"  - 高风险网格范围：[{min_risk:.4f}, {max_risk:.4f}]")
+    
+    def _get_prioritized_grid_order(self) -> List[int]:
+        """获取优先级网格顺序：先高风险网格，再低风险网格
+        
+        每个分组内部随机排序，保持多样性
+        """
+        if not self.config.use_risk_priority:
+            # 未启用风险优先：完全随机
+            shuffled = self.grid_ids.copy()
+            random.shuffle(shuffled)
+            return shuffled
+        
+        # 启用风险优先：高风险网格先随机，低风险网格后随机
+        high_shuffled = self._high_risk_grids.copy()
+        low_shuffled = self._low_risk_grids.copy()
+        random.shuffle(high_shuffled)
+        random.shuffle(low_shuffled)
+        return high_shuffled + low_shuffled

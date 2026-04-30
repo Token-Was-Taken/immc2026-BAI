@@ -23,6 +23,8 @@ from typing import Dict, List, Optional, Tuple
 
 import matplotlib
 matplotlib.use("Agg")
+# Disable the "more than 20 figures" warning
+matplotlib.rcParams["figure.max_open_warning"] = 0
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
@@ -329,12 +331,12 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size, color=None):
                             solid_capstyle="round")
                     boundary_edge_count += 1
     
-    # Debug output
-    if fence_edges:
-        print(f"[DEBUG] Fence edge visualization:")
-        print(f"  - Total fence edges in data: {len(fence_edges)}")
-        print(f"  - Boundary edges drawn: {boundary_edge_count}")
-        print(f"  - Internal edges skipped: {internal_edge_skipped}")
+    # Debug output (disabled)
+    # if fence_edges:
+    #     print(f"[DEBUG] Fence edge visualization:")
+    #     print(f"  - Total fence edges in data: {len(fence_edges)}")
+    #     print(f"  - Boundary edges drawn: {boundary_edge_count}")
+    #     print(f"  - Internal edges skipped: {internal_edge_skipped}")
 
 
 def legend_in_ax(ax_leg, handles, title, y_start=1.0, fontsize=9, title_fontsize=9):

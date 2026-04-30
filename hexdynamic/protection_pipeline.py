@@ -269,7 +269,10 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             use_time_aware_fitness=dc.get('use_time_aware_fitness', False),
             output_dir=output_dir,
             force_full_deployment=dc.get('force_full_deployment', True),
-            save_iteration_visualization=dc.get('save_iteration_visualization', False)
+            save_iteration_visualization=dc.get('save_iteration_visualization', False),
+            use_risk_priority=dc.get('use_risk_priority', False),
+            high_risk_percentage=dc.get('high_risk_percentage', 0.3),
+            high_risk_perturbation_priority=dc.get('high_risk_perturbation_priority', 0.7)
         )
     if dssa_config.output_dir is None:
         dssa_config.output_dir = output_dir
@@ -277,6 +280,12 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         dssa_config.force_full_deployment = dc.get('force_full_deployment', True)
     if dssa_config.save_iteration_visualization is None:
         dssa_config.save_iteration_visualization = dc.get('save_iteration_visualization', False)
+    if dssa_config.use_risk_priority is None:
+        dssa_config.use_risk_priority = dc.get('use_risk_priority', False)
+    if dssa_config.high_risk_percentage is None:
+        dssa_config.high_risk_percentage = dc.get('high_risk_percentage', 0.3)
+    if dssa_config.high_risk_perturbation_priority is None:
+        dssa_config.high_risk_perturbation_priority = dc.get('high_risk_perturbation_priority', 0.7)
 
     # 部署模式优先级：CLI --allow-partial-deployment > JSON dssa_config.force_full_deployment > 默认 True
     if allow_partial_deployment:
@@ -291,6 +300,11 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
     # 时间感知适应度模式
     if dssa_config.use_time_aware_fitness:
         print("      [TIME-AWARE] 时间感知模式：资源分配将反映时间因子的影响")
+    
+    # 风险优先部署模式
+    if dssa_config.use_risk_priority:
+        print(f"      [RISK-PRIORITY] 风险优先模式：优先将资源部署到高风险网格")
+        print(f"        - 高风险网格占比：{dssa_config.high_risk_percentage*100:.0f}%")
     
     # 解析冻结资源列表
     frozen_resources_list = []

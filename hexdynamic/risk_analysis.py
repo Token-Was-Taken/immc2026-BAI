@@ -573,5 +573,5 @@ if __name__ == '__main__':
     run(args.input, args.output_dir, hex_size=args.hex_size)
 
 
-# DEBUG: Add this at the very end to test
-print("DEBUG: Module loaded successfully", flush=True)
+# DEBUG: Add this at the very end to test (disabled)
+# print("DEBUG: Module loaded successfully", flush=True)
