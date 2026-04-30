@@ -855,6 +855,112 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
     print(f"  saved: {save_path}")
 
 
+def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path):
+    """保护收益热力图与部署资源对比图（上：Protection Heatmap，下：Deployment Map）"""
+    grids = out["grids"]
+    summary = out["summary"]
+    show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
+    edge_ids = _edge_grid_ids(grids, boundary_xy)
+
+    fig = plt.figure(figsize=(16, 16))
+    
+    # 上半部分：Protection Heatmap
+    ax1 = fig.add_axes([0.07, 0.52, 0.65, 0.46])
+    
+    # 上半部分颜色条：Protection Heatmap右侧
+    ax_cbar = fig.add_axes([0.74, 0.57, 0.02, 0.36])
+    
+    # 下半部分：Deployment Map
+    ax2 = fig.add_axes([0.07, 0.06, 0.65, 0.46])
+    
+    # 右侧图例
+    ax_leg = fig.add_axes([0.80, 0.06, 0.18, 0.88])
+    ax_leg.axis("off")
+
+    # ================= 上半部分：Protection Heatmap
+    cmap = matplotlib.colormaps.get_cmap("Greens")
+    norm_max = max((g.get("protection_benefit_normalized", 0) for g in grids), default=1)
+    norm = Normalize(vmin=0, vmax=norm_max)
+
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        draw_hex(ax1, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g.get("protection_benefit_normalized", 0))))
+        if show_grid_ids:
+            ax1.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
+
+    setup_map_ax(ax1, grids, hex_size)
+    draw_boundary(ax1, grids, boundary_xy, hex_size)
+    ax1.set_title("Protection Benefit (Top)", fontsize=13, fontweight="bold", pad=8)
+
+    # ================= 上半部分颜色条
+    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cb = fig.colorbar(sm, cax=ax_cbar)
+    cb.set_label("Protection Benefit (Normalized)", fontsize=9)
+    cb.ax.tick_params(labelsize=8)
+
+    # ================= 下半部分：Deployment Map
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        draw_hex(ax2, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
+
+    _draw_resources(ax2, grids, out, hex_size, edge_ids)
+    draw_deployed_fence_edges(ax2, grids, out, hex_size)
+    
+    setup_map_ax(ax2, grids, hex_size)
+    draw_boundary(ax2, grids, boundary_xy, hex_size)
+    ax2.set_title("Deployment (Bottom)", fontsize=13, fontweight="bold", pad=8)
+
+    # ================= 右侧图例
+    summary_items = [
+        ("Summary",        None,                          True),
+        ("Best Fitness",   f"{summary['best_fitness']:.4f}", False),
+        ("Total PB",       f"{summary['total_protection_benefit']:.4f}", False),
+        ("Avg PB",         f"{summary['average_protection_benefit']:.4f}", False),
+        ("--- Resources ---", None,                      True),
+    ]
+    
+    # 部署资源统计
+    for res, (marker, color, label) in RESOURCE_MARKERS.items():
+        total = sum(g.get("resources_deployed", {}).get(res, 0) for g in grids)
+        if total > 0:
+            summary_items.append((label, str(total), False))
+    
+    fence_total = sum(len(g.get("fences", [])) for g in grids)
+    if fence_total > 0:
+        summary_items.append(("Fence Edges", str(fence_total), False))
+
+    y = 0.97
+    for label, value, bold in summary_items:
+        text = label if value is None else f"{label}: {value}"
+        ax_leg.text(0.05, y, text, transform=ax_leg.transAxes,
+                    fontsize=8, va="top",
+                    fontweight="bold" if bold else "normal",
+                    fontfamily="monospace")
+        y -= 0.07
+    
+    # 地形图例
+    terrain_handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, alpha=0.5, label=t)
+                       for t, c in TERRAIN_COLORS.items()]
+    y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=y)
+    
+    # 资源图例
+    res_handles = [
+        plt.Line2D([0], [0], marker=m, color="w", markerfacecolor=c,
+                   markeredgecolor="black", markersize=8, label=l)
+        for _, (m, c, l) in RESOURCE_MARKERS.items()
+    ]
+    res_handles.append(
+        plt.Line2D([0], [1], color=FENCE_COLOR, linewidth=FENCE_EDGE_LINEWIDTH * 2,
+                   label="Fence (bold edge)")
+    )
+    legend_in_ax(ax_leg, res_handles, "Resources", y_start=y)
+
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved: {save_path}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -899,6 +1005,9 @@ def main():
     
     plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy,
                                       save_path=os.path.join(args.out_dir, f"{pre}species_deployment_comparison.png"))
+    
+    plot_protection_deployment_comparison(out, hex_size, boundary_xy,
+                                          save_path=os.path.join(args.out_dir, f"{pre}protection_deployment_comparison.png"))
     print("完成。")
 
 
