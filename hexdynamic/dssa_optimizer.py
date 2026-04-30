@@ -20,6 +20,7 @@ class DSSAConfig:
     use_time_aware_fitness: bool = False  # 启用时间感知的适应度计算
     output_dir: Optional[str] = None  # 输出目录，每轮迭代的JSON文件保存到这个目录
     force_full_deployment: Optional[bool] = None
+    save_iteration_visualization: bool = False  # 是否保存每轮迭代的 deployment map 可视化
 
     # --- Exploration range scheduling ---
     initial_alpha: float = 3.0       # exploration range in early phase (iter < 30%)
@@ -36,7 +37,8 @@ class DSSAConfig:
 class DSSAOptimizer:
     def __init__(self, coverage_model: CoverageModel, constraints: Dict[str, any],
                  config: DSSAConfig = None, fixed_fences: Dict[Tuple[int, int], int] = None,
-                 force_full_deployment: bool = True, frozen_resources: List[str] = None):
+                 force_full_deployment: bool = True, frozen_resources: List[str] = None,
+                 input_grids: List[Dict] = None, raw_risk_map: Dict = None):
         self.coverage_model = coverage_model
         self.constraints = constraints
         self.config = config or DSSAConfig()
@@ -59,6 +61,10 @@ class DSSAOptimizer:
 
         self.output_dir = self.config.output_dir
         self._output_lock = threading.Lock()
+
+        # 保存构建输出 JSON 所需的参数
+        self.input_grids = input_grids
+        self.raw_risk_map = raw_risk_map
 
         # Thread pool for parallel fitness evaluation
         self._fitness_executor = concurrent.futures.ThreadPoolExecutor(
@@ -590,6 +596,7 @@ class DSSAOptimizer:
                 followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
                 scouts = self.population[self.config.population_size - num_scouts:]
                 self._async_output_iteration_results(iteration, producers, followers, scouts)
+                self._async_plot_iteration_deployment(iteration, self.best_solution)
             
             # 计算total benefit
             pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
@@ -700,4 +707,157 @@ class DSSAOptimizer:
                 print(f"Warning: Failed to write iteration output: {e}")
 
         thread = threading.Thread(target=_write_files, daemon=True)
+        thread.start()
+
+    def _build_output_for_solution(self, solution: DeploymentSolution) -> Dict[str, any]:
+        """构建完整的输出 JSON 结构（类似 protection_pipeline.py 中的逻辑）
+        """
+        import numpy as np
+        
+        pb_per_grid = self.coverage_model.calculate_protection_benefit(solution)
+        total_risk = sum(self.grid_model.get_grid_risk(gid) for gid in self.grid_model.get_all_grid_ids())
+
+        total_risk_weighted = 0.0
+        for gid in self.grid_model.get_all_grid_ids():
+            normalized_risk = self.grid_model.get_grid_risk(gid)
+            temporal_factor = self.grid_model.get_grid_temporal_factor(gid)
+            total_risk_weighted += normalized_risk * temporal_factor
+
+        total_protection_benefit = sum(pb_per_grid.values())
+        avg_protection_benefit = float(np.mean(list(pb_per_grid.values())))
+
+        risk_vals = [self.grid_model.get_grid_risk(gid) for gid in self.grid_model.get_all_grid_ids()]
+        risk_min, risk_max = min(risk_vals), max(risk_vals)
+
+        protection_effect = self.coverage_model.calculate_protection_effect(solution)
+
+        rr_per_grid = {
+            gid: self.grid_model.get_grid_risk(gid) * np.exp(-protection_effect[gid])
+            for gid in self.grid_model.get_all_grid_ids()
+        }
+
+        def norm_unified_risk(v):
+            return float((v - risk_min) / (risk_max - risk_min)) if risk_max != risk_min else float(v)
+
+        pb_vals = list(pb_per_grid.values())
+        pb_min, pb_max = min(pb_vals), max(pb_vals)
+
+        def norm_pb(v):
+            return float((v - pb_min) / (pb_max - pb_min)) if pb_max != pb_min else float(v)
+
+        input_grid_map = {g['grid_id']: g for g in (self.input_grids or [])} if self.input_grids else {}
+        grid_results = []
+        
+        if self.input_grids:
+            for grid in self.input_grids:
+                gid = grid['grid_id']
+                src = grid
+                entry = {
+                    'grid_id': gid,
+                    'q': grid.get('q', 0),
+                    'r': grid.get('r', 0),
+                    'x': grid.get('x', 0),
+                    'y': grid.get('y', 0),
+                    'terrain_type': grid.get('terrain_type', 'SparseGrass'),
+                    'risk_normalized': round(norm_unified_risk(self.grid_model.get_grid_risk(gid)), 6),
+                    'raw_risk': round(float(self.raw_risk_map.get(gid, 0.0)) if self.raw_risk_map else 0.0, 6),
+                    'protection_benefit_raw': round(float(pb_per_grid.get(gid, 0.0)), 6),
+                    'protection_benefit_normalized': round(norm_pb(pb_per_grid.get(gid, 0.0)), 6),
+                    'residual_risk_normalized': round(norm_unified_risk(rr_per_grid.get(gid, 0.0)), 6),
+                    'deployment': {
+                        'patrol_rangers': int(solution.rangers.get(gid, 0)),
+                        'camp': int(solution.camps.get(gid, 0)),
+                        'drone': int(solution.drones.get(gid, 0)),
+                        'camera': int(solution.cameras.get(gid, 0))
+                    }
+                }
+                
+                grid_fence_edges = [(e[0], e[1]) for e, v in solution.fences.items() if v > 0 and e[0] == gid and isinstance(e[1], int)]
+                if grid_fence_edges:
+                    entry['fences'] = {
+                        'fence_count': len(grid_fence_edges),
+                        'boundary_edge_list': [direction for _, direction in grid_fence_edges]
+                    }
+                
+                if 'hex_size' in grid:
+                    entry['hex_size'] = grid['hex_size']
+                grid_results.append(entry)
+        
+        all_gids = self.grid_model.get_all_grid_ids()
+        norm_risk_vals = [self.grid_model.get_grid_risk(gid) for gid in all_gids]
+        raw_risk_vals = [float(self.raw_risk_map.get(gid, 0.0)) if self.raw_risk_map else 0.0 for gid in all_gids]
+        residual_vals = [norm_unified_risk(rr_per_grid[gid]) for gid in all_gids]
+        total_residual = sum(rr_per_grid[gid] for gid in all_gids)
+
+        output = {
+            'summary': {
+                'total_grids': self.grid_model.get_grid_count(),
+                'total_risk': round(float(total_risk), 6),
+                'total_risk_weighted': round(float(total_risk_weighted), 6),
+                'best_fitness': round(float(self.evaluate_fitness(solution)), 6),
+                'total_protection_benefit': round(float(total_protection_benefit), 6),
+                'average_protection_benefit': round(float(avg_protection_benefit), 6),
+                'risk_min': round(min(norm_risk_vals), 6),
+                'risk_max': round(max(norm_risk_vals), 6),
+                'risk_mean': round(float(np.mean(norm_risk_vals)), 6),
+                'raw_risk_min': round(min(raw_risk_vals), 6),
+                'raw_risk_max': round(max(raw_risk_vals), 6),
+                'raw_risk_mean': round(float(np.mean(raw_risk_vals)), 6),
+                'residual_risk_min': round(min(residual_vals), 6),
+                'residual_risk_max': round(max(residual_vals), 6),
+                'residual_risk_mean': round(float(np.mean(residual_vals)), 6),
+                'total_residual_risk': round(float(total_residual), 6),
+                'fitness_history': [round(float(f), 6) for f in self.fitness_history],
+                'resources_deployed': {
+                    'total_cameras': int(sum(solution.cameras.values())),
+                    'total_drones': int(sum(solution.drones.values())),
+                    'total_camps': int(sum(solution.camps.values())),
+                    'total_rangers': int(sum(solution.rangers.values())),
+                    'fence_segments': sum(1 for v in solution.fences.values() if v > 0)
+                }
+            },
+            'visualization_config': {
+                'show_grid_ids': False
+            },
+            'grids': grid_results
+        }
+        
+        return output
+
+    def _async_plot_iteration_deployment(self, iteration: int, solution: DeploymentSolution):
+        """异步绘制当前迭代的最优 deployment map"""
+        if not (self.output_dir and self.config.save_iteration_visualization):
+            return
+        if not (self.input_grids):
+            return
+
+        def _plot():
+            try:
+                import sys
+                import os
+                from visualize_output import plot_terrain_deployment_map
+
+                iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
+                os.makedirs(iter_dir, exist_ok=True)
+
+                out = self._build_output_for_solution(solution)
+
+                hex_size = self.input_grids[0].get('hex_size', 10) if len(self.input_grids) > 0 else 10
+
+                x_coords = [g.get('x', 0) for g in self.input_grids] if self.input_grids else []
+                y_coords = [g.get('y', 0) for g in self.input_grids] if self.input_grids else []
+                boundary_xy = (
+                    (min(x_coords) - hex_size, min(y_coords) - hex_size),
+                    (max(x_coords) + hex_size, max(y_coords) + hex_size)) if x_coords and y_coords else None
+
+                if boundary_xy and out['grids']:
+                    plot_terrain_deployment_map(out, hex_size, boundary_xy, 
+                                                os.path.join(iter_dir, "deployment_map.png"))
+
+            except Exception as e:
+                print(f"Warning: Failed to plot iteration {iteration} deployment: {e}")
+                import traceback
+                traceback.print_exc()
+
+        thread = threading.Thread(target=_plot, daemon=True)
         thread.start()

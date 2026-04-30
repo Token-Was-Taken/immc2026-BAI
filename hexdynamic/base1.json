@@ -676,6 +676,7 @@
     "wf": 0.1
   },
   "dssa_config": {
+    "save_iteration_visualization": true,
     "population_size": 50,
     "max_iterations": 1,
     "producer_ratio": 0.2,

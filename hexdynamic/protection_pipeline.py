@@ -212,7 +212,7 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
     return loader
 
 
-def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None):
+def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None):
     print(f"[1/4] Read input: {input_path}")
     data = load_input(input_path)
 
@@ -252,6 +252,12 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
     fixed_fences = {}
 
     dc = data.get('dssa_config', {})
+    # 如果 CLI 提供了 out_dir，则使用 CLI 提供的
+    # 否则优先使用 JSON 中的配置，或者使用默认值
+    output_dir = out_dir if out_dir is not None else dc.get('output_dir')
+    if output_dir and not os.path.isabs(output_dir):
+        # 如果是相对路径，基于当前工作目录解析
+        output_dir = os.path.abspath(output_dir)
     if dssa_config is None:
         dssa_config = DSSAConfig(
             population_size=dc.get('population_size', 50),
@@ -261,13 +267,16 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             ST=dc.get('ST', 0.8),
             R2=dc.get('R2', 0.5),
             use_time_aware_fitness=dc.get('use_time_aware_fitness', False),
-            output_dir=dc.get('output_dir'),
-            force_full_deployment=dc.get('force_full_deployment', True)
+            output_dir=output_dir,
+            force_full_deployment=dc.get('force_full_deployment', True),
+            save_iteration_visualization=dc.get('save_iteration_visualization', False)
         )
     if dssa_config.output_dir is None:
-        dssa_config.output_dir = dc.get('output_dir')
+        dssa_config.output_dir = output_dir
     if dssa_config.force_full_deployment is None:
         dssa_config.force_full_deployment = dc.get('force_full_deployment', True)
+    if dssa_config.save_iteration_visualization is None:
+        dssa_config.save_iteration_visualization = dc.get('save_iteration_visualization', False)
 
     # 部署模式优先级：CLI --allow-partial-deployment > JSON dssa_config.force_full_deployment > 默认 True
     if allow_partial_deployment:
@@ -293,7 +302,9 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
     optimizer = DSSAOptimizer(coverage_model, constraints, dssa_config, 
                              fixed_fences=fixed_fences,
                              force_full_deployment=force_full_deployment,
-                             frozen_resources=frozen_resources_list)
+                             frozen_resources=frozen_resources_list,
+                             input_grids=data.get('grids', []),
+                             raw_risk_map=raw_risk_map)
     best_solution, best_fitness, fitness_history = optimizer.optimize()
 
     # 打印资源部署总结

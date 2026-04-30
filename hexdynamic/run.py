@@ -102,6 +102,7 @@ def main():
         vectorized=args.vectorized,
         allow_partial_deployment=args.allow_partial_deployment,
         freeze_resources=args.freeze_resources,
+        out_dir=args.out_dir,
     )
 
     # Step 2: 可视化

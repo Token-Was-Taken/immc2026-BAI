@@ -132,7 +132,28 @@ class WildlifeProtectionOptimizer:
             'total_fence_length': self.data_loader.constraints.total_fence_length
         }
 
-        self.optimizer = DSSAOptimizer(self.coverage_model, constraints, dssa_config)
+        # 将数据转换为字典格式供 DSSAOptimizer 使用
+        input_grids = []
+        raw_risk_map = {}
+        for grid in self.data_loader.grids:
+            input_grids.append({
+                'grid_id': grid.grid_id,
+                'q': grid.q,
+                'r': grid.r,
+                'x': grid.x,
+                'y': grid.y,
+                'terrain_type': grid.terrain_type,
+                'hex_size': 1.0
+            })
+            raw_risk_map[grid.grid_id] = grid.risk
+
+        self.optimizer = DSSAOptimizer(
+            self.coverage_model, 
+            constraints, 
+            dssa_config,
+            input_grids=input_grids,
+            raw_risk_map=raw_risk_map
+        )
 
         if verbose:
             print("=" * 60)
