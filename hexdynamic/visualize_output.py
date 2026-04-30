@@ -460,6 +460,7 @@ def _draw_resources(ax, grids, out, hex_size, edge_ids):
 def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path):
     grids = out["grids"]
     summary = out["summary"]
+    show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("YlOrRd")
     norm = Normalize(vmin=0, vmax=1)
 
@@ -469,7 +470,8 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path):
         cx, cy = grid_center(g["q"], g["r"], hex_size)
         draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g["risk_normalized"])))
         # 添加网格 ID 标注
-        ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
+        if show_grid_ids:
+            ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
@@ -503,6 +505,7 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path):
 def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
     grids = out["grids"]
     summary = out["summary"]
+    show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("Greens")
 
     summary_items = [
@@ -519,7 +522,8 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
             cx, cy = grid_center(g["q"], g["r"], hex_size)
             draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g.get(value_key, 0))))
             # 添加网格 ID 标注
-            ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
+            if show_grid_ids:
+                ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
         setup_map_ax(ax, grids, hex_size)
         draw_boundary(ax, grids, boundary_xy, hex_size)
@@ -556,6 +560,7 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
     """上下对比：部署前风险（risk_normalized）vs 部署后剩余风险（residual_risk_normalized）"""
     grids = out["grids"]
     summary = out["summary"]
+    show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
 
     # 检查是否有 residual_risk_normalized 字段
     if not grids or "residual_risk_normalized" not in grids[0]:
@@ -589,8 +594,9 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
         draw_hex(ax_after, cx, cy, hex_size * 0.97,
                  facecolor=cmap(norm(g["residual_risk_normalized"])))
         # 在两个子图上都添加网格 ID 标注
-        ax_before.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
-        ax_after.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
+        if show_grid_ids:
+            ax_before.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
+            ax_after.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
     setup_map_ax(ax_before, grids, hex_size)
     setup_map_ax(ax_after, grids, hex_size)
@@ -643,13 +649,15 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
 
 def plot_terrain_map(out, hex_size, boundary_xy, save_path):
     grids = out["grids"]
+    show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     fig, ax, _, ax_leg = make_figure(has_colorbar=False)
 
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
         draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"))
         # 添加网格 ID 标注
-        ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
+        if show_grid_ids:
+            ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
     draw_deployed_fence_edges(ax, grids, out, hex_size, color="#1a1a1a")
     setup_map_ax(ax, grids, hex_size)

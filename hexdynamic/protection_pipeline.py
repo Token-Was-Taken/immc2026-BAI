@@ -490,6 +490,9 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
                 'fence_segments': sum(1 for v in best_solution.fences.values() if v > 0)
             }
         },
+        'visualization_config': {
+            'show_grid_ids': False
+        },
         'grids': grid_results
     }
 
