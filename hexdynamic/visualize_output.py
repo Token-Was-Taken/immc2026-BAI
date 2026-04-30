@@ -553,7 +553,7 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
 
 
 def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
-    """并排对比：部署前风险（risk_normalized）vs 部署后剩余风险（residual_risk_normalized）"""
+    """上下对比：部署前风险（risk_normalized）vs 部署后剩余风险（residual_risk_normalized）"""
     grids = out["grids"]
     summary = out["summary"]
 
@@ -570,12 +570,12 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
     vmax = max(max(risk_before), max(risk_after))
     norm = Normalize(vmin=0, vmax=vmax)
 
-    fig = plt.figure(figsize=(20, 9))
-    # 左：部署前  右：部署后  各占 38%，中间颜色条 4%，右侧图例 16%
-    ax_before = fig.add_axes([0.02, 0.06, 0.37, 0.86])
-    ax_after  = fig.add_axes([0.41, 0.06, 0.37, 0.86])
-    ax_cbar   = fig.add_axes([0.80, 0.12, 0.02, 0.62])
-    ax_leg    = fig.add_axes([0.84, 0.06, 0.14, 0.86])
+    fig = plt.figure(figsize=(14, 16))
+    # 颜色条在最左边，然后是两个热力图上下排列，summary在最右边
+    ax_cbar   = fig.add_axes([0.02, 0.12, 0.02, 0.70])
+    ax_before = fig.add_axes([0.07, 0.52, 0.70, 0.42])
+    ax_after  = fig.add_axes([0.07, 0.05, 0.70, 0.42])
+    ax_leg    = fig.add_axes([0.80, 0.05, 0.18, 0.90])
 
     for ax in (ax_before, ax_after):
         ax.set_aspect("equal")
