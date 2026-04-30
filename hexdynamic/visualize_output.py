@@ -573,16 +573,15 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
     vmax = max(max(risk_before), max(risk_after))
     norm = Normalize(vmin=0, vmax=vmax)
 
-    fig = plt.figure(figsize=(14, 14))
+    fig = plt.figure(figsize=(14, 13))
     # 颜色条在最左边，然后是两个热力图上下排列，summary在最右边
     ax_cbar   = fig.add_axes([0.02, 0.08, 0.02, 0.80])
-    ax_before = fig.add_axes([0.07, 0.52, 0.70, 0.42])
-    ax_after  = fig.add_axes([0.07, 0.055, 0.70, 0.42])
-    ax_leg    = fig.add_axes([0.80, 0.055, 0.18, 0.88])
+    ax_before = fig.add_axes([0.07, 0.52, 0.70, 0.46])
+    ax_after  = fig.add_axes([0.07, 0.06, 0.70, 0.46])
+    ax_leg    = fig.add_axes([0.80, 0.06, 0.18, 0.88])
 
     for ax in (ax_before, ax_after):
         ax.set_aspect("equal")
-        ax.axis("off")
     ax_leg.axis("off")
 
     for g in grids:
@@ -767,16 +766,16 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
     """物种密度与部署资源对比图（上：物种密度，下：部署资源）"""
     grids = out["grids"]
 
-    fig = plt.figure(figsize=(16, 16))
+    fig = plt.figure(figsize=(16, 15))
     
     # 上半部分：物种密度
-    ax1 = fig.add_axes([0.05, 0.52, 0.7, 0.42])
+    ax1 = fig.add_axes([0.05, 0.52, 0.7, 0.46])
     
     # 下半部分：部署资源
-    ax2 = fig.add_axes([0.05, 0.055, 0.7, 0.42])
+    ax2 = fig.add_axes([0.05, 0.06, 0.7, 0.46])
     
     # 右侧图例
-    ax_leg1 = fig.add_axes([0.78, 0.055, 0.2, 0.88])
+    ax_leg1 = fig.add_axes([0.78, 0.06, 0.2, 0.88])
     ax_leg1.axis("off")
 
     # ================= 上半部分：物种密度图
