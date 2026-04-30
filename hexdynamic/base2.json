@@ -677,8 +677,6 @@
   },
   "dssa_config": {
     "save_iteration_visualization": true,
-    "use_risk_priority": true,
-    "high_risk_percentage": 0.1,
     "population_size": 50,
     "max_iterations": 100,
     "producer_ratio": 0.2,
