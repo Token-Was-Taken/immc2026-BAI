@@ -19,7 +19,7 @@ import sys
 # ---------------------------------------------------------------------------
 from protection_pipeline import run_pipeline
 from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison, \
-    plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map, plot_species_deployment_comparison
+    plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map, plot_species_deployment_comparison, plot_protection_deployment_comparison
 
 
 def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
@@ -41,6 +41,7 @@ def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
     plot_terrain_deployment_map(out, hex_size, boundary_xy,        save_path=p("terrain_deployment_map.png"))
     plot_species_map(out, species_map, hex_size, boundary_xy,        save_path=p("species_map.png"))
     plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path=p("species_deployment_comparison.png"))
+    plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path=p("protection_deployment_comparison.png"))
     print(f"[VIZ] 完成，图片保存至: {out_dir}")
 
 

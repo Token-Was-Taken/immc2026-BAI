@@ -45,7 +45,8 @@ def process_single(input_path: str, output_dir: str, prefix: str,
                    freeze_resources: str | None) -> Dict:
     from protection_pipeline import run_pipeline
     from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison, \
-        plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map
+        plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map, \
+        plot_species_deployment_comparison, plot_protection_deployment_comparison
 
     scenario_name = prefix or os.path.splitext(os.path.basename(input_path))[0]
     scenario_dir = os.path.join(output_dir, scenario_name)
@@ -82,6 +83,8 @@ def process_single(input_path: str, output_dir: str, prefix: str,
     plot_terrain_map(out_data, hex_size, boundary_xy,                   save_path=p("terrain_map.png"))
     plot_terrain_deployment_map(out_data, hex_size, boundary_xy,        save_path=p("terrain_deployment_map.png"))
     plot_species_map(out_map, species_map, hex_size, boundary_xy,       save_path=p("species_map.png"))
+    plot_species_deployment_comparison(out_data, species_map, hex_size, boundary_xy, save_path=p("species_deployment_comparison.png"))
+    plot_protection_deployment_comparison(out_data, hex_size, boundary_xy, save_path=p("protection_deployment_comparison.png"))
 
     summary = out.get("summary", {})
     return {

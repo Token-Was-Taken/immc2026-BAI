@@ -988,9 +988,83 @@ python visualize_output.py output.json --input pipeline_input.json --out_dir ./f
 
 ---
 
-## 八、敏感性分析
+## 八、图片转视频工具
 
-### 8.1 敏感性分析脚本
+**文件**：`hexdynamic/images_to_video.py`
+
+将指定目录中具有相同前缀的图片序列生成视频，适合展示优化迭代过程的动态效果。
+
+### 用法
+
+```bash
+cd hexdynamic
+
+# 基础用法：从目录中查找 deployment_map 开头的图片生成视频
+python images_to_video.py --input_dir ./figures --prefix deployment_map --output video.mp4
+
+# 指定帧率（默认 10 fps）
+python images_to_video.py --input_dir ./figures --prefix deployment_map --output video.mp4 --fps 8
+
+# 缩放图片尺寸（减小视频体积）
+python images_to_video.py --input_dir ./figures --prefix deployment_map --output video.mp4 --resize 0.5
+
+# 无确认模式（适合脚本调用）
+python images_to_video.py --input_dir ./figures --prefix deployment_map --output video.mp4 --no_confirm
+
+# 指定后端（可选）
+python images_to_video.py --input_dir ./figures --prefix deployment_map --output video.mp4 --backend cv2
+```
+
+### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `--input_dir, -i` | 必填 | 图片所在目录 |
+| `--prefix, -p` | 必填 | 图片文件名前缀（如 `deployment_map`） |
+| `--output, -o` | `output.mp4` | 输出视频文件路径 |
+| `--fps, -f` | `10.0` | 视频帧率 |
+| `--resize, -r` | `1.0` | 图片缩放因子（1.0=不缩放） |
+| `--extensions, -e` | `.png, .jpg, .jpeg` | 图片文件扩展名，空格分隔 |
+| `--no_confirm, -y` | `false` | 跳过确认提示 |
+| `--backend, -b` | 自动选择 | 指定后端：`cv2`（OpenCV）或 `ffmpeg` |
+
+### 后端说明
+
+**支持两种后端**：
+
+1. **OpenCV (`--backend cv2`)：
+   - 依赖：`pip install opencv-python
+   - 优点：纯 Python 实现，无需额外安装软件
+   - 适合快速生成视频
+
+2. **FFmpeg (`--backend ffmpeg`)：
+   - 依赖：需安装 FFmpeg 软件并添加到 PATH
+   - 优点：视频质量更好，压缩率更高
+   - 适合生成高质量视频
+
+**自动选择规则**：
+- 优先使用 OpenCV（如果已安装）
+- 否则尝试使用 FFmpeg
+- 两者都不可用时提示错误
+
+### 图片查找逻辑
+
+1. **直接查找**：在 `--input_dir` 中查找符合前缀的图片
+2. **子目录查找**：如果没找到时，在 `--input_dir` 的子目录中查找（如 `iteration_0000/deployment_map.png`）
+3. **自然排序**：按文件名中的数字顺序排序，确保迭代顺序正确
+
+### 示例
+
+```bash
+# 完整示例：从迭代输出目录生成部署演化视频
+python images_to_video.py --input_dir ./figures --prefix deployment_map --output deployment_evolution.mp4 --fps 8 --no_confirm
+```
+
+---
+
+## 十、敏感性分析
+
+### 10.1 敏感性分析脚本
 
 **文件**：`sensitivity_analysis.py`
 
@@ -1064,7 +1138,7 @@ python sensitivity_analysis.py --input base_input.json --resource patrol --vecto
 
 ---
 
-### 8.2 敏感性分析报告脚本
+### 10.2 敏感性分析报告脚本
 
 **文件**：`sensitivity_report.py`
 
@@ -1121,7 +1195,7 @@ python sensitivity_report.py sensitivity_results/ --all --out_dir ./reports
 
 ---
 
-## 九、蒙特卡洛鲁棒性分析
+## 十一、蒙特卡洛鲁棒性分析
 
 **文件**：`hexdynamic/monte_carlo_robust.py`
 
@@ -1334,7 +1408,42 @@ python run.py mc_results/trial_0003_input.json mc_results/trial_0003_rerun.json
 
 ---
 
-## 十、变更历史（Change History）
+## 十二、变更历史（Change History）
+
+### 2026-04-30：图片转视频工具与优化功能增强
+
+#### 新增图片转视频工具
+- **新增 `images_to_video.py`**：
+  - 支持 OpenCV 和 FFmpeg 两种后端
+  - 自然排序图片序列，确保迭代顺序正确
+  - 支持指定帧率、缩放因子
+  - 支持子目录查找图片（如 `iteration_0000/deployment_map.png`）
+  - 提供无确认模式，适合脚本调用
+  - 默认优先使用 OpenCV 后端（如果已安装）
+- **依赖说明**：
+  - OpenCV：`pip install opencv-python`（推荐）
+  - FFmpeg：需单独安装软件并添加到 PATH
+
+#### 优化算法增强
+- **风险优先部署策略**：
+  - DSSA 配置新增 `use_risk_priority: true` 选项
+  - 将网格按归一化风险值排序，分为高风险组和低风险组
+  - 初始化解决方案时优先在高风险网格部署资源
+  - 配置参数：`high_risk_percentage`（默认 0.3）控制高风险网格比例
+- **迭代可视化优化**：
+  - `save_iteration_visualization` 配置启用时，异步绘制每轮迭代最优方案
+  - 添加 `matplotlib.rcParams["figure.max_open_warning"] = 0` 避免警告
+  - 异步绘制函数中添加 `plt.close('all')` 和 `gc.collect()` 清理内存
+- **网格编号配置**：
+  - 输出 JSON 新增 `visualization_config.show_grid_ids` 配置项
+  - 默认 `false` 不显示网格编号
+  - 所有绘图函数统一读取该参数控制网格编号显示
+
+#### 文档更新
+- 新增第八节「图片转视频工具」，完整说明 `images_to_video.py` 的用法
+- 同步更新后续章节编号
+
+---
 
 ### 2026-04-30：围栏边缘部署增强与可视化优化
 
