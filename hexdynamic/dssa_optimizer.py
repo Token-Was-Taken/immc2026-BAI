@@ -204,64 +204,45 @@ class DSSAOptimizer:
         return self.coverage_model.repair_solution(solution, self.constraints, self.force_full_deployment)
 
     def _initialize_fences(self) -> Dict[Tuple[int, int], int]:
-        """初始化围栏部署，支持多围栏边缘部署
-        
-        遍历所有边缘格子，在其边界边上部署围栏。
-        每个边缘格子可以部署多个围栏（每个边界边一个）。
-        
+        """初始化围栏部署
+
+        规则：
+        - 如果所有可部署边界边数量 <= total_fence_length，部署所有边界边
+        - 如果可部署边界边数量 > total_fence_length，只部署 total_fence_length 个
+
         Returns:
             Dict[Tuple[int, int], int]: 围栏部署字典
-            - 内部边: (grid_id_1, grid_id_2) -> count (通常为1)
-            - 边界边: (grid_id, None) -> count (0到边界边数量)
+            - 边界边: (grid_id, direction) -> count (0或1，direction为0-5)
         """
-        fences = dict(self.fixed_fences)  # Start with fixed fences
+        fences = dict(self.fixed_fences)
         total_fence_length = self.constraints.get('total_fence_length', float('inf'))
-        max_fences_per_grid = self.constraints.get('max_fences_per_grid', 6)
-        
-        # Get all fencing edges (both internal and boundary)
-        fencing_edges = self.fencing_edges
-        
-        # Shuffle for random deployment order
-        random.shuffle(fencing_edges)
-        
-        fences_deployed = sum(fences.values())
-        
-        # FIX: Only deploy fences on boundary edges (edge_type == 2.0)
-        # Internal edges between grids are NOT valid fence locations
-        for edge in fencing_edges:
-            if fences_deployed >= total_fence_length:
-                break
-            
-            grid_id_1, grid_id_2, edge_type = edge
-            
-            # Only process boundary edges (edge_type == 2.0)
-            # Skip internal edges (edge_type == 1.0) - they are not valid fence locations
-            if edge_type != 2.0:
-                continue
-            
-            # Boundary edge (grid_id_2 is None)
-            # Deploy fences on boundary edges
-            boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id_1)
-            num_boundary_edges = len(boundary_edges)
-            
-            # Determine how many fences to deploy on this grid
-            max_for_grid = min(
-                num_boundary_edges,
-                max_fences_per_grid,
-                self.coverage_model.deployment_matrix['fence'].get(grid_id_1, 0)
-            )
-            
-            # Deploy as many fences as allowed, up to the remaining budget
-            remaining_budget = total_fence_length - fences_deployed
-            fences_to_deploy = min(max_for_grid, remaining_budget)
-            
-            if fences_to_deploy > 0:
-                edge_key = (grid_id_1, None)
-                # Don't overwrite fixed fences
-                if edge_key not in self.fixed_fences:
-                    fences[edge_key] = fences_to_deploy
-                    fences_deployed += fences_to_deploy
-        
+
+        # Build list of all possible fence edges (grid_id, direction)
+        all_fence_edges = []
+        for grid_id in self.grid_ids:
+            if self.coverage_model.deployment_matrix['fence'].get(grid_id, 0) > 0:
+                boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id)
+                for g_id, direction in boundary_edges:
+                    edge_key = (g_id, direction)
+                    if edge_key not in self.fixed_fences:
+                        all_fence_edges.append(edge_key)
+
+        total_possible = len(all_fence_edges)
+
+        # Determine how many fences to deploy
+        if total_possible <= total_fence_length:
+            # Deploy all possible boundary edges
+            fences_to_deploy = all_fence_edges
+        else:
+            # Only deploy total_fence_length boundary edges
+            # Shuffle and take first total_fence_length
+            random.shuffle(all_fence_edges)
+            fences_to_deploy = all_fence_edges[:int(total_fence_length)]
+
+        # Deploy fences
+        for edge_key in fences_to_deploy:
+            fences[edge_key] = 1
+
         return fences
 
     def initialize_population(self):
@@ -328,8 +309,13 @@ class DSSAOptimizer:
             scheduled = self.config.final_alpha
         
         # Apply stagnation boost if threshold exceeded
+        # Further amplify alpha if stagnation persists for extended periods
         if self.stagnation_count > self.config.stagnation_threshold:
-            return scheduled * self.config.stagnation_boost
+            # Base boost + additional amplification for persistent stagnation
+            # stagnation_count - stagnation_threshold gives how many iterations beyond threshold
+            extra_amplification = max(0, (self.stagnation_count - self.config.stagnation_threshold) // 10)
+            amplified_boost = self.config.stagnation_boost * (1.0 + 0.5 * extra_amplification)
+            return scheduled * amplified_boost
         
         return scheduled
 
@@ -356,7 +342,12 @@ class DSSAOptimizer:
         for grid_id in self.grid_ids:
             # Sum fences for this grid (both internal edges and boundary edges)
             fence_count = 0
-            # Check boundary edge fences: (grid_id, None)
+            # Check boundary edge fences: (grid_id, direction) where direction is 0-5
+            for direction in range(6):
+                edge_key = (grid_id, direction)
+                if edge_key in solution.fences:
+                    fence_count += solution.fences[edge_key]
+            # Check boundary edge fences: (grid_id, None) - legacy format
             fence_count += solution.fences.get((grid_id, None), 0)
             # Check internal edge fences where this grid is involved
             for neighbor_id in self.grid_model.get_neighbors(grid_id):
@@ -407,25 +398,17 @@ class DSSAOptimizer:
         for grid_id in self.grid_ids:
             fence_count = int(round(vector[idx]))
             idx += 1
-            
-            if fence_count <= 0:
-                continue
-            
-            # Check if this grid can have fences (is an edge grid)
-            if self.coverage_model.deployment_matrix['fence'].get(grid_id, 0) == 0:
-                continue
-            
-            # Get boundary edges for this grid
-            boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id)
-            num_boundary_edges = len(boundary_edges)
-            
-            if num_boundary_edges > 0:
-                # Limit fence count
-                actual_count = min(fence_count, num_boundary_edges, max_fences_per_grid)
-                edge_key = (grid_id, None)
-                # Don't overwrite fixed fences
-                if edge_key not in self.fixed_fences:
-                    fences[edge_key] = actual_count
+
+            # 围栏部署：根据向量值选择部署哪些边界边
+            if self.coverage_model.deployment_matrix['fence'].get(grid_id, 0) > 0 and fence_count > 0:
+                boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id)
+                # 只部署 fence_count 条边界边
+                for i, (g_id, direction) in enumerate(boundary_edges):
+                    if i >= fence_count:
+                        break
+                    edge_key = (g_id, direction)
+                    if edge_key not in self.fixed_fences:
+                        fences[edge_key] = 1
 
         return DeploymentSolution(
             cameras=cameras,
@@ -625,7 +608,11 @@ class DSSAOptimizer:
             escape_total = escape_producers + escape_followers
             
             # Build log line with alpha and stagnation boost annotation
-            stagnation_annotation = " [STAGNATION_BOOST]" if self.stagnation_count > self.config.stagnation_threshold else ""
+            if self.stagnation_count > self.config.stagnation_threshold:
+                extra_amp = max(0, (self.stagnation_count - self.config.stagnation_threshold) // 10)
+                stagnation_annotation = f" [STAGNATION_BOOST×{1.0 + 0.5 * extra_amp:.1f}]"
+            else:
+                stagnation_annotation = ""
             
             if escape_total > 0:
                 print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"

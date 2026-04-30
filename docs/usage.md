@@ -1331,3 +1331,56 @@ python monte_carlo_robust.py robust/base.json \
 # 5. 复现特定试验（直接用保存的 trial_XXXX_input.json）
 python run.py mc_results/trial_0003_input.json mc_results/trial_0003_rerun.json
 ```
+
+---
+
+## 十、变更历史（Change History）
+
+### 2026-04-30：围栏边缘部署增强与可视化优化
+
+#### 围栏部署逻辑重构
+
+- **围栏存储格式变更**：从 `(grid_id, None)` 改为 `(grid_id, direction)`，支持按方向精确控制围栏部署
+  - `direction` 为 0-5 的整数，对应六边形的 6 个边
+  - 支持每个边界格子在不同方向上部署多段围栏
+- **围栏部署规则优化**：
+  - 如果可部署边界边总数 ≤ `total_fence_length`，则部署所有边界边
+  - 如果可部署边界边总数 > `total_fence_length`，则随机选择 `total_fence_length` 条边部署
+- **六边形方向映射修正**：修正了 NE/NW/SW/SE 的方向坐标对应关系，与标准 pointy-top 六边形网格规范一致
+
+#### 可视化增强
+
+- **新增 `species_deployment_comparison.png`**：上下布局对比图
+  - 上半部分：物种密度图（地形半透明底图 + 物种散点）
+  - 下半部分：资源部署图（地形半透明底图 + 资源图标 + 围栏边线）
+  - 右侧图例：地形、资源、物种说明
+- **`risk_comparison.png` 布局调整**：从左右并排改为上下排列
+  - 上半部分：部署前原始风险热力图
+  - 下半部分：部署后剩余风险热力图
+  - 颜色条移至最左侧，summary 统计信息移至最右侧
+- **地形颜色透明化**：
+  - `terrain_deployment_map.png` 和 `species_deployment_comparison.png` 的地形底图改为半透明（alpha=0.45）
+  - 图例中的地形色块同步半透明（alpha=0.5）
+  - 与 `species_map.png` 风格统一，前景元素（资源标记、围栏边线、物种散点）更加突出
+- **围栏可视化函数**：新增 `draw_deployed_fence_edges()` 函数
+  - 根据 `(grid_id, direction)` 格式精确绘制围栏边线
+  - 仅绘制边界边缘（朝向保护区外的边），内部边不绘制
+  - 使用加粗红色线段（linewidth=3.0）标识围栏
+
+#### 输出格式变更
+
+- **围栏输出格式**（`protection_pipeline.py`）：
+  - 旧格式：`fence_edges: [{grid_id_1, grid_id_2}, ...]`
+  - 新格式：每个格子的 `fences` 字段包含 `fence_count` 和 `boundary_edge_list`（方向列表）
+  - 全局 `fence_segments` 统计改为 `sum(fences.values())`
+- **兼容性**：`coverage_model.py` 和 `dssa_optimizer.py` 同时支持新旧两种围栏格式，旧格式 `(grid_id, None)` 在 repair 阶段自动转换或移除
+
+#### 代码清理
+
+- 删除旧版 `visualization.py` 脚本（已被 `visualize_output.py` 替代）
+- 删除测试文件（`test_*.py`），测试逻辑已整合到主流程中
+
+---
+
+*文档版本: 2.0*  
+*最后更新: 2026-04-30*

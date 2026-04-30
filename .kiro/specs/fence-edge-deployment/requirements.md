@@ -6,7 +6,7 @@ This document describes the requirements for enhancing the fence deployment mech
 
 ## Glossary
 
-- **Edge Direction**: The direction of the side of grid, one of 0, 1, 2, 3, 4, 5 (clockwise from left, corresponding to the hexagonal side of west, north-west, north-east, east, south-east, south-west). Edge directions are used to identify the edges of an grid.
+- **Edge Direction**: The direction of the side of grid is one of 0, 1, 2, 3, 4, 5 (clockwise from left, corresponding to the hexagonal side of west, north-west, north-east, east, south-east, south-west). Edge directions are used to identify the edges of an grid.
 - **Boundary Grid**: A grid cell located at the boundary of the protected area, identified by having fewer than 6 neighbors
 - **Boundary Edge**: A side of an boundary grid that faces outside the protected area (no neighboring grid on that side)
 - **Fence Edge**: The side with fence deployed. Only the **boundary edges** are eligible for fence deployment.

@@ -152,13 +152,14 @@ def draw_boundary(ax, grids, boundary_xy, hex_size):
     # 方向顺序：E, NE, NW, W, SW, SE
     neighbor_dirs = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)]
     # 每个方向对应的外侧边顶点索引（pointy-top，顶点 i 在角度 60*i - 30 度）
+    # FIX: Rotate direction mapping to match actual deployment
     dir_to_edge_verts = {
-        (1,  0): (0, 5),   # E  → 顶点 0,5
-        (0,  1): (1, 0),   # NE → 顶点 1,0
-        (-1, 1): (2, 1),   # NW → 顶点 2,1
-        (-1, 0): (3, 2),   # W  → 顶点 3,2
-        (0, -1): (4, 3),   # SW → 顶点 4,3
-        (1, -1): (5, 4),   # SE → 顶点 5,4
+        (1,  0): (1, 0),   # E  → 顶点 1,0
+        (0,  1): (2, 1),   # NE → 顶点 2,1
+        (-1, 1): (3, 2),   # NW → 顶点 3,2
+        (-1, 0): (4, 3),   # W  → 顶点 4,3
+        (0, -1): (5, 4),   # SW → 顶点 5,4
+        (1, -1): (0, 5),   # SE → 顶点 0,5
     }
 
     def get_corner(cx, cy, size, i):
@@ -181,7 +182,7 @@ def draw_boundary(ax, grids, boundary_xy, hex_size):
                         color="#1a1a1a", lw=1.8, zorder=6, solid_capstyle="round")
 
 
-def draw_deployed_fence_edges(ax, grids, out, hex_size):
+def draw_deployed_fence_edges(ax, grids, out, hex_size, color=None):
     """
     Draw deployed fence edges as bold lines on the map.
     
@@ -191,12 +192,26 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size):
     Args:
         ax: Matplotlib axes to draw on
         grids: List of grid dictionaries from output JSON
-        out: Output JSON data containing fence_edges
+        out: Output JSON data containing fence_edges or per-grid fences
         hex_size: Size of hexagonal grid cells
+        color: Optional color for fence edges (defaults to FENCE_COLOR)
     """
+    if color is None:
+        color = FENCE_COLOR
     fence_edges = out.get("fence_edges", [])
+    # If no global fence_edges, build from per-grid boundary_edge_list
     if not fence_edges:
-        return
+        fence_edges = []
+        for g in grids:
+            if "fences" in g and "boundary_edge_list" in g["fences"]:
+                for dir_idx in g["fences"]["boundary_edge_list"]:
+                    fence_edges.append({
+                        "grid_id_1": g["grid_id"],
+                        "grid_id_2": None,
+                        "direction": dir_idx
+                    })
+        if not fence_edges:
+            return
     
     # Build grid lookup
     grid_by_id = {g["grid_id"]: g for g in grids}
@@ -207,36 +222,38 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size):
     # Hexagonal directions (same as used in grid_model.py)
     # Direction mapping for pointy-topped hexagons:
     # 0: (1, 0)   - East
-    # 1: (1, -1)  - Northeast  
-    # 2: (0, -1)  - Northwest
+    # 1: (0, 1)   - Northeast
+    # 2: (-1, 1)  - Northwest
     # 3: (-1, 0)  - West
-    # 4: (-1, 1)  - Southwest
-    # 5: (0, 1)   - Southeast
+    # 4: (0, -1)  - Southwest
+    # 5: (1, -1)  - Southeast
     directions = [
         (1, 0),   # 0: East
-        (1, -1),  # 1: Northeast
-        (0, -1),  # 2: Northwest
+        (0, 1),   # 1: Northeast
+        (-1, 1),  # 2: Northwest
         (-1, 0),  # 3: West
-        (-1, 1),  # 4: Southwest
-        (0, 1)    # 5: Southeast
+        (0, -1),  # 4: Southwest
+        (1, -1)   # 5: Southeast
     ]
     
     # Each direction corresponds to an edge between two corner vertices
     # For pointy-topped hexagon, corners are at angles: 30, 90, 150, 210, 270, 330 degrees
     # Direction -> (corner_index_start, corner_index_end)
+    # FIX: Rotate direction mapping to match actual deployment
     dir_to_corners = {
-        0: (0, 5),  # East: corners 0 and 5
-        1: (1, 0),  # Northeast: corners 1 and 0
-        2: (2, 1),  # Northwest: corners 2 and 1
-        3: (3, 2),  # West: corners 3 and 2
-        4: (4, 3),  # Southwest: corners 4 and 3
-        5: (5, 4),  # Southeast: corners 5 and 4
+        0: (1, 0),  # East: corners 1 and 0
+        1: (2, 1),  # Northeast: corners 2 and 1
+        2: (3, 2),  # Northwest: corners 3 and 2
+        3: (4, 3),  # West: corners 4 and 3
+        4: (5, 4),  # Southwest: corners 5 and 4
+        5: (0, 5),  # Southeast: corners 0 and 5
     }
     
     def get_corner(cx, cy, size, i):
         """Get corner coordinates for pointy-topped hexagon."""
         # Corners at 30, 90, 150, 210, 270, 330 degrees (pointy-top)
-        a = math.pi / 3 * i + math.pi / 6
+        # FIX: Use same angle calculation as draw_boundary function
+        a = math.pi / 3 * i - math.pi / 6
         return cx + size * math.cos(a), cy + size * math.sin(a)
     
     drawn_edges = set()  # Track drawn edges to avoid duplicates
@@ -278,8 +295,8 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size):
             p1 = get_corner(cx1, cy1, hex_size, vi)
             p2 = get_corner(cx1, cy1, hex_size, vj)
             ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
-                    color=FENCE_COLOR, lw=FENCE_EDGE_LINEWIDTH, zorder=7,
-                    solid_capstyle="round")
+                        color=color, lw=FENCE_EDGE_LINEWIDTH, zorder=7,
+                        solid_capstyle="round")
             boundary_edge_count += 1
         else:
             # No direction provided - try to determine from grid_id_2 being None
@@ -380,7 +397,7 @@ RESOURCE_MARKERS = {
 }
 
 FENCE_COLOR = "#c0392b"
-FENCE_EDGE_LINEWIDTH = 1.0  # 2.5x regular edge width (0.4 * 2.5 = 1.0)
+FENCE_EDGE_LINEWIDTH = 3.0  # Thicker for better visibility
 
 SPECIES_STYLE = {
     "rhino":    {"marker": "^", "color": "#8B4513", "size_scale": 120},
@@ -451,6 +468,8 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path):
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
         draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g["risk_normalized"])))
+        # 添加网格 ID 标注
+        ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
@@ -499,6 +518,8 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
         for g in grids:
             cx, cy = grid_center(g["q"], g["r"], hex_size)
             draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g.get(value_key, 0))))
+            # 添加网格 ID 标注
+            ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
         setup_map_ax(ax, grids, hex_size)
         draw_boundary(ax, grids, boundary_xy, hex_size)
@@ -567,6 +588,9 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
                  facecolor=cmap(norm(g["risk_normalized"])))
         draw_hex(ax_after, cx, cy, hex_size * 0.97,
                  facecolor=cmap(norm(g["residual_risk_normalized"])))
+        # 在两个子图上都添加网格 ID 标注
+        ax_before.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
+        ax_after.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
     setup_map_ax(ax_before, grids, hex_size)
     setup_map_ax(ax_after, grids, hex_size)
@@ -624,13 +648,21 @@ def plot_terrain_map(out, hex_size, boundary_xy, save_path):
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
         draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"))
+        # 添加网格 ID 标注
+        ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
+    draw_deployed_fence_edges(ax, grids, out, hex_size, color="#1a1a1a")
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
     ax.set_title("Terrain Map", fontsize=13, fontweight="bold", pad=8)
 
     handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, label=t)
                for t, c in TERRAIN_COLORS.items()]
+    # Add fence handle
+    handles.append(
+        plt.Line2D([0], [1], color="#1a1a1a", linewidth=FENCE_EDGE_LINEWIDTH * 2, 
+                   label="Fence (bold edge)")
+    )
     legend_in_ax(ax_leg, handles, "Terrain Type", y_start=0.97)
 
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -645,7 +677,7 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path):
 
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"))
+        draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
 
     _draw_resources(ax, grids, out, hex_size, edge_ids)
     draw_deployed_fence_edges(ax, grids, out, hex_size)
@@ -653,15 +685,13 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path):
     draw_boundary(ax, grids, boundary_xy, hex_size)
     ax.set_title("Terrain Map with Deployment", fontsize=13, fontweight="bold", pad=8)
 
-    terrain_handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, label=t)
+    terrain_handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, alpha=0.5, label=t)
                        for t, c in TERRAIN_COLORS.items()]
     res_handles = [
         plt.Line2D([0], [0], marker=m, color="w", markerfacecolor=c,
                    markeredgecolor="black", markersize=8, label=l)
         for _, (m, c, l) in RESOURCE_MARKERS.items()
     ]
-    # Fence is now shown with bold edges, not pentagon markers
-    # Add a line handle for fence legend
     res_handles.append(
         plt.Line2D([0], [1], color=FENCE_COLOR, linewidth=FENCE_EDGE_LINEWIDTH * 2, 
                    label="Fence (bold edge)")
@@ -727,6 +757,97 @@ def plot_species_map(out, species_map, hex_size, boundary_xy, save_path):
     print(f"  saved: {save_path}")
 
 
+def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path):
+    """物种密度与部署资源对比图（上：物种密度，下：部署资源）"""
+    grids = out["grids"]
+
+    fig = plt.figure(figsize=(16, 18))
+    
+    # 上半部分：物种密度
+    ax1 = fig.add_axes([0.05, 0.52, 0.7, 0.45])
+    
+    # 下半部分：部署资源
+    ax2 = fig.add_axes([0.05, 0.05, 0.7, 0.45])
+    
+    # 右侧图例
+    ax_leg1 = fig.add_axes([0.78, 0.05, 0.2, 0.9])
+    ax_leg1.axis("off")
+
+    # ================= 上半部分：物种密度图
+    all_species = []
+    if species_map:
+        all_species = sorted({sp for sd in species_map.values() for sp in sd})
+    
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        draw_hex(ax1, cx, cy, hex_size * 0.97,
+                 facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
+
+    if species_map:
+        for g in grids:
+            sd = species_map.get(g["grid_id"], {})
+            active = [sp for sp in all_species if sd.get(sp, 0) > 0]
+            if not active:
+                continue
+            cx, cy = grid_center(g["q"], g["r"], hex_size)
+            n = len(active)
+            for i, sp in enumerate(active):
+                style = SPECIES_STYLE.get(sp, {"marker": "P", "color": "#333", "size_scale": 80})
+                ox = (i - (n - 1) / 2) * hex_size * 0.35
+                size = max(10, style["size_scale"] * sd[sp])
+                ax1.scatter(cx + ox, cy, marker=style["marker"], s=size,
+                           color=style["color"], edgecolors="black",
+                           linewidths=0.4, alpha=0.85, zorder=4)
+
+    setup_map_ax(ax1, grids, hex_size)
+    draw_boundary(ax1, grids, boundary_xy, hex_size)
+    ax1.set_title("Species Density (Top)", fontsize=13, fontweight="bold", pad=8)
+
+    # ================= 下半部分：部署资源图
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        draw_hex(ax2, cx, cy, hex_size * 0.97,
+                 facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
+
+    _draw_resources(ax2, grids, out, hex_size, edge_ids=_edge_grid_ids(grids, boundary_xy))
+    draw_deployed_fence_edges(ax2, grids, out, hex_size)
+    
+    setup_map_ax(ax2, grids, hex_size)
+    draw_boundary(ax2, grids, boundary_xy, hex_size)
+    ax2.set_title("Deployment (Bottom)", fontsize=13, fontweight="bold", pad=8)
+
+    # ================= 右侧图例
+    terrain_handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, alpha=0.5, label=t)
+                       for t, c in TERRAIN_COLORS.items()]
+    res_handles = [
+        plt.Line2D([0], [0], marker=m, color="w", markerfacecolor=c,
+                   markeredgecolor="black", markersize=8, label=l)
+        for _, (m, c, l) in RESOURCE_MARKERS.items()
+    ]
+    res_handles.append(
+        plt.Line2D([0], [1], color=FENCE_COLOR, linewidth=FENCE_EDGE_LINEWIDTH * 2,
+                   label="Fence (bold edge)")
+    )
+
+    y = legend_in_ax(ax_leg1, terrain_handles, "Terrain", y_start=0.97)
+    y = legend_in_ax(ax_leg1, res_handles, "Resources", y_start=y)
+
+    if species_map:
+        species_handles = [
+            plt.Line2D([0], [0], marker=SPECIES_STYLE.get(sp, {}).get("marker", "P"),
+                       color="w",
+                       markerfacecolor=SPECIES_STYLE.get(sp, {}).get("color", "#333"),
+                       markeredgecolor="black", markersize=9,
+                       label=f"{sp} (size ∝ density)")
+            for sp in all_species
+        ]
+        legend_in_ax(ax_leg1, species_handles, "Species Density", y_start=y)
+
+    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved: {save_path}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -768,6 +889,9 @@ def main():
                                 save_path=os.path.join(args.out_dir, f"{pre}terrain_deployment_map.png"))
     plot_species_map(out, species_map, hex_size, boundary_xy,
                      save_path=os.path.join(args.out_dir, f"{pre}species_map.png"))
+    
+    plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy,
+                                      save_path=os.path.join(args.out_dir, f"{pre}species_deployment_comparison.png"))
     print("完成。")
 
 

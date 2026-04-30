@@ -39,7 +39,7 @@ def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
     plot_protection_heatmap(out, hex_size, boundary_xy,            save_path=p("protection_heatmap.png"))
     plot_terrain_map(out, hex_size, boundary_xy,                   save_path=p("terrain_map.png"))
     plot_terrain_deployment_map(out, hex_size, boundary_xy,        save_path=p("terrain_deployment_map.png"))
-    plot_species_map(out, species_map, hex_size, boundary_xy,      save_path=p("species_map.png"))
+    plot_species_map(out, species_map, hex_size, boundary_xy,        save_path=p("species_map.png"))
     print(f"[VIZ] 完成，图片保存至: {out_dir}")
 
 

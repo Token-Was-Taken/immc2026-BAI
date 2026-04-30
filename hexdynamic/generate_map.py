@@ -43,7 +43,7 @@ DEFAULTS = {
     "wf": 0.2,
     # DSSA
     "population_size": 50,
-    "max_iterations": 100,
+    "max_iterations": 1,
     "producer_ratio": 0.2,
     "scout_ratio": 0.2,
     "ST": 0.8,

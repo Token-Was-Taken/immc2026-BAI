@@ -93,13 +93,13 @@ class CoverageModel:
     def calculate_fence_protection(self, solution: DeploymentSolution) -> Dict[int, float]:
         """
         Calculate fence protection for each grid.
-        
+
         Each fence on a boundary edge provides protection to the grid.
         Multiple fences on the same grid provide cumulative protection.
-        
+
         Supports both:
         - Internal edges: (grid_id_1, grid_id_2) with count 1
-        - Boundary edges: (grid_id, None) with count 0-6
+        - Boundary edges: (grid_id, direction) with count 1 each, direction is 0-5
         """
         fence_protection = {}
 
@@ -115,11 +115,12 @@ class CoverageModel:
                     fence_count = solution.fences[edge_key]
                     protection += fence_count * self.params.fence_protection
 
-            # Check boundary edges (grid_id, None) - multi-fence support
-            boundary_edge_key = (grid_id, None)
-            if boundary_edge_key in solution.fences:
-                fence_count = solution.fences[boundary_edge_key]
-                protection += fence_count * self.params.fence_protection
+            # Check boundary edges (grid_id, direction) - each direction stored separately
+            for direction in range(6):
+                boundary_edge_key = (grid_id, direction)
+                if boundary_edge_key in solution.fences:
+                    fence_count = solution.fences[boundary_edge_key]
+                    protection += fence_count * self.params.fence_protection
 
             fence_protection[grid_id] = eff * min(1.0, protection)
 
@@ -258,27 +259,17 @@ class CoverageModel:
             if fence_count <= 0:
                 continue
             gid1, gid2 = edge_key
-            
-            # Handle boundary edges (gid2 is None) - multi-fence support
-            if gid2 is None:
-                # Check if grid is an edge grid with fence deployment allowed
+
+            # Handle boundary edges (gid2 is an int 0-5) - fence on specific direction
+            if isinstance(gid2, int) and gid2 in range(6):
                 max_fences = self.deployment_matrix['fence'].get(gid1, 0)
                 if max_fences == 0:
                     violations.append(f"Fence deployment infeasible at grid {gid1} (not an edge grid)")
-                else:
-                    # Check fence count doesn't exceed boundary edge count
-                    boundary_edges = self.grid_model.get_boundary_edges_for_grid(gid1)
-                    num_boundary_edges = len(boundary_edges)
-                    if fence_count > num_boundary_edges:
-                        violations.append(
-                            f"Fence count ({fence_count}) exceeds boundary edges ({num_boundary_edges}) at grid {gid1}"
-                        )
-                    # Check fence count doesn't exceed max_fences_per_grid
-                    max_per_grid = constraints.get('max_fences_per_grid', 6)
-                    if fence_count > max_per_grid:
-                        violations.append(
-                            f"Fence count ({fence_count}) exceeds max_fences_per_grid ({max_per_grid}) at grid {gid1}"
-                        )
+            elif gid2 is None:
+                # Legacy format: (gid1, None) - treat as needing validation
+                max_fences = self.deployment_matrix['fence'].get(gid1, 0)
+                if max_fences == 0:
+                    violations.append(f"Fence deployment infeasible at grid {gid1} (not an edge grid)")
             else:
                 # Internal edge - check both endpoints
                 if (self.deployment_matrix['fence'].get(gid1, 0) != 1 or
@@ -360,49 +351,51 @@ class CoverageModel:
         # First, clean up invalid fence deployments
         for edge_key in list(repaired.fences.keys()):
             gid1, gid2 = edge_key
-            
-            # Handle boundary edges (gid2 is None) - multi-fence support
-            if gid2 is None:
-                # Check if grid is an edge grid with fence deployment allowed
+
+            # Handle boundary edges (gid2 is an int 0-5) - fence on specific direction
+            if isinstance(gid2, int) and gid2 in range(6):
                 max_fences = self.deployment_matrix['fence'].get(gid1, 0)
                 if max_fences == 0:
                     del repaired.fences[edge_key]
-                else:
-                    # Limit fence count to boundary edge count and max_fences_per_grid
-                    boundary_edges = self.grid_model.get_boundary_edges_for_grid(gid1)
-                    num_boundary_edges = len(boundary_edges)
-                    max_per_grid = constraints.get('max_fences_per_grid', 6)
-                    max_allowed = min(num_boundary_edges, max_per_grid, max_fences)
-                    
-                    if repaired.fences[edge_key] > max_allowed:
-                        repaired.fences[edge_key] = max_allowed
+            elif gid2 is None:
+                # Legacy format: (gid1, None) - remove invalid entries
+                max_fences = self.deployment_matrix['fence'].get(gid1, 0)
+                if max_fences == 0:
+                    del repaired.fences[edge_key]
             else:
                 # Internal edge - check both endpoints
                 if (self.deployment_matrix['fence'].get(gid1, 0) != 1 or
                         self.deployment_matrix['fence'].get(gid2, 0) != 1):
                     del repaired.fences[edge_key]
-        
-        # Enforce total fence length constraint
+
+        # Count total possible fence edges
+        total_possible = 0
+        for grid_id in self.grid_ids:
+            if self.deployment_matrix['fence'].get(grid_id, 0) > 0:
+                boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id)
+                total_possible += len(boundary_edges)
+
+        # Enforce fence deployment rule:
+        # - If total_possible <= total_fence_length, keep all (no action needed)
+        # - If total_possible > total_fence_length, reduce to total_fence_length
         total_fence_length = constraints.get('total_fence_length', float('inf'))
         total_fences = sum(repaired.fences.values())
-        
-        while total_fences > total_fence_length:
-            # Remove fences from grids with most fences first
-            fence_counts = [(k, v) for k, v in repaired.fences.items() if v > 0]
-            if not fence_counts:
-                break
-            
-            # Sort by fence count descending
-            fence_counts.sort(key=lambda x: x[1], reverse=True)
-            
-            for edge_key, count in fence_counts:
-                if total_fences <= total_fence_length:
+
+        if total_possible > total_fence_length:
+            # Only reduce if over limit
+            while total_fences > total_fence_length:
+                fence_counts = [(k, v) for k, v in repaired.fences.items() if v > 0]
+                if not fence_counts:
                     break
-                if repaired.fences.get(edge_key, 0) > 0:
-                    repaired.fences[edge_key] -= 1
-                    total_fences -= 1
-                    if repaired.fences[edge_key] <= 0:
-                        del repaired.fences[edge_key]
+                fence_counts.sort(key=lambda x: x[1], reverse=True)
+                for edge_key, count in fence_counts:
+                    if total_fences <= total_fence_length:
+                        break
+                    if repaired.fences.get(edge_key, 0) > 0:
+                        repaired.fences[edge_key] -= 1
+                        total_fences -= 1
+                        if repaired.fences[edge_key] <= 0:
+                            del repaired.fences[edge_key]
 
         # --- Camera: 先截单格上限，再截总量 ---
         max_cam = constraints.get('max_cameras_per_grid', 1)
@@ -485,15 +478,13 @@ class CoverageModel:
         if force_full_deployment:
             import random
             
-            # 补充摄像头
+            # 补充摄像头（优先在已有部署的网格上增加，再添加新网格）
             total_cameras = sum(repaired.cameras.values())
             if total_cameras < constraints['total_cameras']:
-                available_grids = [gid for gid in self.grid_ids 
-                                  if self.deployment_matrix['camera'][gid] == 1]
-                random.shuffle(available_grids)
                 max_cam = constraints.get('max_cameras_per_grid', 1)
                 
-                for grid_id in available_grids:
+                # 先尝试在已有摄像头的网格上增加
+                for grid_id in list(repaired.cameras.keys()):
                     if total_cameras >= constraints['total_cameras']:
                         break
                     current = repaired.cameras.get(grid_id, 0)
@@ -501,15 +492,29 @@ class CoverageModel:
                     if can_add > 0:
                         repaired.cameras[grid_id] = current + can_add
                         total_cameras += can_add
+                
+                # 如果还不够，再添加新网格
+                if total_cameras < constraints['total_cameras']:
+                    available_grids = [gid for gid in self.grid_ids 
+                                      if self.deployment_matrix['camera'][gid] == 1
+                                      and gid not in repaired.cameras]
+                    random.shuffle(available_grids)
+                    
+                    for grid_id in available_grids:
+                        if total_cameras >= constraints['total_cameras']:
+                            break
+                        can_add = min(max_cam, constraints['total_cameras'] - total_cameras)
+                        if can_add > 0:
+                            repaired.cameras[grid_id] = can_add
+                            total_cameras += can_add
             
-            # 补充无人机
+            # 补充无人机（保留已有部署，只添加缺失的）
             total_drones = sum(repaired.drones.values())
             if total_drones < constraints['total_drones']:
                 available_grids = [gid for gid in self.grid_ids 
                                   if self.deployment_matrix['drone'][gid] == 1
                                   and gid not in repaired.drones]
                 random.shuffle(available_grids)
-                max_drone = constraints.get('max_drones_per_grid', 1)
                 
                 for grid_id in available_grids:
                     if total_drones >= constraints['total_drones']:
@@ -517,14 +522,13 @@ class CoverageModel:
                     repaired.drones[grid_id] = 1
                     total_drones += 1
             
-            # 补充营地
+            # 补充营地（保留已有部署，只添加缺失的）
             total_camps = sum(repaired.camps.values())
             if total_camps < constraints['total_camps']:
                 available_grids = [gid for gid in self.grid_ids 
                                   if self.deployment_matrix['camp'][gid] == 1
                                   and gid not in repaired.camps]
                 random.shuffle(available_grids)
-                max_camp = constraints.get('max_camps_per_grid', 1)
                 
                 for grid_id in available_grids:
                     if total_camps >= constraints['total_camps']:
@@ -532,7 +536,7 @@ class CoverageModel:
                     repaired.camps[grid_id] = 1
                     total_camps += 1
             
-            # 补充巡逻人员（如果之前没有补充完）
+            # 补充巡逻人员（保留已有部署，只添加缺失的）
             total_rangers = sum(repaired.rangers.values())
             if total_rangers < constraints['total_patrol']:
                 available_grids = [gid for gid in self.grid_ids

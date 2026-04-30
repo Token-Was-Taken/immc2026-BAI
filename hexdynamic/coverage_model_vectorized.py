@@ -108,18 +108,35 @@ class VectorizedCoverageModel(CoverageModel):
         )
 
     def _fence_vec(self, solution: DeploymentSolution) -> np.ndarray:
-        """返回 (N,) 围栏段数向量：fence_vec[i] = 格子 i 相邻的围栏段数"""
+        """返回 (N,) 围栏段数向量：fence_vec[i] = 格子 i 相邻的围栏段数
+        
+        支持两种 fence 格式：
+        - 内部边：(grid_id1, grid_id2) - 两个网格之间的边
+        - 边界边：(grid_id, direction) - 单个网格的特定方向（0-5）
+        """
         N = len(self.grid_ids)
-        fence_mat = np.zeros((N, N), dtype=np.float64)
+        fence_counts = np.zeros(N, dtype=np.float64)
+        
         for (gid1, gid2), v in solution.fences.items():
-            if v > 0:
+            if v <= 0:
+                continue
+                
+            # 检查是否为边界边格式：(grid_id, direction)，其中 direction 是 0-5 的整数
+            if isinstance(gid2, int) and gid2 in range(6):
+                # 边界边格式：只给 gid1 对应的网格增加 fence count
+                i = self._id_to_idx.get(gid1)
+                if i is not None:
+                    fence_counts[i] += v
+            else:
+                # 内部边格式：给两个网格都增加 fence count
                 i = self._id_to_idx.get(gid1)
                 j = self._id_to_idx.get(gid2)
-                if i is not None and j is not None:
-                    fence_mat[i, j] = 1.0
-                    fence_mat[j, i] = 1.0
-        # 每个格子相邻的围栏段数 = 该行之和
-        return fence_mat.sum(axis=1)
+                if i is not None:
+                    fence_counts[i] += v
+                if j is not None:
+                    fence_counts[j] += v
+        
+        return fence_counts
 
     # ------------------------------------------------------------------
     # 向量化覆盖计算

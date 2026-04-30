@@ -138,11 +138,11 @@ class HexGridModel:
             representing the 6 hexagonal directions.
             Direction mapping:
             0: (1, 0)   - East
-            1: (1, -1)  - Northeast
-            2: (0, -1)  - Northwest
+            1: (0, 1)   - Northeast
+            2: (-1, 1)  - Northwest
             3: (-1, 0)  - West
-            4: (-1, 1)  - Southwest
-            5: (0, 1)   - Southeast
+            4: (0, -1)  - Southwest
+            5: (1, -1)  - Southeast
         """
         if grid_id not in self.grid_dict:
             return []
@@ -153,11 +153,11 @@ class HexGridModel:
         # Hexagonal directions (same as used in adjacency matrix)
         directions = [
             (1, 0),   # 0: East
-            (1, -1),  # 1: Northeast
-            (0, -1),  # 2: Northwest
+            (0, 1),   # 1: Northeast
+            (-1, 1),  # 2: Northwest
             (-1, 0),  # 3: West
-            (-1, 1),  # 4: Southwest
-            (0, 1)    # 5: Southeast
+            (0, -1),  # 4: Southwest
+            (1, -1)   # 5: Southeast
         ]
         
         for dir_idx, (dq, dr) in enumerate(directions):

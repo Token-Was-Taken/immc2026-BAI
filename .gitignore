@@ -51,6 +51,7 @@ htmlcov/
 # hexdynamic 脚本运行产物
 hexdynamic/output_results/
 hexdynamic/output_iterations/
+hexdynamic/figures/
 hexdynamic/figures-*/
 hexdynamic/out*.json
 hexdynamic/output-*.json

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(cp ./figures35/terrain_map.png /tmp/terrain_old.png)",
+      "Read(//tmp/**)"
+    ]
+  }
+}

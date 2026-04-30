@@ -250,11 +250,6 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
     }
 
     fixed_fences = {}
-    for edge in grid_model.get_fencing_edges():
-        gid1, gid2, _ = edge
-        if (loader.deployment_matrix['fence'].get(gid1, 0) == 1 and
-                loader.deployment_matrix['fence'].get(gid2, 0) == 1):
-            fixed_fences[tuple(sorted((gid1, gid2)))] = 1
 
     dc = data.get('dssa_config', {})
     if dssa_config is None:
@@ -269,11 +264,10 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             output_dir=dc.get('output_dir'),
             force_full_deployment=dc.get('force_full_deployment', True)
         )
-    else:
-        if dssa_config.output_dir is None:
-            dssa_config.output_dir = dc.get('output_dir')
-        if dssa_config.force_full_deployment is None:
-            dssa_config.force_full_deployment = dc.get('force_full_deployment', True)
+    if dssa_config.output_dir is None:
+        dssa_config.output_dir = dc.get('output_dir')
+    if dssa_config.force_full_deployment is None:
+        dssa_config.force_full_deployment = dc.get('force_full_deployment', True)
 
     # 部署模式优先级：CLI --allow-partial-deployment > JSON dssa_config.force_full_deployment > 默认 True
     if allow_partial_deployment:
@@ -445,23 +439,19 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
                 'camera': int(best_solution.cameras.get(gid, 0))
             }
         }
+        
+        # Add fence information for grids with boundary fences (Requirement 1.5, 6)
+        # Fences are stored as (grid_id, direction) where direction is 0-5
+        grid_fence_edges = [(e[0], e[1]) for e, v in best_solution.fences.items() if v > 0 and e[0] == gid and isinstance(e[1], int)]
+        if grid_fence_edges:
+            entry['fences'] = {
+                'fence_count': len(grid_fence_edges),
+                'boundary_edge_list': [direction for _, direction in grid_fence_edges]
+            }
+
         if 'hex_size' in src:
             entry['hex_size'] = src['hex_size']
         grid_results.append(entry)
-
-    # FIX: Properly handle boundary edges (where e[1] is None)
-    # Fence edges are stored as (grid_id, None) for boundary edges
-    fence_edges = []
-    for e, v in best_solution.fences.items():
-        if v > 0:
-            grid_id_1 = int(e[0])
-            grid_id_2 = e[1]
-            if grid_id_2 is None:
-                # Boundary edge - use None for grid_id_2
-                fence_edges.append({'grid_id_1': grid_id_1, 'grid_id_2': None})
-            else:
-                # Internal edge (should not happen now, but handle for compatibility)
-                fence_edges.append({'grid_id_1': grid_id_1, 'grid_id_2': int(grid_id_2)})
 
     # 计算 summary 统计量
     all_gids = grid_model.get_all_grid_ids()
@@ -497,11 +487,10 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
                 'total_drones': int(sum(best_solution.drones.values())),
                 'total_camps': int(sum(best_solution.camps.values())),
                 'total_rangers': int(sum(best_solution.rangers.values())),
-                'fence_segments': len(fence_edges)
+                'fence_segments': sum(1 for v in best_solution.fences.values() if v > 0)
             }
         },
-        'grids': grid_results,
-        'fence_edges': fence_edges
+        'grids': grid_results
     }
 
     with open(output_path, 'w', encoding='utf-8') as f:
