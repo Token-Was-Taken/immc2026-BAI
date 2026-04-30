@@ -95,6 +95,20 @@ def main():
         print("错误: pipeline 模式需要提供 output 路径", file=sys.stderr)
         sys.exit(1)
 
+    # 检查并创建输出目录
+    output_dir = args.out_dir
+    if output_dir:
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"[DIR] 确保输出目录存在: {os.path.abspath(output_dir)}")
+
+    output_path = args.output
+    output_dir_for_output = os.path.dirname(output_path)
+    if output_dir_for_output:
+        import os
+        os.makedirs(output_dir_for_output, exist_ok=True)
+        print(f"[DIR] 确保输出 JSON 目录存在: {os.path.abspath(output_dir_for_output)}")
+
     # Step 1: 优化
     run_pipeline(
         input_path=args.input,
