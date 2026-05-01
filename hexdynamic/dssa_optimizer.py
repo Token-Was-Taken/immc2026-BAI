@@ -14,7 +14,7 @@ class DSSAConfig:
     population_size: int = 50
     max_iterations: int = 100
     producer_ratio: float = 0.2
-    scout_ratio: float = 0.2
+    scout_ratio: float = 0.3
     ST: float = 0.8
     R2: float = 0.5  # 已弃用：R2现在在每次迭代中随机生成，此参数保留用于向后兼容
     use_time_aware_fitness: bool = False  # 启用时间感知的适应度计算
@@ -27,7 +27,7 @@ class DSSAConfig:
     high_risk_percentage: float = 0.3  # 高风险网格占比（0-1），默认 30%
     high_risk_perturbation_priority: float = 0.7  # 高风险网格扰动优先级（0-1），值越高越高风险网格越容易被扰动
 
-    # --- Exploration range scheduling ---
+    # --- Exploration range scheduling (legacy, kept for backward compat) ---
     initial_alpha: float = 3.0       # exploration range in early phase (iter < 30%)
     mid_alpha: float = 2.0           # exploration range in mid phase (30%–70%)
     final_alpha: float = 1.0         # exploration range in late phase (iter >= 70%)
@@ -37,6 +37,16 @@ class DSSAConfig:
     stagnation_threshold: int = 10   # consecutive non-improving iters before boost
     stagnation_tolerance: float = 1e-6  # minimum improvement to reset counter
     stagnation_boost: float = 1.5    # multiplier applied to alpha during stagnation
+
+    # --- Discrete swap exploration (方案C) ---
+    swap_prob: float = 0.6           # Producer 使用离散交换操作的概率（vs 连续向量扰动）
+    migrate_prob: float = 0.25       # 资源迁移操作概率
+    reshuffle_prob: float = 0.15     # 全局重排操作概率
+    follower_explore_ratio: float = 0.5  # Follower 随机探索比例（vs 向 best/producer 靠拢）
+    scout_reset_threshold: float = 0.95  # Scout 重置阈值：fitness < threshold * best_fitness 时重置
+    scout_partial_reset_ratio: float = 0.5  # Scout 部分重置时，重置的资源类型比例
+    diversity_min_threshold: float = 0.3  # 种群多样性最低阈值（低于此值时注入随机解）
+    diversity_inject_ratio: float = 0.2  # 多样性过低时注入随机解的比例
 
 
 class DSSAOptimizer:
@@ -441,16 +451,19 @@ class DSSAOptimizer:
         )
 
     def _update_producers(self, iteration: int, alpha: float):
-        """Update producer positions with dynamic exploration range.
+        """Update producer positions using discrete swap operations (方案C).
+
+        Producer 0: 向 best_solution 靠拢（离散交换 + 交叉）
+        其他 Producer: 离散交换/迁移/重排操作
 
         Args:
             iteration: Current iteration index
-            alpha: Current exploration range bound
+            alpha: Current exploration range bound (legacy, used for fallback)
         """
         num_producers = int(self.config.population_size * self.config.producer_ratio)
         producers = self.population[:num_producers]
 
-        escape_count = 0  # 统计警戒更新次数
+        escape_count = 0
 
         new_solutions = []
         old_solutions = []
@@ -461,22 +474,16 @@ class DSSAOptimizer:
 
             if R2 < self.config.ST:
                 if i == 0:
-                    current_vector = self._solution_to_vector(solution)
-                    best_vector = self._solution_to_vector(self.best_solution)
-                    new_vector = current_vector + np.random.uniform(0, 1, current_vector.shape) * (best_vector - current_vector)
+                    new_solution = self._exploit_toward_best(solution)
                 else:
-                    current_vector = self._solution_to_vector(solution)
-                    new_vector = current_vector + np.random.uniform(-self.config.exploitation_alpha, self.config.exploitation_alpha, current_vector.shape)
+                    new_solution = self._discrete_perturb(solution)
             else:
                 escape_count += 1
-                current_vector = self._solution_to_vector(solution)
-                new_vector = current_vector + np.random.uniform(-alpha, alpha, current_vector.shape)
+                new_solution = self._discrete_perturb(solution)
+                # 额外执行一次离散操作以增强探索
+                if random.random() < 0.5:
+                    new_solution = self._discrete_perturb(new_solution)
 
-            new_solution = self.coverage_model.repair_solution(
-                self._vector_to_solution(new_vector),
-                self.constraints,
-                self.force_full_deployment
-            )
             new_solution = self._apply_frozen_resources(new_solution)
 
             new_solutions.append(new_solution)
@@ -494,17 +501,95 @@ class DSSAOptimizer:
 
         return escape_count
 
+    def _exploit_toward_best(self, solution: DeploymentSolution) -> DeploymentSolution:
+        """Producer 0 的开发操作：从当前解向最优解靠拢
+        
+        通过离散交叉实现：随机选择一些资源部署位置，
+        将当前解的部署替换为最优解的部署。
+        """
+        cameras = dict(solution.cameras)
+        camps = dict(solution.camps)
+        drones = dict(solution.drones)
+        rangers = dict(solution.rangers)
+
+        # 随机选择交叉比例（30%-70%的资源位置从 best 继承）
+        cross_ratio = random.uniform(0.3, 0.7)
+
+        # Camera 交叉
+        best_cam_grids = set(self.best_solution.cameras.keys())
+        cur_cam_grids = set(cameras.keys())
+        all_cam_grids = best_cam_grids | cur_cam_grids
+        for gid in all_cam_grids:
+            if random.random() < cross_ratio:
+                best_val = self.best_solution.cameras.get(gid, 0)
+                if best_val > 0 and self.coverage_model.deployment_matrix['camera'].get(gid, 0) == 1:
+                    cameras[gid] = best_val
+                else:
+                    cameras.pop(gid, None)
+
+        # Drone 交叉
+        best_drone_grids = set(self.best_solution.drones.keys())
+        cur_drone_grids = set(drones.keys())
+        all_drone_grids = best_drone_grids | cur_drone_grids
+        for gid in all_drone_grids:
+            if random.random() < cross_ratio:
+                best_val = self.best_solution.drones.get(gid, 0)
+                if best_val > 0 and self.coverage_model.deployment_matrix['drone'].get(gid, 0) == 1:
+                    drones[gid] = best_val
+                else:
+                    drones.pop(gid, None)
+
+        # Camp 交叉
+        best_camp_grids = set(self.best_solution.camps.keys())
+        cur_camp_grids = set(camps.keys())
+        all_camp_grids = best_camp_grids | cur_camp_grids
+        for gid in all_camp_grids:
+            if random.random() < cross_ratio:
+                best_val = self.best_solution.camps.get(gid, 0)
+                if best_val > 0 and self.coverage_model.deployment_matrix['camp'].get(gid, 0) == 1:
+                    camps[gid] = best_val
+                else:
+                    camps.pop(gid, None)
+
+        # Ranger 交叉
+        best_ranger_grids = set(self.best_solution.rangers.keys())
+        cur_ranger_grids = set(rangers.keys())
+        all_ranger_grids = best_ranger_grids | cur_ranger_grids
+        for gid in all_ranger_grids:
+            if random.random() < cross_ratio:
+                best_val = self.best_solution.rangers.get(gid, 0)
+                if best_val > 0 and self.coverage_model.deployment_matrix['patrol'].get(gid, 0) == 1:
+                    rangers[gid] = best_val
+                else:
+                    rangers.pop(gid, None)
+
+        result = DeploymentSolution(
+            cameras=cameras,
+            camps=camps,
+            drones=drones,
+            rangers=rangers,
+            fences=dict(solution.fences)
+        )
+
+        return self.coverage_model.repair_solution(
+            result, self.constraints, self.force_full_deployment
+        )
+
     def _update_followers(self, alpha: float):
-        """Update follower positions with dynamic exploration range.
+        """Update follower positions using discrete swap operations (方案C).
+
+        Follower 策略：
+        - follower_explore_ratio 概率：随机离散探索
+        - 1 - follower_explore_ratio 概率：向 best/producer 靠拢（离散交叉）
 
         Args:
-            alpha: Current exploration range bound
+            alpha: Current exploration range bound (legacy)
         """
         num_producers = int(self.config.population_size * self.config.producer_ratio)
         num_followers = int(self.config.population_size * (1 - self.config.producer_ratio))
         followers = self.population[num_producers:num_producers + num_followers]
 
-        escape_count = 0  # 统计警戒更新次数
+        escape_count = 0
 
         new_solutions = []
         old_solutions = []
@@ -514,26 +599,20 @@ class DSSAOptimizer:
             R2 = random.uniform(0, 1)
 
             if R2 < self.config.ST:
-                if i > self.config.population_size / 2:
-                    current_vector = self._solution_to_vector(solution)
-                    best_vector = self._solution_to_vector(self.best_solution)
-                    new_vector = np.abs(best_vector - current_vector) * np.random.uniform(0, 1, current_vector.shape)
+                if random.random() < self.config.follower_explore_ratio:
+                    escape_count += 1
+                    new_solution = self._discrete_perturb(solution)
                 else:
-                    idx = random.randint(0, num_producers - 1)
-                    producer = self.population[idx]
-                    current_vector = self._solution_to_vector(solution)
-                    producer_vector = self._solution_to_vector(producer)
-                    new_vector = current_vector + np.random.uniform(0, 1, current_vector.shape) * (producer_vector - current_vector)
+                    if i > len(followers) / 2:
+                        new_solution = self._exploit_toward_best(solution)
+                    else:
+                        idx = random.randint(0, num_producers - 1)
+                        producer = self.population[idx]
+                        new_solution = self._follow_producer(solution, producer)
             else:
                 escape_count += 1
-                current_vector = self._solution_to_vector(solution)
-                new_vector = current_vector + np.random.uniform(-alpha, alpha, current_vector.shape)
+                new_solution = self._discrete_perturb(solution)
 
-            new_solution = self.coverage_model.repair_solution(
-                self._vector_to_solution(new_vector),
-                self.constraints,
-                self.force_full_deployment
-            )
             new_solution = self._apply_frozen_resources(new_solution)
 
             new_solutions.append(new_solution)
@@ -551,14 +630,85 @@ class DSSAOptimizer:
 
         return escape_count
 
+    def _follow_producer(self, solution: DeploymentSolution, producer: DeploymentSolution) -> DeploymentSolution:
+        """Follower 向 Producer 靠拢的离散操作
+        
+        随机选择一些资源部署位置，从 Producer 继承。
+        """
+        cameras = dict(solution.cameras)
+        camps = dict(solution.camps)
+        drones = dict(solution.drones)
+        rangers = dict(solution.rangers)
+
+        cross_ratio = random.uniform(0.2, 0.5)
+
+        # Camera
+        for gid in set(producer.cameras.keys()) | set(cameras.keys()):
+            if random.random() < cross_ratio:
+                prod_val = producer.cameras.get(gid, 0)
+                if prod_val > 0 and self.coverage_model.deployment_matrix['camera'].get(gid, 0) == 1:
+                    cameras[gid] = prod_val
+                else:
+                    cameras.pop(gid, None)
+
+        # Drone
+        for gid in set(producer.drones.keys()) | set(drones.keys()):
+            if random.random() < cross_ratio:
+                prod_val = producer.drones.get(gid, 0)
+                if prod_val > 0 and self.coverage_model.deployment_matrix['drone'].get(gid, 0) == 1:
+                    drones[gid] = prod_val
+                else:
+                    drones.pop(gid, None)
+
+        # Camp
+        for gid in set(producer.camps.keys()) | set(camps.keys()):
+            if random.random() < cross_ratio:
+                prod_val = producer.camps.get(gid, 0)
+                if prod_val > 0 and self.coverage_model.deployment_matrix['camp'].get(gid, 0) == 1:
+                    camps[gid] = prod_val
+                else:
+                    camps.pop(gid, None)
+
+        # Ranger
+        for gid in set(producer.rangers.keys()) | set(rangers.keys()):
+            if random.random() < cross_ratio:
+                prod_val = producer.rangers.get(gid, 0)
+                if prod_val > 0 and self.coverage_model.deployment_matrix['patrol'].get(gid, 0) == 1:
+                    rangers[gid] = prod_val
+                else:
+                    rangers.pop(gid, None)
+
+        result = DeploymentSolution(
+            cameras=cameras,
+            camps=camps,
+            drones=drones,
+            rangers=rangers,
+            fences=dict(solution.fences)
+        )
+
+        return self.coverage_model.repair_solution(
+            result, self.constraints, self.force_full_deployment
+        )
+
     def _update_scouts(self):
+        """Scout 机制（方案C）：降低重置阈值 + 部分重置
+        
+        - scout_reset_threshold: fitness < threshold * best_fitness 时触发重置
+        - 部分重置：只重置部分资源类型，保留好的基因
+        - 完全重置：当 fitness 极差时完全重新初始化
+        """
         num_scouts = int(self.config.population_size * self.config.scout_ratio)
         start_idx = self.config.population_size - num_scouts
 
         for i in range(start_idx, self.config.population_size):
             solution = self.population[i]
-            if self.evaluate_fitness(solution) < self.config.ST * self.best_fitness:
-                self.population[i] = self._initialize_solution()
+            fitness = self.evaluate_fitness(solution)
+
+            if self.best_fitness > 0 and fitness < self.config.scout_reset_threshold * self.best_fitness:
+                if fitness < 0.5 * self.best_fitness:
+                    self.population[i] = self._initialize_solution()
+                else:
+                    self.population[i] = self._partial_reset_scout(solution)
 
     def _update_best_solution(self):
         fitnesses = self._evaluate_fitness_parallel(self.population)
@@ -599,6 +749,12 @@ class DSSAOptimizer:
             escape_followers = self._update_followers(effective_alpha)
             self._update_scouts()
             self._update_best_solution()
+
+            # 多样性监测与增强（方案C）
+            diversity = self._calculate_diversity()
+            if diversity < self.config.diversity_min_threshold:
+                self._inject_random_solutions(self.config.diversity_inject_ratio)
+                self._update_best_solution()
 
             # Update stagnation tracking state
             if self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance:
@@ -641,6 +797,7 @@ class DSSAOptimizer:
                 print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
                       f"  fitness={self.best_fitness:.6f}"
                       f"  benefit={total_benefit:.6f}"
+                      f"  div={diversity:.3f}"
                       f"  α={effective_alpha:.2f}"
                       f"  [ESCAPE={escape_total}]{stagnation_annotation}"
                       f"  iter={iter_elapsed*1000:.1f}ms"
@@ -649,6 +806,7 @@ class DSSAOptimizer:
                 print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
                       f"  fitness={self.best_fitness:.6f}"
                       f"  benefit={total_benefit:.6f}"
+                      f"  div={diversity:.3f}"
                       f"  α={effective_alpha:.2f}{stagnation_annotation}"
                       f"  iter={iter_elapsed*1000:.1f}ms"
                       f"  avg={avg_iter*1000:.1f}ms")
@@ -1107,3 +1265,346 @@ class DSSAOptimizer:
         random.shuffle(high_shuffled)
         random.shuffle(low_shuffled)
         return high_shuffled + low_shuffled
+
+    # -----------------------------------------------------------------------
+    # 离散交换操作（方案C核心）
+    # -----------------------------------------------------------------------
+
+    def _get_deployable_grids(self, resource_type: str) -> List[int]:
+        """获取某种资源类型可部署的网格列表"""
+        return [gid for gid in self.grid_ids
+                if self.coverage_model.deployment_matrix[resource_type].get(gid, 0) == 1]
+
+    def _discrete_swap(self, solution: DeploymentSolution) -> DeploymentSolution:
+        """资源交换：随机选两个网格，交换它们的非围栏资源部署
+        
+        交换操作天然满足总量约束（交换前后总量不变），
+        不需要 repair_solution 的强力修复。
+        """
+        cameras = dict(solution.cameras)
+        camps = dict(solution.camps)
+        drones = dict(solution.drones)
+        rangers = dict(solution.rangers)
+
+        # 收集所有有资源部署的网格（排除围栏，围栏保持不变）
+        occupied = set()
+        occupied.update(cameras.keys())
+        occupied.update(camps.keys())
+        occupied.update(drones.keys())
+        occupied.update(rangers.keys())
+
+        if len(occupied) < 2:
+            return solution
+
+        # 随机选两个网格
+        grid_a, grid_b = random.sample(list(occupied), 2)
+
+        # 交换 camera
+        cam_a = cameras.pop(grid_a, 0)
+        cam_b = cameras.pop(grid_b, 0)
+        if cam_b > 0 and self.coverage_model.deployment_matrix['camera'].get(grid_a, 0) == 1:
+            cameras[grid_a] = cam_b
+        if cam_a > 0 and self.coverage_model.deployment_matrix['camera'].get(grid_b, 0) == 1:
+            cameras[grid_b] = cam_a
+
+        # 交换 drone
+        drone_a = drones.pop(grid_a, 0)
+        drone_b = drones.pop(grid_b, 0)
+        if drone_b > 0 and self.coverage_model.deployment_matrix['drone'].get(grid_a, 0) == 1:
+            drones[grid_a] = drone_b
+        if drone_a > 0 and self.coverage_model.deployment_matrix['drone'].get(grid_b, 0) == 1:
+            drones[grid_b] = drone_a
+
+        # 交换 camp
+        camp_a = camps.pop(grid_a, 0)
+        camp_b = camps.pop(grid_b, 0)
+        if camp_b > 0 and self.coverage_model.deployment_matrix['camp'].get(grid_a, 0) == 1:
+            camps[grid_a] = camp_b
+        if camp_a > 0 and self.coverage_model.deployment_matrix['camp'].get(grid_b, 0) == 1:
+            camps[grid_b] = camp_a
+
+        # 交换 ranger
+        ranger_a = rangers.pop(grid_a, 0)
+        ranger_b = rangers.pop(grid_b, 0)
+        if ranger_b > 0 and self.coverage_model.deployment_matrix['patrol'].get(grid_a, 0) == 1:
+            rangers[grid_a] = ranger_b
+        if ranger_a > 0 and self.coverage_model.deployment_matrix['patrol'].get(grid_b, 0) == 1:
+            rangers[grid_b] = ranger_a
+
+        # 处理互斥约束：同一网格只能有一种资源
+        for gid in (grid_a, grid_b):
+            types = []
+            if rangers.get(gid, 0) > 0:
+                types.append('ranger')
+            if drones.get(gid, 0) > 0:
+                types.append('drone')
+            if cameras.get(gid, 0) > 0:
+                types.append('camera')
+            if camps.get(gid, 0) > 0:
+                types.append('camp')
+            if len(types) > 1:
+                keep = random.choice(types)
+                if keep != 'ranger':
+                    rangers.pop(gid, None)
+                if keep != 'drone':
+                    drones.pop(gid, None)
+                if keep != 'camera':
+                    cameras.pop(gid, None)
+                if keep != 'camp':
+                    camps.pop(gid, None)
+
+        return DeploymentSolution(
+            cameras=cameras,
+            camps=camps,
+            drones=drones,
+            rangers=rangers,
+            fences=dict(solution.fences)
+        )
+
+    def _discrete_migrate(self, solution: DeploymentSolution) -> DeploymentSolution:
+        """资源迁移：随机选一个网格的资源，迁移到另一个随机网格
+        
+        从有资源的网格中随机选一种资源，迁移到另一个可部署该资源的空网格。
+        """
+        cameras = dict(solution.cameras)
+        camps = dict(solution.camps)
+        drones = dict(solution.drones)
+        rangers = dict(solution.rangers)
+
+        # 收集所有资源类型及其来源网格
+        resource_sources = []
+        for gid, cnt in cameras.items():
+            if cnt > 0:
+                resource_sources.append(('camera', gid))
+        for gid, cnt in drones.items():
+            if cnt > 0:
+                resource_sources.append(('drone', gid))
+        for gid, cnt in camps.items():
+            if cnt > 0:
+                resource_sources.append(('camp', gid))
+        for gid, cnt in rangers.items():
+            if cnt > 0:
+                resource_sources.append(('ranger', gid))
+
+        if not resource_sources:
+            return solution
+
+        # 随机选一种资源迁移
+        res_type, src_gid = random.choice(resource_sources)
+        res_map = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
+        deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
+
+        # 找到可部署该资源的目标网格（排除已有资源的网格）
+        deployable = self._get_deployable_grids(deploy_key[res_type])
+        occupied = set(cameras.keys()) | set(drones.keys()) | set(camps.keys()) | set(rangers.keys())
+        targets = [gid for gid in deployable if gid not in occupied]
+
+        if not targets:
+            return solution
+
+        dst_gid = random.choice(targets)
+
+        # 迁移资源
+        src_dict = res_map[res_type]
+        max_per_grid = {
+            'camera': self.constraints.get('max_cameras_per_grid', 1),
+            'drone': 1,
+            'camp': 1,
+            'ranger': self.constraints.get('max_rangers_per_grid', 1),
+        }
+
+        count = src_dict.pop(src_gid, 0)
+        src_dict[dst_gid] = min(count, max_per_grid[res_type])
+
+        return DeploymentSolution(
+            cameras=cameras,
+            camps=camps,
+            drones=drones,
+            rangers=rangers,
+            fences=dict(solution.fences)
+        )
+
+    def _discrete_reshuffle(self, solution: DeploymentSolution) -> DeploymentSolution:
+        """全局重排：随机选一种资源类型，重新随机分配所有该类型资源的部署位置
+        
+        围栏保持不变，只重排非围栏资源。
+        """
+        res_types = ['camera', 'drone', 'camp', 'ranger']
+        chosen = random.choice(res_types)
+
+        res_map = {'camera': dict(solution.cameras), 'drone': dict(solution.drones),
+                    'camp': dict(solution.camps), 'ranger': dict(solution.rangers)}
+        deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
+        total_key = {'camera': 'total_cameras', 'drone': 'total_drones',
+                     'camp': 'total_camps', 'ranger': 'total_patrol'}
+        max_key = {'camera': 'max_cameras_per_grid', 'drone': 'max_drones_per_grid',
+                   'camp': 'max_camps_per_grid', 'ranger': 'max_rangers_per_grid'}
+
+        total = self.constraints.get(total_key[chosen], 0)
+        if total == 0:
+            return solution
+
+        max_per_grid = self.constraints.get(max_key[chosen], 1)
+        deployable = self._get_deployable_grids(deploy_key[chosen])
+
+        # 排除已有其他资源的网格
+        other_occupied = set()
+        for rt in res_types:
+            if rt != chosen:
+                other_occupied.update(res_map[rt].keys())
+
+        available = [gid for gid in deployable if gid not in other_occupied]
+        if not available:
+            return solution
+
+        random.shuffle(available)
+
+        new_dict = {}
+        deployed = 0
+        for gid in available:
+            if deployed >= total:
+                break
+            count = min(max_per_grid, total - deployed)
+            new_dict[gid] = count
+            deployed += count
+
+        res_map[chosen] = new_dict
+
+        return DeploymentSolution(
+            cameras=res_map['camera'],
+            camps=res_map['camp'],
+            drones=res_map['drone'],
+            rangers=res_map['ranger'],
+            fences=dict(solution.fences)
+        )
+
+    def _discrete_perturb(self, solution: DeploymentSolution) -> DeploymentSolution:
+        """综合离散扰动：按概率选择交换/迁移/重排操作"""
+        r = random.random()
+        if r < self.config.swap_prob:
+            result = self._discrete_swap(solution)
+        elif r < self.config.swap_prob + self.config.migrate_prob:
+            result = self._discrete_migrate(solution)
+        else:
+            result = self._discrete_reshuffle(solution)
+
+        return self.coverage_model.repair_solution(
+            result, self.constraints, self.force_full_deployment
+        )
+
+    def _calculate_diversity(self) -> float:
+        """计算种群多样性（基于资源部署位置的归一化海明距离）
+        
+        返回 [0, 1] 之间的值：
+        - 1.0 表示所有个体完全不同
+        - 0.0 表示所有个体完全相同
+        """
+        if len(self.population) < 2:
+            return 0.0
+
+        def solution_to_set(sol: DeploymentSolution) -> set:
+            occupied = set()
+            for gid, cnt in sol.cameras.items():
+                if cnt > 0:
+                    occupied.add(('camera', gid))
+            for gid, cnt in sol.drones.items():
+                if cnt > 0:
+                    occupied.add(('drone', gid))
+            for gid, cnt in sol.camps.items():
+                if cnt > 0:
+                    occupied.add(('camp', gid))
+            for gid, cnt in sol.rangers.items():
+                if cnt > 0:
+                    occupied.add(('ranger', gid))
+            return occupied
+
+        sets = [solution_to_set(sol) for sol in self.population]
+
+        total_positions = set()
+        for s in sets:
+            total_positions.update(s)
+        n_positions = len(total_positions)
+
+        if n_positions == 0:
+            return 0.0
+
+        n_pairs = 0
+        total_dist = 0.0
+        for i in range(len(sets)):
+            for j in range(i + 1, len(sets)):
+                diff = len(sets[i].symmetric_difference(sets[j]))
+                total_dist += diff / n_positions
+                n_pairs += 1
+
+        return total_dist / n_pairs if n_pairs > 0 else 0.0
+
+    def _inject_random_solutions(self, ratio: float):
+        """注入随机解以增加种群多样性"""
+        n_inject = max(1, int(self.config.population_size * ratio))
+        indices = random.sample(range(self.config.population_size), min(n_inject, self.config.population_size))
+
+        for idx in indices:
+            if self.population[idx] is not self.best_solution:
+                self.population[idx] = self._initialize_solution()
+
+    def _partial_reset_scout(self, solution: DeploymentSolution) -> DeploymentSolution:
+        """Scout 部分重置：随机重置部分资源类型，保留其余
+        
+        比 _initialize_solution() 的完全重置更温和，
+        保留了一些好的基因，同时引入新的探索。
+        """
+        res_types = ['camera', 'drone', 'camp', 'ranger']
+        n_reset = max(1, int(len(res_types) * self.config.scout_partial_reset_ratio))
+        types_to_reset = random.sample(res_types, n_reset)
+
+        cameras = dict(solution.cameras)
+        camps = dict(solution.camps)
+        drones = dict(solution.drones)
+        rangers = dict(solution.rangers)
+
+        res_map = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
+        deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
+        total_key = {'camera': 'total_cameras', 'drone': 'total_drones',
+                     'camp': 'total_camps', 'ranger': 'total_patrol'}
+        max_key = {'camera': 'max_cameras_per_grid', 'drone': 'max_drones_per_grid',
+                   'camp': 'max_camps_per_grid', 'ranger': 'max_rangers_per_grid'}
+
+        for res_type in types_to_reset:
+            total = self.constraints.get(total_key[res_type], 0)
+            if total == 0:
+                continue
+
+            max_per_grid = self.constraints.get(max_key[res_type], 1)
+            deployable = self._get_deployable_grids(deploy_key[res_type])
+
+            # 排除已有其他资源的网格
+            other_occupied = set()
+            for rt in res_types:
+                if rt != res_type:
+                    other_occupied.update(res_map[rt].keys())
+
+            available = [gid for gid in deployable if gid not in other_occupied]
+            random.shuffle(available)
+
+            new_dict = {}
+            deployed = 0
+            for gid in available:
+                if deployed >= total:
+                    break
+                count = min(max_per_grid, total - deployed)
+                new_dict[gid] = count
+                deployed += count
+
+            res_map[res_type] = new_dict
+
+        result = DeploymentSolution(
+            cameras=res_map['camera'],
+            camps=res_map['camp'],
+            drones=res_map['drone'],
+            rangers=res_map['ranger'],
+            fences=dict(solution.fences)
+        )
+
+        return self.coverage_model.repair_solution(
+            result, self.constraints, self.force_full_deployment
+        )
