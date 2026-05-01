@@ -19,9 +19,9 @@ class HumanRiskWeights:
         road_weight: Weight for proximity to road
         water_weight: Weight for proximity to water source
     """
-    boundary_weight: float = 0.4
-    road_weight: float = 0.35
-    water_weight: float = 0.25
+    boundary_weight: float = 0.2
+    road_weight: float = 0.3
+    water_weight: float = 0.5
 
     def __post_init__(self):
         """Validate weights sum to 1."""

@@ -1,0 +1,13 @@
+{
+  "dssa_config": {
+    "save_iteration_visualization": true,
+    "use_risk_priority": true,
+    "high_risk_percentage": 0.1,
+    "population_size": 50,
+    "max_iterations": 5,
+    "producer_ratio": 0.2,
+    "scout_ratio": 0.4,
+    "ST": 0.5,
+    "R2": 0.5
+  }
+}

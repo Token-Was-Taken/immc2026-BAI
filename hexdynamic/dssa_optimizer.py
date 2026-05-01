@@ -43,7 +43,8 @@ class DSSAOptimizer:
     def __init__(self, coverage_model: CoverageModel, constraints: Dict[str, any],
                  config: DSSAConfig = None, fixed_fences: Dict[Tuple[int, int], int] = None,
                  force_full_deployment: bool = True, frozen_resources: List[str] = None,
-                 input_grids: List[Dict] = None, raw_risk_map: Dict = None):
+                 input_grids: List[Dict] = None, raw_risk_map: Dict = None,
+                 boundary_locations: List[Tuple[float, float]] = None):
         self.coverage_model = coverage_model
         self.constraints = constraints
         self.config = config or DSSAConfig()
@@ -66,10 +67,12 @@ class DSSAOptimizer:
 
         self.output_dir = self.config.output_dir
         self._output_lock = threading.Lock()
+        self._async_threads = []  # 跟踪所有异步线程
 
         # 保存构建输出 JSON 所需的参数
         self.input_grids = input_grids
         self.raw_risk_map = raw_risk_map
+        self.boundary_locations = boundary_locations
         
         # --- 风险优先部署：初始化高/低风险网格分组 ---
         self._high_risk_grids = []
@@ -660,6 +663,15 @@ class DSSAOptimizer:
               f"  Total = {total_elapsed:.2f}s"
               f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
 
+        # 等待所有异步线程完成（绘图和输出文件）
+        if self._async_threads:
+            print(f"[ASYNC] 等待 {len(self._async_threads)} 个异步任务完成...")
+            for i, thread in enumerate(self._async_threads):
+                if thread.is_alive():
+                    thread.join(timeout=60)  # 每个线程最多等待60秒
+                    print(f"[ASYNC] 任务 {i+1}/{len(self._async_threads)} 已完成")
+            print("[ASYNC] 所有异步任务完成！")
+
         self._fitness_executor.shutdown(wait=True)
 
         return self.best_solution, self.best_fitness, self.fitness_history
@@ -721,6 +733,7 @@ class DSSAOptimizer:
 
         thread = threading.Thread(target=_write_files, daemon=True)
         thread.start()
+        self._async_threads.append(thread)
 
     def _build_output_for_solution(self, solution: DeploymentSolution) -> Dict[str, any]:
         """构建完整的输出 JSON 结构（类似 protection_pipeline.py 中的逻辑）
@@ -838,19 +851,16 @@ class DSSAOptimizer:
         return output
 
     def _async_plot_iteration_deployment(self, iteration: int, solution: DeploymentSolution):
-        """异步绘制当前迭代的最优 deployment map"""
+        """异步绘制当前迭代的最优 deployment map（缓存绘制参数+重新绘制）"""
         if not (self.output_dir and self.config.save_iteration_visualization):
             return
         if not (self.input_grids):
             return
 
-        def _plot():
+        def _plot_fast():
             try:
-                import sys
                 import os
                 import gc
-                from visualize_output import plot_terrain_deployment_map
-                # Import matplotlib and ensure proper cleanup
                 import matplotlib
                 import matplotlib.pyplot as plt
                 matplotlib.rcParams["figure.max_open_warning"] = 0
@@ -858,26 +868,76 @@ class DSSAOptimizer:
                 iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
                 os.makedirs(iter_dir, exist_ok=True)
 
-                out = self._build_output_for_solution(solution)
+                # 使用锁保护缓存初始化
+                with self._output_lock:
+                    if not hasattr(self, '_viz_cache_initialized') or not self._viz_cache_initialized:
+                        self._init_viz_cache(solution)
 
-                hex_size = self.input_grids[0].get('hex_size', 10) if len(self.input_grids) > 0 else 10
+                # 获取缓存
+                out_base = self._output_for_viz_cache
+                hex_size = self._hex_size_cache
+                boundary_xy = self._boundary_xy_cache
+                terrain_patches = self._terrain_patches_cache
 
-                x_coords = [g.get('x', 0) for g in self.input_grids] if self.input_grids else []
-                y_coords = [g.get('y', 0) for g in self.input_grids] if self.input_grids else []
-                boundary_xy = (
-                    (min(x_coords) - hex_size, min(y_coords) - hex_size),
-                    (max(x_coords) + hex_size, max(y_coords) + hex_size)) if x_coords and y_coords else None
+                # 创建新图，使用与原始函数相同的布局
+                from visualize_output import (
+                    make_figure, setup_map_ax, draw_hex, draw_boundary,
+                    draw_deployed_fence_edges, grid_center, TERRAIN_COLORS,
+                    RESOURCE_MARKERS, _draw_resources, _edge_grid_ids
+                )
 
-                if boundary_xy and out['grids']:
-                    plot_terrain_deployment_map(out, hex_size, boundary_xy, 
-                                                os.path.join(iter_dir, "deployment_map.png"))
-                
-                # Force cleanup
+                fig, ax_map, _, ax_leg = make_figure(has_colorbar=False)
+
+                # 绘制地形（使用缓存的参数，避免重新计算）
+                for (cx, cy, fc) in terrain_patches:
+                    draw_hex(ax_map, cx, cy, hex_size * 0.97,
+                            facecolor=fc, alpha=0.45)
+
+                # 绘制资源部署
+                grids = out_base['grids']
+                edge_ids = _edge_grid_ids(grids, boundary_xy)
+
+                # 更新 deployment 数据（每次迭代可能不同）
+                for g in grids:
+                    gid = g['grid_id']
+                    dep = g.get('deployment', {})
+                    dep['camera'] = solution.cameras.get(gid, 0)
+                    dep['drone'] = solution.drones.get(gid, 0)
+                    dep['camp'] = solution.camps.get(gid, 0)
+                    dep['patrol_rangers'] = solution.rangers.get(gid, 0)
+                    # 更新 fences 数据
+                    grid_fence_edges = [(e[0], e[1]) for e, v in solution.fences.items()
+                                       if v > 0 and e[0] == gid and isinstance(e[1], int)]
+                    if grid_fence_edges:
+                        g['fences'] = {
+                            'fence_count': len(grid_fence_edges),
+                            'boundary_edge_list': [direction for _, direction in grid_fence_edges]
+                        }
+                    elif 'fences' in g:
+                        del g['fences']
+
+                _draw_resources(ax_map, grids, out_base, hex_size, edge_ids)
+                draw_deployed_fence_edges(ax_map, grids, out_base, hex_size)
+                setup_map_ax(ax_map, grids, hex_size)
+                draw_boundary(ax_map, grids, boundary_xy, hex_size)
+
+                # 添加标题
+                ax_map.set_title(f"Iteration {iteration:04d}", fontsize=13, fontweight='bold', pad=8)
+
+                # 绘制图例
+                self._draw_legend(ax_leg)
+
+                # 保存
+                save_path = os.path.join(iter_dir, "deployment_map.png")
+                fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+                # 清理
+                plt.close(fig)
                 plt.close('all')
                 gc.collect()
 
             except Exception as e:
-                print(f"Warning: Failed to plot iteration {iteration} deployment: {e}")
+                print(f"[ERROR] Failed to plot iteration {iteration} deployment: {e}")
                 import traceback
                 traceback.print_exc()
                 try:
@@ -888,8 +948,117 @@ class DSSAOptimizer:
                 except:
                     pass
 
-        thread = threading.Thread(target=_plot, daemon=True)
+        thread = threading.Thread(target=_plot_fast, daemon=True)
         thread.start()
+        self._async_threads.append(thread)
+
+    def _init_viz_cache(self, solution: DeploymentSolution):
+        """初始化可视化缓存（只在第一次调用时执行）"""
+        from visualize_output import grid_center, TERRAIN_COLORS
+
+        # 构建输出数据并缓存
+        out = self._build_output_for_solution(solution)
+        self._output_for_viz_cache = out
+
+        hex_size = self.input_grids[0].get('hex_size', 10) if len(self.input_grids) > 0 else 10
+        self._hex_size_cache = hex_size
+
+        # 提取 boundary_locations
+        boundary_xy = self.boundary_locations
+        if not boundary_xy and self.input_grids:
+            for g in self.input_grids:
+                if 'boundary_locations' in g:
+                    bl = g['boundary_locations']
+                    if bl:
+                        boundary_xy = []
+                        for item in bl:
+                            if isinstance(item, dict):
+                                boundary_xy.append((item['x'], item['y']))
+                            else:
+                                boundary_xy.append(tuple(item))
+                        break
+
+        self._boundary_xy_cache = boundary_xy
+
+        # 预计算地形绘制参数（cx, cy, facecolor）
+        grids = out['grids']
+        terrain_patches = []
+        for g in grids:
+            cx, cy = grid_center(g['q'], g['r'], hex_size)
+            fc = TERRAIN_COLORS.get(g['terrain_type'], '#ccc')
+            terrain_patches.append((cx, cy, fc))
+        self._terrain_patches_cache = terrain_patches
+
+        self._viz_cache_initialized = True
+
+    def _draw_legend(self, ax_leg):
+        """绘制图例"""
+        import matplotlib.patches as mpatches
+        import matplotlib.pyplot as plt
+
+        TERRAIN_COLORS = {
+            "SparseGrass": "#a8d5a2",
+            "DenseGrass":  "#2d6a2d",
+            "WaterHole":   "#5b9bd5",
+            "SaltMarsh":   "#c8b97a",
+            "Road":        "#888888",
+        }
+
+        RESOURCE_MARKERS = {
+            "camera":         ("s", "#1f77b4", "Camera"),
+            "drone":          ("^", "#ff7f0e", "Drone"),
+            "camp":           ("D", "#9467bd", "Camp"),
+            "patrol_rangers": ("o", "#2ca02c", "Patrol"),
+        }
+
+        FENCE_COLOR = "#c0392b"
+        FENCE_EDGE_LINEWIDTH = 3.0
+
+        # 地形图例
+        terrain_handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, alpha=0.5, label=t)
+                       for t, c in TERRAIN_COLORS.items()]
+        res_handles = [
+            plt.Line2D([0], [0], marker=m, color="w", markerfacecolor=c,
+                   markeredgecolor="black", markersize=8, label=l)
+            for _, (m, c, l) in RESOURCE_MARKERS.items()
+        ]
+        fence_handle = plt.Line2D([0], [0], color=FENCE_COLOR, linewidth=FENCE_EDGE_LINEWIDTH, label="Fence")
+
+        y = 0.97
+        ax_leg.text(0.05, y, "Terrain Type", transform=ax_leg.transAxes,
+                fontsize=9, fontweight="bold", va="top")
+        y -= 0.06
+        for h in terrain_handles:
+            rect = mpatches.FancyBboxPatch((0.05, y - 0.025), 0.12, 0.04,
+                                       boxstyle="square,pad=0",
+                                       facecolor=h.get_facecolor(),
+                                       edgecolor="black", linewidth=0.5,
+                                       transform=ax_leg.transAxes, clip_on=False)
+            ax_leg.add_patch(rect)
+            ax_leg.text(0.22, y - 0.005, h.get_label(), transform=ax_leg.transAxes,
+                    fontsize=9, va="center")
+            y -= 0.055
+
+        y -= 0.02
+        ax_leg.text(0.05, y, "Resources", transform=ax_leg.transAxes,
+                fontsize=9, fontweight="bold", va="top")
+        y -= 0.06
+        for h in res_handles + [fence_handle]:
+            marker = h.get_marker()
+            if marker and marker != 'None':
+                mfc = h.get_markerfacecolor()
+                mec = h.get_markeredgecolor()
+                ax_leg.plot(0.11, y - 0.005, marker=marker, color="w",
+                        markerfacecolor=mfc, markeredgecolor=mec,
+                        markersize=8, transform=ax_leg.transAxes,
+                        clip_on=False)
+            else:
+                ax_leg.plot([0.05, 0.17], [y - 0.005, y - 0.005], 
+                        color=h.get_color(), linewidth=h.get_linewidth(),
+                        transform=ax_leg.transAxes, clip_on=False)
+            ax_leg.text(0.22, y - 0.005, h.get_label(), transform=ax_leg.transAxes,
+                    fontsize=9, va="center")
+            y -= 0.055
     
     def _initialize_risk_groups(self):
         """初始化高/低风险网格分组

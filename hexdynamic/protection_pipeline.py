@@ -313,12 +313,26 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         if frozen_resources_list:
             print(f"      [FROZEN] 冻结资源模式：{', '.join(frozen_resources_list)} 将保持不变")
     
+    # 提取 boundary_locations
+    boundary_locations = None
+    map_config = data.get('map_config', {})
+    if map_config and 'boundary_locations' in map_config:
+        bl = map_config['boundary_locations']
+        if bl:
+            boundary_locations = []
+            for item in bl:
+                if isinstance(item, dict):
+                    boundary_locations.append((item['x'], item['y']))
+                else:
+                    boundary_locations.append(tuple(item))
+    
     optimizer = DSSAOptimizer(coverage_model, constraints, dssa_config, 
                              fixed_fences=fixed_fences,
                              force_full_deployment=force_full_deployment,
                              frozen_resources=frozen_resources_list,
                              input_grids=data.get('grids', []),
-                             raw_risk_map=raw_risk_map)
+                             raw_risk_map=raw_risk_map,
+                             boundary_locations=boundary_locations)
     best_solution, best_fitness, fitness_history = optimizer.optimize()
 
     # 打印资源部署总结
