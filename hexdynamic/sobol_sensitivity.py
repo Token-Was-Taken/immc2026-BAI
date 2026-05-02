@@ -257,6 +257,10 @@ def run_analysis(base_config: dict, param_defs: List[Dict], num_samples: int,
     total_evals = len(param_values)
     
     print(f"Generated {total_evals} parameter combinations (N={num_samples}, k={len(param_defs)})")
+    print(f"Total evaluations: {total_evals} (Saltelli sampling: N × (2k+2) = {num_samples} × {2*len(param_defs)+2})")
+    print(f"Estimated time: {total_evals * 0.1:.0f}s sequential (with ~0.1s per eval)")
+    print(f"Running {'sequential' if workers == 1 else f'parallel with {workers} workers'}...")
+    print("-" * 60)
     if vectorized:
         print("Using vectorized coverage model")
     

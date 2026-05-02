@@ -95,7 +95,8 @@ def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int,
     model_config = ModelConfigData(
         risk_weights=cfg_raw.get('risk_weights'),
         human_risk_weights=cfg_raw.get('human_risk_weights'),
-        environmental_risk_weights=cfg_raw.get('environmental_risk_weights')
+        environmental_risk_weights=cfg_raw.get('environmental_risk_weights'),
+        temporal_weights=cfg_raw.get('temporal_weights')
     )
     model = create_model_from_config(model_config)
 
@@ -113,11 +114,28 @@ def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int,
         if cfg_raw.get('environmental_risk_weights'):
             env_weights = EnvironmentalRiskWeights(**cfg_raw['environmental_risk_weights'])
 
+        from risk_model.risk.temporal import DiurnalFactorCalculator, SeasonalFactorCalculator, TemporalFactorCalculator
+        temporal_calc = None
+        if cfg_raw.get('temporal_weights'):
+            tw = cfg_raw['temporal_weights']
+            temporal_calc = TemporalFactorCalculator(
+                diurnal_calculator=DiurnalFactorCalculator(
+                    daytime_factor=tw.get('daytime_factor', 1.0),
+                    nighttime_factor=tw.get('nighttime_factor', 1.3),
+                    gamma=tw.get('gamma', 0.3)
+                ),
+                seasonal_calculator=SeasonalFactorCalculator(
+                    dry_season_factor=tw.get('dry_season_factor', 1.0),
+                    rainy_season_factor=tw.get('rainy_season_factor', 1.2)
+                )
+            )
+
         composite_calc = CompositeRiskCalculator(
             weight_manager=weight_manager,
             human_calculator=HumanRiskCalculator(weights=human_weights),
             environmental_calculator=EnvironmentalRiskCalculator(weights=env_weights),
-            density_calculator=DensityRiskCalculator(species_config=species_cfg)
+            density_calculator=DensityRiskCalculator(species_config=species_cfg),
+            temporal_calculator=temporal_calc
         )
         model = RiskModel(composite_calculator=composite_calc)
 

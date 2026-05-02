@@ -661,7 +661,7 @@
     "total_patrol": 10,
     "total_camps": 3,
     "max_rangers_per_camp": 5,
-    "total_cameras": 5,
+    "total_cameras": 20,
     "total_drones": 3,
     "total_fence_length": 500
   },
@@ -680,7 +680,7 @@
     "use_risk_priority": true,
     "high_risk_percentage": 0.1,
     "population_size": 50,
-    "max_iterations": 1,
+    "max_iterations": 100,
     "producer_ratio": 0.2,
     "scout_ratio": 0.4,
     "ST": 0.5,

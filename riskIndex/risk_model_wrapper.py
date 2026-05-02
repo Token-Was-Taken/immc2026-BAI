@@ -95,6 +95,7 @@ class ModelConfigData:
     risk_weights: Optional[Dict[str, float]] = None
     human_risk_weights: Optional[Dict[str, float]] = None
     environmental_risk_weights: Optional[Dict[str, float]] = None
+    temporal_weights: Optional[Dict[str, float]] = None
 
 
 # ============================================================================
@@ -382,11 +383,15 @@ def create_model_from_config(config_data: ModelConfigData) -> RiskModel:
         HumanRiskCalculator,
         EnvironmentalRiskCalculator,
     )
+    from risk_model.risk.temporal import (
+        DiurnalFactorCalculator,
+        SeasonalFactorCalculator,
+        TemporalFactorCalculator,
+        DiurnalMode,
+    )
 
-    # Create weight manager with custom config if provided
     weight_manager = WeightManager()
 
-    # Update risk weights if provided
     if config_data.risk_weights:
         weight_manager.set_risk_weights(
             human_weight=config_data.risk_weights.get("human_weight"),
@@ -394,17 +399,15 @@ def create_model_from_config(config_data: ModelConfigData) -> RiskModel:
             density_weight=config_data.risk_weights.get("density_weight")
         )
 
-    # Create human risk calculator with custom weights if provided
     human_weights = None
     if config_data.human_risk_weights:
         human_weights = HumanRiskWeights(
-            boundary_weight=config_data.human_risk_weights.get("boundary_weight", 0.4),
-            road_weight=config_data.human_risk_weights.get("road_weight", 0.35),
-            water_weight=config_data.human_risk_weights.get("water_weight", 0.25)
+            boundary_weight=config_data.human_risk_weights.get("boundary_weight", 0.2),
+            road_weight=config_data.human_risk_weights.get("road_weight", 0.3),
+            water_weight=config_data.human_risk_weights.get("water_weight", 0.5)
         )
     human_calc = HumanRiskCalculator(weights=human_weights)
 
-    # Create environmental risk calculator with custom weights if provided
     env_weights = None
     if config_data.environmental_risk_weights:
         env_weights = EnvironmentalRiskWeights(
@@ -413,14 +416,30 @@ def create_model_from_config(config_data: ModelConfigData) -> RiskModel:
         )
     env_calc = EnvironmentalRiskCalculator(weights=env_weights)
 
-    # Create composite calculator
+    temporal_calc = None
+    if config_data.temporal_weights:
+        tw = config_data.temporal_weights
+        diurnal_calc = DiurnalFactorCalculator(
+            daytime_factor=tw.get("daytime_factor", 1.0),
+            nighttime_factor=tw.get("nighttime_factor", 1.3),
+            gamma=tw.get("gamma", 0.3)
+        )
+        seasonal_calc = SeasonalFactorCalculator(
+            dry_season_factor=tw.get("dry_season_factor", 1.0),
+            rainy_season_factor=tw.get("rainy_season_factor", 1.2)
+        )
+        temporal_calc = TemporalFactorCalculator(
+            diurnal_calculator=diurnal_calc,
+            seasonal_calculator=seasonal_calc
+        )
+
     composite_calc = CompositeRiskCalculator(
         weight_manager=weight_manager,
         human_calculator=human_calc,
-        environmental_calculator=env_calc
+        environmental_calculator=env_calc,
+        temporal_calculator=temporal_calc
     )
 
-    # Create risk model
     return RiskModel(composite_calculator=composite_calc)
 
 

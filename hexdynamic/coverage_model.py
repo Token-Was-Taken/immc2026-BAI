@@ -286,6 +286,58 @@ class CoverageModel:
 
         return (len(violations) == 0, violations)
 
+    def _calculate_resource_marginal_contributions(
+            self, solution: DeploymentSolution) -> Dict[Tuple[str, int], float]:
+        total_benefit = self.calculate_total_benefit(solution)
+        contributions = {}
+
+        for gid in list(solution.cameras.keys()):
+            test = DeploymentSolution(
+                cameras={k: v for k, v in solution.cameras.items() if k != gid},
+                camps=dict(solution.camps),
+                drones=dict(solution.drones),
+                rangers=dict(solution.rangers),
+                fences=dict(solution.fences)
+            )
+            contributions[('camera', gid)] = total_benefit - self.calculate_total_benefit(test)
+
+        for gid in list(solution.drones.keys()):
+            test = DeploymentSolution(
+                cameras=dict(solution.cameras),
+                camps=dict(solution.camps),
+                drones={k: v for k, v in solution.drones.items() if k != gid},
+                rangers=dict(solution.rangers),
+                fences=dict(solution.fences)
+            )
+            contributions[('drone', gid)] = total_benefit - self.calculate_total_benefit(test)
+
+        for gid in list(solution.camps.keys()):
+            test_rangers = dict(solution.rangers)
+            if gid in test_rangers:
+                del test_rangers[gid]
+            test = DeploymentSolution(
+                cameras=dict(solution.cameras),
+                camps={k: v for k, v in solution.camps.items() if k != gid},
+                drones=dict(solution.drones),
+                rangers=test_rangers,
+                fences=dict(solution.fences)
+            )
+            contributions[('camp', gid)] = total_benefit - self.calculate_total_benefit(test)
+
+        for gid in list(solution.rangers.keys()):
+            if gid in solution.camps:
+                continue
+            test = DeploymentSolution(
+                cameras=dict(solution.cameras),
+                camps=dict(solution.camps),
+                drones=dict(solution.drones),
+                rangers={k: v for k, v in solution.rangers.items() if k != gid},
+                fences=dict(solution.fences)
+            )
+            contributions[('patrol', gid)] = total_benefit - self.calculate_total_benefit(test)
+
+        return contributions
+
     def repair_solution(self, solution: DeploymentSolution,
                        constraints: Dict[str, any],
                        force_full_deployment: bool = True) -> DeploymentSolution:
@@ -318,13 +370,12 @@ class CoverageModel:
             if repaired.drones.get(grid_id, 0) > self.deployment_matrix['drone'][grid_id]:
                 repaired.drones.pop(grid_id, None)
 
-        # Ensure patrol and camp cannot be in the same grid
         for grid_id in list(repaired.rangers.keys()):
             if grid_id in repaired.camps:
                 repaired.rangers.pop(grid_id, None)
 
-        # Ensure only one resource type per grid (camera, drone, camp, patrol are mutually exclusive)
-        # Priority: patrol > drone > camera > camp
+        # Resolve mutual exclusion by contribution: keep the resource with highest marginal contribution
+        conflict_grids = []
         for grid_id in self.grid_ids:
             types_present = []
             if repaired.rangers.get(grid_id, 0) > 0:
@@ -335,54 +386,57 @@ class CoverageModel:
                 types_present.append('camera')
             if repaired.camps.get(grid_id, 0) > 0:
                 types_present.append('camp')
-
             if len(types_present) > 1:
-                keep = types_present[0]  # highest priority wins
-                if keep != 'patrol':
-                    repaired.rangers.pop(grid_id, None)
-                if keep != 'drone':
-                    repaired.drones.pop(grid_id, None)
-                if keep != 'camera':
-                    repaired.cameras.pop(grid_id, None)
-                if keep != 'camp':
-                    repaired.camps.pop(grid_id, None)
+                conflict_grids.append(grid_id)
+
+        if conflict_grids:
+            contributions = self._calculate_resource_marginal_contributions(repaired)
+            for grid_id in conflict_grids:
+                best_type = None
+                best_contrib = float('-inf')
+                for rtype in ['patrol', 'drone', 'camera', 'camp']:
+                    contrib = contributions.get((rtype, grid_id), 0.0)
+                    if contrib > best_contrib:
+                        best_contrib = contrib
+                        best_type = rtype
+                for rtype in ['patrol', 'drone', 'camera', 'camp']:
+                    if rtype != best_type:
+                        if rtype == 'patrol':
+                            repaired.rangers.pop(grid_id, None)
+                        elif rtype == 'drone':
+                            repaired.drones.pop(grid_id, None)
+                        elif rtype == 'camera':
+                            repaired.cameras.pop(grid_id, None)
+                        elif rtype == 'camp':
+                            repaired.camps.pop(grid_id, None)
 
         # --- Fence: Handle multi-fence edges ---
-        # First, clean up invalid fence deployments
         for edge_key in list(repaired.fences.keys()):
             gid1, gid2 = edge_key
 
-            # Handle boundary edges (gid2 is an int 0-5) - fence on specific direction
             if isinstance(gid2, int) and gid2 in range(6):
                 max_fences = self.deployment_matrix['fence'].get(gid1, 0)
                 if max_fences == 0:
                     del repaired.fences[edge_key]
             elif gid2 is None:
-                # Legacy format: (gid1, None) - remove invalid entries
                 max_fences = self.deployment_matrix['fence'].get(gid1, 0)
                 if max_fences == 0:
                     del repaired.fences[edge_key]
             else:
-                # Internal edge - check both endpoints
                 if (self.deployment_matrix['fence'].get(gid1, 0) != 1 or
                         self.deployment_matrix['fence'].get(gid2, 0) != 1):
                     del repaired.fences[edge_key]
 
-        # Count total possible fence edges
         total_possible = 0
         for grid_id in self.grid_ids:
             if self.deployment_matrix['fence'].get(grid_id, 0) > 0:
                 boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id)
                 total_possible += len(boundary_edges)
 
-        # Enforce fence deployment rule:
-        # - If total_possible <= total_fence_length, keep all (no action needed)
-        # - If total_possible > total_fence_length, reduce to total_fence_length
         total_fence_length = constraints.get('total_fence_length', float('inf'))
         total_fences = sum(repaired.fences.values())
 
         if total_possible > total_fence_length:
-            # Only reduce if over limit
             while total_fences > total_fence_length:
                 fence_counts = [(k, v) for k, v in repaired.fences.items() if v > 0]
                 if not fence_counts:
@@ -397,52 +451,67 @@ class CoverageModel:
                         if repaired.fences[edge_key] <= 0:
                             del repaired.fences[edge_key]
 
-        # --- Camera: 先截单格上限，再截总量 ---
+        # --- Camera: 先截单格上限，再按贡献度从低到高移除超量 ---
         max_cam = constraints.get('max_cameras_per_grid', 1)
         for grid_id in list(repaired.cameras.keys()):
             if repaired.cameras[grid_id] > max_cam:
                 repaired.cameras[grid_id] = max_cam
 
         total_cameras = sum(repaired.cameras.values())
-        while total_cameras > constraints['total_cameras']:
-            for grid_id in list(repaired.cameras.keys()):
-                repaired.cameras[grid_id] -= 1
-                if repaired.cameras[grid_id] <= 0:
-                    del repaired.cameras[grid_id]
-                total_cameras -= 1
+        if total_cameras > constraints['total_cameras']:
+            contributions = self._calculate_resource_marginal_contributions(repaired)
+            cam_contribs = [(gid, contributions.get(('camera', gid), 0.0))
+                           for gid in list(repaired.cameras.keys())]
+            cam_contribs.sort(key=lambda x: x[1])
+            for gid, _ in cam_contribs:
                 if total_cameras <= constraints['total_cameras']:
                     break
+                if repaired.cameras.get(gid, 0) > 0:
+                    repaired.cameras[gid] -= 1
+                    total_cameras -= 1
+                    if repaired.cameras[gid] <= 0:
+                        del repaired.cameras[gid]
 
-        # --- Drone: 先截单格上限（max=1），再截总量 ---
+        # --- Drone: 先截单格上限，再按贡献度从低到高移除超量 ---
         max_drone = constraints.get('max_drones_per_grid', 1)
         for grid_id in list(repaired.drones.keys()):
             if repaired.drones[grid_id] > max_drone:
                 repaired.drones[grid_id] = max_drone
 
         total_drones = sum(repaired.drones.values())
-        while total_drones > constraints['total_drones']:
-            for grid_id in list(repaired.drones.keys()):
-                del repaired.drones[grid_id]
-                total_drones -= 1
+        if total_drones > constraints['total_drones']:
+            contributions = self._calculate_resource_marginal_contributions(repaired)
+            drone_contribs = [(gid, contributions.get(('drone', gid), 0.0))
+                             for gid in list(repaired.drones.keys())]
+            drone_contribs.sort(key=lambda x: x[1])
+            for gid, _ in drone_contribs:
                 if total_drones <= constraints['total_drones']:
                     break
+                if gid in repaired.drones:
+                    del repaired.drones[gid]
+                    total_drones -= 1
 
-        # --- Camp: 先截单格上限（max=1），再截总量，联动清除 rangers ---
+        # --- Camp: 先截单格上限，再按贡献度从低到高移除超量，联动清除 rangers ---
         max_camp = constraints.get('max_camps_per_grid', 1)
         for grid_id in list(repaired.camps.keys()):
             if repaired.camps[grid_id] > max_camp:
                 repaired.camps[grid_id] = max_camp
 
         total_camps = sum(repaired.camps.values())
-        while total_camps > constraints['total_camps']:
-            for grid_id in list(repaired.camps.keys()):
-                del repaired.camps[grid_id]
-                repaired.rangers.pop(grid_id, None)
-                total_camps -= 1
+        if total_camps > constraints['total_camps']:
+            contributions = self._calculate_resource_marginal_contributions(repaired)
+            camp_contribs = [(gid, contributions.get(('camp', gid), 0.0))
+                            for gid in list(repaired.camps.keys())]
+            camp_contribs.sort(key=lambda x: x[1])
+            for gid, _ in camp_contribs:
                 if total_camps <= constraints['total_camps']:
                     break
+                if gid in repaired.camps:
+                    del repaired.camps[gid]
+                    repaired.rangers.pop(gid, None)
+                    total_camps -= 1
 
-        # 先按单格上限截断
+        # --- Patrol: 先截单格上限，再按贡献度从低到高移除超量 ---
         max_ranger = constraints.get('max_rangers_per_grid', 1)
         for grid_id in list(repaired.rangers.keys()):
             if self.deployment_matrix['patrol'].get(grid_id, 0) == 0:
@@ -450,16 +519,20 @@ class CoverageModel:
             elif repaired.rangers[grid_id] > max_ranger:
                 repaired.rangers[grid_id] = max_ranger
 
-        # 再按总量截断
         total_rangers = sum(repaired.rangers.values())
-        while total_rangers > constraints['total_patrol']:
-            for grid_id in list(repaired.rangers.keys()):
-                repaired.rangers[grid_id] -= 1
-                if repaired.rangers[grid_id] <= 0:
-                    del repaired.rangers[grid_id]
-                total_rangers -= 1
+        if total_rangers > constraints['total_patrol']:
+            contributions = self._calculate_resource_marginal_contributions(repaired)
+            ranger_contribs = [(gid, contributions.get(('patrol', gid), 0.0))
+                              for gid in list(repaired.rangers.keys())]
+            ranger_contribs.sort(key=lambda x: x[1])
+            for gid, _ in ranger_contribs:
                 if total_rangers <= constraints['total_patrol']:
                     break
+                if gid in repaired.rangers:
+                    repaired.rangers[gid] -= 1
+                    total_rangers -= 1
+                    if repaired.rangers[gid] <= 0:
+                        del repaired.rangers[gid]
 
         # 重新计算，补充不足的部分（不超过可用格子数）
         total_rangers = sum(repaired.rangers.values())
@@ -477,13 +550,12 @@ class CoverageModel:
         # 如果启用强制部署模式，补充所有未达到上限的资源
         if force_full_deployment:
             import random
-            
+
             # 补充摄像头（优先在已有部署的网格上增加，再添加新网格）
             total_cameras = sum(repaired.cameras.values())
             if total_cameras < constraints['total_cameras']:
                 max_cam = constraints.get('max_cameras_per_grid', 1)
-                
-                # 先尝试在已有摄像头的网格上增加
+
                 for grid_id in list(repaired.cameras.keys()):
                     if total_cameras >= constraints['total_cameras']:
                         break
@@ -492,14 +564,13 @@ class CoverageModel:
                     if can_add > 0:
                         repaired.cameras[grid_id] = current + can_add
                         total_cameras += can_add
-                
-                # 如果还不够，再添加新网格
+
                 if total_cameras < constraints['total_cameras']:
-                    available_grids = [gid for gid in self.grid_ids 
+                    available_grids = [gid for gid in self.grid_ids
                                       if self.deployment_matrix['camera'][gid] == 1
                                       and gid not in repaired.cameras]
                     random.shuffle(available_grids)
-                    
+
                     for grid_id in available_grids:
                         if total_cameras >= constraints['total_cameras']:
                             break
@@ -507,35 +578,35 @@ class CoverageModel:
                         if can_add > 0:
                             repaired.cameras[grid_id] = can_add
                             total_cameras += can_add
-            
+
             # 补充无人机（保留已有部署，只添加缺失的）
             total_drones = sum(repaired.drones.values())
             if total_drones < constraints['total_drones']:
-                available_grids = [gid for gid in self.grid_ids 
+                available_grids = [gid for gid in self.grid_ids
                                   if self.deployment_matrix['drone'][gid] == 1
                                   and gid not in repaired.drones]
                 random.shuffle(available_grids)
-                
+
                 for grid_id in available_grids:
                     if total_drones >= constraints['total_drones']:
                         break
                     repaired.drones[grid_id] = 1
                     total_drones += 1
-            
+
             # 补充营地（保留已有部署，只添加缺失的）
             total_camps = sum(repaired.camps.values())
             if total_camps < constraints['total_camps']:
-                available_grids = [gid for gid in self.grid_ids 
+                available_grids = [gid for gid in self.grid_ids
                                   if self.deployment_matrix['camp'][gid] == 1
                                   and gid not in repaired.camps]
                 random.shuffle(available_grids)
-                
+
                 for grid_id in available_grids:
                     if total_camps >= constraints['total_camps']:
                         break
                     repaired.camps[grid_id] = 1
                     total_camps += 1
-            
+
             # 补充巡逻人员（保留已有部署，只添加缺失的）
             total_rangers = sum(repaired.rangers.values())
             if total_rangers < constraints['total_patrol']:

@@ -1,0 +1,5 @@
+[
+  {"name": "total_patrol", "min": 5, "max": 30},
+  {"name": "total_drones", "min": 1, "max": 8},
+  {"name": "total_cameras", "min": 5, "max": 40}
+]
