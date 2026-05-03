@@ -100,26 +100,25 @@ def run_sensitivity_analysis(
         resources_to_analyze = [resource_type]
     
     # 对每种资源进行分析
+    DEFAULT_RANGES = {
+        'patrol': (0, 50, 5),
+        'camera': (0, 20, 2),
+        'drone': (0, 10, 1),
+        'camp': (0, 5, 1),
+        'fence': (0, 100, 10),
+    }
+
     for res_type in resources_to_analyze:
         print(f"\n{'='*70}")
         print(f"分析资源: {res_type.upper()}")
         print(f"{'='*70}")
-        
-        # 确定资源范围
-        if resource_range is None:
-            # 使用默认范围
-            if res_type == 'patrol':
-                resource_range = (0, 50, 5)
-            elif res_type == 'camera':
-                resource_range = (0, 20, 2)
-            elif res_type == 'drone':
-                resource_range = (0, 10, 1)
-            elif res_type == 'camp':
-                resource_range = (0, 5, 1)
-            elif res_type == 'fence':
-                resource_range = (0, 100, 10)
-        
-        min_val, max_val, step = resource_range
+
+        current_range = resource_range if resource_range is not None else DEFAULT_RANGES.get(res_type)
+        if current_range is None:
+            print(f"  [skip] 未知资源类型: {res_type}")
+            continue
+
+        min_val, max_val, step = current_range
         resource_values = list(range(min_val, max_val + 1, step))
         
         print(f"资源范围: {min_val} - {max_val}, 步长: {step}")

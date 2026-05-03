@@ -6,6 +6,10 @@ CoverageModel 的向量化实现，用 NumPy 矩阵运算替代 Python 循环。
 
 与原始 CoverageModel 接口完全兼容，通过 protection_pipeline.py 的
 --vectorized 参数启用。
+
+内存策略：
+  - 优先使用预计算的 float32 距离矩阵（查表 O(1)），适合 N ≤ ~27K
+  - 若预计算失败（OOM 或超阈值），自动回退到按需距离计算
 """
 
 import numpy as np
@@ -20,11 +24,11 @@ class VectorizedCoverageModel(CoverageModel):
     """
     向量化覆盖模型。
 
-    初始化时预计算以下 NumPy 数组，避免在每次 evaluate_fitness 时重复构建：
-      - dist_matrix : (N, N) 网格间距离矩阵（已在 HexGridModel 中预计算）
+    初始化时预计算以下向量，避免在每次 evaluate_fitness 时重复构建：
       - risk_vec    : (N,)   各网格风险值
       - deploy_*    : (N,)   各资源的部署可行性掩码
       - visibility_drone/camera : (N,) 可见度向量
+      - _dist       : (N,N)  float32 距离矩阵（若内存允许），否则按需计算
     """
 
     def __init__(self, grid_model: HexGridModel, coverage_params: CoverageParameters,
@@ -36,14 +40,23 @@ class VectorizedCoverageModel(CoverageModel):
         self._id_to_idx: Dict[int, int] = {gid: i for i, gid in enumerate(self.grid_ids)}
         N = len(self.grid_ids)
 
-        self._dist: np.ndarray = grid_model.distance_matrix
+        self._grid_model = grid_model
+        self._qs = np.array([g.q for g in grid_model.grids], dtype=np.int32)
+        self._rs = np.array([g.r for g in grid_model.grids], dtype=np.int32)
+        self._qr = self._qs + self._rs
+
+        if grid_model.has_distance_matrix():
+            self._dist = grid_model.distance_matrix
+            self._use_precomputed = True
+        else:
+            self._dist = None
+            self._use_precomputed = False
 
         self._risk_vec = np.array(
             [grid_model.get_grid_risk(gid) for gid in self.grid_ids], dtype=np.float64
         )
         self._total_risk = float(self._risk_vec.sum())
 
-        # Deployment masks (still used to constrain WHERE resources can be placed)
         self._deploy_patrol = np.array(
             [deployment_matrix['patrol'][gid] for gid in self.grid_ids], dtype=np.float64
         )
@@ -57,7 +70,6 @@ class VectorizedCoverageModel(CoverageModel):
             [deployment_matrix['fence'][gid] for gid in self.grid_ids], dtype=np.float64
         )
 
-        # Coverage effectiveness vectors (separate from deployment)
         eff = coverage_effectiveness or {}
         self._eff_patrol = np.array(
             [eff.get(gid, {}).get('patrol', 1.0) for gid in self.grid_ids], dtype=np.float64
@@ -79,11 +91,29 @@ class VectorizedCoverageModel(CoverageModel):
             [visibility_params[gid]['camera'] for gid in self.grid_ids], dtype=np.float64
         )
 
-        self._adj = np.zeros((N, N), dtype=np.float64)
-        for i, gid in enumerate(self.grid_ids):
-            for nb in grid_model.get_neighbors(gid):
-                j = self._id_to_idx[nb]
-                self._adj[i, j] = 1.0
+        self._temporal_vec = np.array(
+            [grid_model.get_grid_temporal_factor(gid) for gid in self.grid_ids], dtype=np.float64
+        )
+
+    def _compute_dists_to(self, target_indices: np.ndarray) -> np.ndarray:
+        if self._use_precomputed:
+            return self._dist[:, target_indices]
+
+        K = len(target_indices)
+        N = len(self._qs)
+        t_qs = self._qs[target_indices]
+        t_rs = self._rs[target_indices]
+        t_qr = self._qr[target_indices]
+
+        out = np.empty((N, K), dtype=np.float32)
+        chunk = 2048
+        for start in range(0, N, chunk):
+            end = min(start + chunk, N)
+            dq = np.abs(self._qs[start:end, None] - t_qs[None, :])
+            dr = np.abs(self._rs[start:end, None] - t_rs[None, :])
+            ds = np.abs(self._qr[start:end, None] - t_qr[None, :])
+            out[start:end, :] = ((dq + dr + ds) >> 1)
+        return out
 
     # ------------------------------------------------------------------
     # 内部辅助：把解转换为 NumPy 索引数组
@@ -149,7 +179,7 @@ class VectorizedCoverageModel(CoverageModel):
         if len(active) == 0:
             return {gid: 0.0 for gid in self.grid_ids}
 
-        dists = self._dist[:, active]
+        dists = self._compute_dists_to(active)
         weights = ranger_vec[active]
         intensity = (np.exp(-dists / self.params.patrol_radius) * weights).sum(axis=1)
         coverage = (1.0 - np.exp(-intensity)) * self._eff_patrol
@@ -163,7 +193,7 @@ class VectorizedCoverageModel(CoverageModel):
             return {gid: 0.0 for gid in self.grid_ids}
 
         eff_radius = self.params.drone_radius * self._vis_drone
-        dists = self._dist[:, drone_idx]
+        dists = self._compute_dists_to(drone_idx)
         eff_r = eff_radius[:, None]
         within = dists <= eff_r * 2
         coverage = (np.exp(-dists / np.where(eff_r > 0, eff_r, 1.0)) * within).sum(axis=1)
@@ -184,7 +214,7 @@ class VectorizedCoverageModel(CoverageModel):
             return {gid: 0.0 for gid in self.grid_ids}
 
         eff_radius = self.params.camera_radius * self._vis_camera
-        dists = self._dist[:, active]
+        dists = self._compute_dists_to(active)
         weights = cam_vec[active]
         eff_r = eff_radius[:, None]
         within = dists <= eff_r * 2
@@ -200,26 +230,14 @@ class VectorizedCoverageModel(CoverageModel):
         return {gid: float(protection[i]) for i, gid in enumerate(self.grid_ids)}
 
     def calculate_total_benefit(self, solution: DeploymentSolution) -> float:
-        """完全向量化的总收益计算，避免中间字典开销"""
-        patrol_cov = self.calculate_patrol_coverage(solution)
-        drone_cov  = self.calculate_drone_coverage(solution)
-        camera_cov = self.calculate_camera_coverage(solution)
-        fence_prot = self.calculate_fence_protection(solution)
+        pc, dc, cc, fp = self._calculate_coverage_arrays(solution)
 
-        pc = np.array([patrol_cov[gid] for gid in self.grid_ids])
-        dc = np.array([drone_cov[gid]  for gid in self.grid_ids])
-        cc = np.array([camera_cov[gid] for gid in self.grid_ids])
-        fp = np.array([fence_prot[gid] for gid in self.grid_ids])
-
-        # Base contributions
         E = (self.params.wp * pc + self.params.wd * dc +
              self.params.wc * cc + self.params.wf * fp)
 
-        # Synergy: Patrol + Drone
         denom_pd = 1.0 + pc + dc
         synergy_pd = self.params.alpha_pd * (pc * dc) / denom_pd
 
-        # Synergy: Patrol + Camera
         denom_pc = 1.0 + pc + cc
         synergy_pc = self.params.alpha_pc * (pc * cc) / denom_pc
 
@@ -232,3 +250,76 @@ class VectorizedCoverageModel(CoverageModel):
             total /= self._total_risk
 
         return total
+
+    def calculate_time_aware_total_benefit(self, solution: DeploymentSolution) -> float:
+        pc, dc, cc, fp = self._calculate_coverage_arrays(solution)
+
+        E = (self.params.wp * pc + self.params.wd * dc +
+             self.params.wc * cc + self.params.wf * fp)
+
+        denom_pd = 1.0 + pc + dc
+        synergy_pd = self.params.alpha_pd * (pc * dc) / denom_pd
+
+        denom_pc = 1.0 + pc + cc
+        synergy_pc = self.params.alpha_pc * (pc * cc) / denom_pc
+
+        E = E + synergy_pd + synergy_pc
+
+        temporal_vec = self._temporal_vec
+        risk_weighted = self._risk_vec * temporal_vec
+        total_risk_weighted = float(risk_weighted.sum())
+
+        benefit = risk_weighted * (1.0 - np.exp(-E))
+        total = float(benefit.sum())
+
+        if total_risk_weighted > 0:
+            total /= total_risk_weighted
+
+        return total
+
+    def _calculate_coverage_arrays(self, solution: DeploymentSolution) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        N = len(self.grid_ids)
+
+        ranger_vec = self._ranger_vec(solution)
+        active_p = np.where(ranger_vec > 0)[0]
+        if len(active_p) > 0:
+            dists_p = self._compute_dists_to(active_p)
+            weights_p = ranger_vec[active_p]
+            intensity = (np.exp(-dists_p / self.params.patrol_radius) * weights_p).sum(axis=1)
+            pc = (1.0 - np.exp(-intensity)) * self._eff_patrol
+        else:
+            pc = np.zeros(N, dtype=np.float64)
+
+        drone_idx = self._resource_indices(solution.drones)
+        if len(drone_idx) > 0:
+            eff_radius_d = self.params.drone_radius * self._vis_drone
+            dists_d = self._compute_dists_to(drone_idx)
+            eff_r_d = eff_radius_d[:, None]
+            within_d = dists_d <= eff_r_d * 2
+            dc = (np.exp(-dists_d / np.where(eff_r_d > 0, eff_r_d, 1.0)) * within_d).sum(axis=1)
+            dc = np.minimum(1.0, dc) * self._eff_drone
+        else:
+            dc = np.zeros(N, dtype=np.float64)
+
+        cam_vec = np.zeros(N, dtype=np.float64)
+        for gid, cnt in solution.cameras.items():
+            if cnt > 0:
+                idx = self._id_to_idx.get(gid)
+                if idx is not None:
+                    cam_vec[idx] = cnt
+        active_c = np.where(cam_vec > 0)[0]
+        if len(active_c) > 0:
+            eff_radius_c = self.params.camera_radius * self._vis_camera
+            dists_c = self._compute_dists_to(active_c)
+            weights_c = cam_vec[active_c]
+            eff_r_c = eff_radius_c[:, None]
+            within_c = dists_c <= eff_r_c * 2
+            cc = (np.exp(-dists_c / np.where(eff_r_c > 0, eff_r_c, 1.0)) * within_c * weights_c).sum(axis=1)
+            cc = np.minimum(1.0, cc) * self._eff_camera
+        else:
+            cc = np.zeros(N, dtype=np.float64)
+
+        fence_counts = self._fence_vec(solution)
+        fp = np.minimum(1.0, fence_counts * self.params.fence_protection) * self._eff_fence
+
+        return pc, dc, cc, fp

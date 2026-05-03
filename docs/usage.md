@@ -1202,6 +1202,16 @@ python images_to_video.py --input_dir ./figures --prefix deployment_map --output
 
 ## 九、敏感性分析
 
+本节包含三个敏感性分析工具：
+
+| 工具 | 功能 | 适用场景 |
+| :--- | :--- | :--- |
+| **sensitivity\_analysis.py** | 单资源单因素敏感性分析 | 分析一种资源的影响，自定义范围 |
+| **sensitivity\_batch.py** | 多资源并行敏感性分析 + 自动报告 | 一次性分析所有资源，并行加速 |
+| **sensitivity\_report.py** | 可视化报告生成 | 从已有 JSON 数据生成优化报告 |
+
+***
+
 ### 9.1 敏感性分析脚本
 
 **文件**：`sensitivity_analysis.py`
@@ -1241,6 +1251,8 @@ python sensitivity_analysis.py --input base_input.json --resource patrol --vecto
 | camp   | 0 \~ 5   |  1  |
 | fence  | 0 \~ 100 |  10 |
 
+> `--resource all` 时，每种资源使用各自的默认范围。若同时指定 `--range`，则所有资源共用该范围。
+
 #### 输出
 
 每种资源生成两个文件：
@@ -1276,11 +1288,95 @@ python sensitivity_analysis.py --input base_input.json --resource patrol --vecto
 
 ***
 
-### 9.2 敏感性分析报告脚本
+### 9.2 多资源并行敏感性分析脚本
+
+**文件**：`sensitivity_batch.py`
+
+并行运行多种资源的单因素敏感性分析，最后自动调用 `sensitivity_report.py` 生成可视化报告。每种资源可设置不同的分析范围。
+
+#### 用法
+
+```bash
+# 使用默认范围分析所有资源（5种），4进程并行
+python sensitivity_batch.py --input base.json --workers 4
+
+# 指定部分资源及自定义范围
+python sensitivity_batch.py --input base.json \
+    --ranges patrol:0:50:5 camera:0:400:10 drone:0:10:1
+
+# 向量化模式
+python sensitivity_batch.py --input base.json --workers 4 --vectorized
+
+# 跳过报告生成
+python sensitivity_batch.py --input base.json --no-report
+
+# 指定报告输出目录
+python sensitivity_batch.py --input base.json --report-dir ./reports
+```
+
+#### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `--input, -i` | 必填 | 基础输入 JSON 路径 |
+| `--ranges` | 所有资源默认范围 | 资源范围定义，格式 `resource:min:max:step`，可指定多个 |
+| `--output, -o` | `./sensitivity_results` | 敏感性分析输出目录 |
+| `--report-dir` | 与 `--output` 相同 | 报告图片输出目录 |
+| `--workers, -w` | 1 | 并行工作进程数（每种资源一个进程） |
+| `--vectorized` | false | 使用向量化模式 |
+| `--no-report` | false | 跳过报告生成 |
+
+#### `--ranges` 格式
+
+```
+resource:min:max:step
+```
+
+| 示例 | 含义 |
+| :--- | :--- |
+| `patrol:0:50:5` | patrol 从 0 到 50，步长 5 |
+| `camera:0:400:10` | camera 从 0 到 400，步长 10 |
+| `drone:0:10:1` | drone 从 0 到 10，步长 1 |
+
+> 未在 `--ranges` 中指定的资源使用默认范围。只指定部分资源时，其余资源仍会使用默认范围分析。
+
+#### 输出
+
+```
+sensitivity_results/
+├── sensitivity_patrol.json        # 各资源的敏感性数据
+├── sensitivity_camera.json
+├── sensitivity_drone.json
+├── sensitivity_camp.json
+├── sensitivity_fence.json
+├── sensitivity_{resource}_plot.png  # 各资源的原始曲线图
+├── batch_config.json              # 批量分析配置和运行结果
+├── report_patrol.png              # 优化后的可视化报告
+├── report_camera.png
+├── report_drone.png
+├── report_camp.png
+└── report_fence.png
+```
+
+`batch_config.json` 记录了本次批量分析的配置、各资源的运行状态和耗时。
+
+#### 与单资源脚本的对比
+
+| 对比维度 | `sensitivity_analysis.py` | `sensitivity_batch.py` |
+| :--- | :--- | :--- |
+| 分析资源数 | 单种或全部（顺序执行） | 全部（并行执行） |
+| 自定义范围 | 所有资源共用一个 `--range` | 每种资源可设不同 `--ranges` |
+| 并行支持 | 无 | `--workers` 多进程并行 |
+| 自动报告 | 需手动调用 `sensitivity_report.py` | 自动调用 |
+| 适用场景 | 单资源精细分析 | 多资源一次性分析 |
+
+***
+
+### 9.3 敏感性分析报告脚本
 
 **文件**：`sensitivity_report.py`
 
-读取 `sensitivity_analysis.py` 生成的 JSON 数据，生成优化后的可视化报告。相比原始曲线图，报告新增了饱和点标注、累计收益增幅图和优化后的数据表格。
+读取 `sensitivity_analysis.py` 或 `sensitivity_batch.py` 生成的 JSON 数据，生成优化后的可视化报告。相比原始曲线图，报告新增了饱和点标注、累计收益增幅图和优化后的数据表格。
 
 #### 用法
 
@@ -1320,6 +1416,10 @@ python sensitivity_report.py sensitivity_results/ --all --out_dir ./reports
 #### 典型工作流
 
 ```bash
+# 方式一：使用 batch 脚本一次性完成（推荐）
+python sensitivity_batch.py --input base.json --workers 4 --vectorized
+
+# 方式二：分步执行
 # 1. 运行敏感性分析（生成原始数据）
 python sensitivity_analysis.py --input base_input.json --resource camera --range 0 400 10 --vectorized
 
@@ -1546,9 +1646,13 @@ python run.py mc_results/trial_0003_input.json mc_results/trial_0003_rerun.json
 
 ## 十一、Sobol 敏感性分析
 
-**文件**：`sobol_sensitivity.py`（运行分析）和 `analyze_sobol_results.py`（分析已有结果）
+本节包含三种 Sobol 敏感性分析工具，从不同角度量化参数对保护收益的影响：
 
-使用 SALib 库实现全局敏感性分析，通过 Sobol 指数识别保护资源优化中最具影响力的参数。
+| 工具 | 分析变量 | 核心问题 |
+| :--- | :--- | :--- |
+| **资源总量 Sobol 分析** | 资源数量（patrol, drone, camera, camp） | 哪种资源数量对保护收益影响最大？ |
+| **协同系数 Sobol 分析** | α\_pd, α\_pc + 资源数量 | 协同系数对保护收益的敏感性如何？与资源数量相比如何？ |
+| **覆盖度层面 Sobol 分析** | P\_i, D\_i, C\_i（各网格覆盖度） | 保护收益公式中覆盖度的交互效应有多大？ |
 
 ### 基本概念
 
@@ -1561,11 +1665,15 @@ Sobol 敏感性分析是一种全局方法，通过分解输出方差来量化�
 
 若 `S1 + ST ≈ 1`，说明参数间交互作用弱；若 `ST >> S1`，说明该参数主要通过交互作用影响输出。
 
-### 运行新的敏感性分析
+***
 
-**文件**：`sobol_sensitivity.py`
+### 11.1 资源总量 Sobol 分析
 
-#### 用法
+**文件**：`sobol_sensitivity.py`（运行分析）和 `analyze_sobol_results.py`（分析已有结果）
+
+以资源数量（total\_patrol, total\_drones, total\_cameras, total\_camps）为变量，分析各资源对保护收益的 Sobol 指数。
+
+#### 运行新的敏感性分析
 
 ```bash
 cd immc2026-BAI
@@ -1625,7 +1733,7 @@ python sobol_sensitivity.py input.json --num-samples 512 --seed 42 --output-dir 
 ]
 ```
 
-### 分析已有结果
+#### 分析已有结果
 
 **文件**：`analyze_sobol_results.py`
 
@@ -1654,7 +1762,7 @@ python analyze_sobol_results.py ./sobol_results --param-names total_patrol,total
 | `--output-dir`  | 与 results\_dir 相同 | 输出目录                          |
 | `--param-names` | 自动检测              | 逗号分隔的参数名列表                    |
 
-### 输出文件
+#### 输出文件
 
 ```
 sobol_results/
@@ -1665,7 +1773,7 @@ sobol_results/
 └── parameter_ranking.png     # 参数重要性排名图
 ```
 
-### Sobol 指数结果解读
+#### Sobol 指数结果解读
 
 #### sobol\_indices.json 结构
 
@@ -1739,7 +1847,7 @@ total_camps:    S1=0.05, ST=0.08
 - `S1 << ST` 说明 `total_patrol` 与其他参数存在显著交互作用
 - 按 ST 从大到小排序：`total_patrol > total_drones > total_cameras > total_camps`
 
-### 算法原理
+#### 算法原理
 
 SALib 使用 Saltelli 采样生成 `N × (2k + 2)` 个样本（k=参数个数），每个样本调用一次保护 pipeline 获取 `best_fitness`。采样后使用 Sobol 分解计算各阶指数：
 
@@ -1754,7 +1862,188 @@ ST_i = Σ V_{u} / V_total  (u 为包含 i 的所有集合)
 
 ***
 
+### 11.2 协同系数 Sobol 分析
+
+**文件**：`sobol_synergy_analysis.py`
+
+将协同系数 `alpha_pd`（Patrol+Drone）和 `alpha_pc`（Patrol+Camera）作为 Sobol 分析的输入变量，与资源数量变量一起分析，量化协同系数对保护收益的一阶敏感性和交互效应。
+
+#### 分析变量
+
+| 变量 | 范围 | 说明 |
+| :--- | :--- | :--- |
+| `alpha_pd` | [0.0, 1.0] | Patrol+Drone 协同系数 |
+| `alpha_pc` | [0.0, 0.5] | Patrol+Camera 协同系数 |
+| `total_patrol` | [10, 30] | 巡逻人员总数 |
+| `total_drones` | [1, 8] | 无人机总数 |
+| `total_cameras` | [5, 20] | 摄像头总数 |
+
+#### 用法
+
+```bash
+# 基本用法
+python sobol_synergy_analysis.py base.json --num-samples 256
+
+# 并行 + 向量化模式
+python sobol_synergy_analysis.py base.json --num-samples 256 --workers 8 --vectorized
+
+# 自定义参数范围（JSON 文件或 JSON 字符串）
+python sobol_synergy_analysis.py base.json \
+    --params '[{"name":"alpha_pd","min":0.0,"max":2.0},{"name":"alpha_pc","min":0.0,"max":1.0},{"name":"total_patrol","min":5,"max":40}]' \
+    --num-samples 512
+
+# 固定随机种子
+python sobol_synergy_analysis.py base.json --num-samples 256 --seed 42
+```
+
+#### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `base_config` | 必填 | 基础输入 JSON 配置文件 |
+| `--params` | 内置默认参数 | 参数定义：JSON 文件路径或 JSON 字符串 |
+| `--num-samples` | 256 | Saltelli 采样基础样本数 |
+| `--output-dir` | `./sobol_synergy_results` | 输出目录 |
+| `--seed` | 42 | 随机种子 |
+| `--workers` | CPU 核数 | 并行工作进程数 |
+| `--vectorized` | false | 使用向量化覆盖模型 |
+
+#### 自定义参数定义
+
+通过 `--params` 指定 JSON 文件路径或内联 JSON 字符串，格式如下：
+
+```jsonc
+[
+  {"name": "alpha_pd", "min": 0.0, "max": 1.0},
+  {"name": "alpha_pc", "min": 0.0, "max": 0.5},
+  {"name": "total_patrol", "min": 10, "max": 30},
+  {"name": "total_drones", "min": 1, "max": 8},
+  {"name": "total_cameras", "min": 5, "max": 20}
+]
+```
+
+> 以 `alpha_` 开头的参数自动注入 `coverage_params`，`total_` 开头的参数注入 `constraints`，覆盖权重/半径参数注入 `coverage_params`。
+
+#### 输出
+
+```
+sobol_synergy_results/
+├── evaluations.json                # 所有评估记录
+├── sobol_synergy_indices.json      # Sobol 指数结果（含 S1/ST/S2）
+├── sobol_synergy_indices.png       # S1/ST 柱状图 + 交互效应图 + 二阶交互图
+└── synergy_vs_resource_comparison.png  # 协同系数 vs 资源数量敏感性对比
+```
+
+#### 结果解读要点
+
+- **一阶指数 S1**：`alpha_pd` 和 `alpha_pc` 的 S1 反映协同系数单独对保护收益的贡献
+- **交互效应 ST - S1**：若协同系数的交互效应较大，说明协同效果依赖于资源数量配置
+- **二阶指数 S2**：关注 `alpha_pd × total_patrol`、`alpha_pc × total_patrol` 等交叉项，量化协同系数与资源数量的联合效应
+- **协同 vs 资源对比图**：直观比较协同系数与资源数量的平均敏感性大小
+
+***
+
+### 11.3 覆盖度层面 Sobol 分析
+
+**文件**：`sobol_coverage_analysis.py`
+
+不以资源总量为变量，而以各网格的覆盖度 P\_i、D\_i、C\_i 为变量，直接对保护收益公式进行 Sobol 分析。绕过 DSSA 优化器，隔离出保护效果模型中覆盖度交互的纯数学效应。
+
+#### 核心思路
+
+传统 Sobol 分析以资源数量为变量，需要运行完整 pipeline（含 DSSA 优化），优化器会"吸收"协同效应。覆盖度层面分析直接采样覆盖值，计算保护收益公式 `B = R × (1 - e^{-E})` 的 Sobol 指数，其中：
+
+```
+E = wp·P + wd·D + wc·C + wf·F + α_pd·(P·D)/(1+P+D) + α_pc·(P·C)/(1+P+C)
+```
+
+F 固定为 0，聚焦 P/D/C 三者交互。
+
+#### 分析模式
+
+| 模式 | 说明 | 适用场景 |
+| :--- | :--- | :--- |
+| `single` | 选取一个代表性网格，对 P, D, C ∈ [0,1] 采样 | 详细分析单个网格的交互效应 |
+| `aggregate` | 对所有网格逐一计算覆盖度 Sobol 指数，汇总统计 | 了解交互效应的空间分布特征 |
+| `both` | 同时运行两种模式 | 完整分析（默认） |
+
+#### 用法
+
+```bash
+# 默认模式（single + aggregate）
+python sobol_coverage_analysis.py base.json --num-samples 1024
+
+# 仅单网格分析
+python sobol_coverage_analysis.py base.json --mode single --num-samples 2048
+
+# 指定网格 ID
+python sobol_coverage_analysis.py base.json --grid-id 5 --num-samples 2048 --mode single
+
+# 自定义协同系数
+python sobol_coverage_analysis.py base.json --alpha-pd 0.8 --alpha-pc 0.3 --mode aggregate
+
+# 仅聚合分析
+python sobol_coverage_analysis.py base.json --mode aggregate --num-samples 1024
+```
+
+#### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `base_config` | 必填 | 基础输入 JSON 配置文件 |
+| `--num-samples` | 1024 | Saltelli 采样基础样本数 |
+| `--output-dir` | `./sobol_coverage_results` | 输出目录 |
+| `--seed` | 42 | 随机种子 |
+| `--grid-id` | 中位风险网格 | 单网格分析的目标网格 ID |
+| `--alpha-pd` | 0.4 | Patrol+Drone 协同系数 |
+| `--alpha-pc` | 0.15 | Patrol+Camera 协同系数 |
+| `--mode` | `both` | 分析模式：`single` / `aggregate` / `both` |
+
+#### 输出
+
+```
+sobol_coverage_results/
+├── sobol_coverage_results.json     # 完整结果（单网格 + 多网格汇总）
+├── coverage_sobol_single_grid.png  # 单网格 S1/ST/交互/S2 图
+├── coverage_sobol_aggregate.png    # 多网格 S1/ST/交互分布图
+└── coverage_s2_vs_risk.png         # 二阶交互指数 vs 网格风险散点图
+```
+
+#### 结果解读要点
+
+- **二阶指数 S2**：核心指标
+  - `P × D` 的 S2 对应 `alpha_pd` 协同效应的数学贡献
+  - `P × C` 的 S2 对应 `alpha_pc` 协同效应的数学贡献
+  - `D × C` 的 S2 作为对照（无协同项，理论上应接近 0）
+- **S2 vs 网格风险散点图**：展示协同效应是否在高风险区域更显著
+- **与资源总量 Sobol 的区别**：覆盖度层面分析消除了空间衰减和优化器"吸收"效应，`P × D` 和 `P × C` 的 S2 指数通常显著高于资源总量层面的分析结果
+
+#### 三种 Sobol 分析的对比
+
+| 对比维度 | 11.1 资源总量 | 11.2 协同系数 | 11.3 覆盖度层面 |
+| :--- | :--- | :--- | :--- |
+| 分析变量 | 资源数量 | α\_pd, α\_pc + 资源数量 | P, D, C 覆盖度 |
+| 是否运行 DSSA | ✓ | ✓ | ✗ |
+| 计算速度 | 慢（每次需优化） | 慢（每次需优化） | 快（纯数学计算） |
+| 推荐样本量 | 512+ | 256+ | 1024+ |
+| 二阶交互 | 资源间交互 | 协同系数 × 资源 | P×D, P×C, D×C |
+| 核心价值 | 资源重要性排名 | 协同系数敏感性 | 公式层面交互效应 |
+
+***
+
 ## 十二、变更历史（Change History）
+
+### 2026-05-02：新增多资源并行敏感性分析与 bug 修复
+
+- **新增 `sensitivity_batch.py`**：并行运行多种资源的单因素敏感性分析，支持每种资源设置不同的分析范围（`--ranges resource:min:max:step`），分析完成后自动调用 `sensitivity_report.py` 生成可视化报告
+- **修复 `sensitivity_analysis.py` 的 `--resource all` bug**：原代码在循环中修改 `resource_range` 变量，导致 `--resource all` 时所有资源都使用第一个资源（patrol）的默认范围。修复后改为使用 `DEFAULT_RANGES` 字典为每种资源独立查找默认范围
+- **文档更新**：`usage.md` 第九节重构为三个子章节（9.1 单资源分析 / 9.2 多资源并行分析 / 9.3 报告生成），新增工具总览表和对比表
+
+### 2026-05-02：新增协同系数与覆盖度层面 Sobol 敏感性分析
+
+- **新增 `sobol_synergy_analysis.py`**：以协同系数 `alpha_pd`、`alpha_pc` 为分析变量，与资源数量一起进行 Sobol 敏感性分析，量化协同系数的一阶敏感性和与资源数量的二阶交互效应
+- **新增 `sobol_coverage_analysis.py`**：以各网格覆盖度 P\_i、D\_i、C\_i 为变量，绕过 DSSA 优化器直接对保护收益公式进行 Sobol 分析，隔离覆盖度层面的纯数学交互效应
+- **文档更新**：`usage.md` 第十一节重构为三个子章节（11.1 资源总量 Sobol / 11.2 协同系数 Sobol / 11.3 覆盖度层面 Sobol），新增三种分析工具的对比表
 
 ### 2026-05-02：权重参数统一配置
 
@@ -1850,5 +2139,5 @@ ST_i = Σ V_{u} / V_total  (u 为包含 i 的所有集合)
 
 ***
 
-*文档版本: 2.1*\
+*文档版本: 2.2*\
 *最后更新: 2026-05-02*

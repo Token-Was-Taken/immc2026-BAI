@@ -224,6 +224,7 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
 
     temp_grid_model = HexGridModel(loader.grids)
     edge_grids = temp_grid_model.get_edge_grids()
+    del temp_grid_model
     loader.initialize_deployment_matrix(edge_grids=edge_grids)
     loader.initialize_visibility_params()
     loader.initialize_coverage_effectiveness(data.get('coverage_effectiveness'))
@@ -239,13 +240,13 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
 
     print("[3/4] Build optimization model and run DSSA...")
     loader = build_data_loader(data, risk_map, temporal_factor_map)
-    grid_model = HexGridModel(loader.grids)
 
-    model_class = VectorizedCoverageModel if vectorized else CoverageModel
     if vectorized:
+        grid_model = HexGridModel(loader.grids)
         print("      [VECTOR] 使用向量化覆盖模型 (Vectorized Coverage Model)")
-        print("         适用于大规模地图（网格数 > 1000）")
-        print("         性能提升：~3-5倍")
+    else:
+        grid_model = HexGridModel(loader.grids)
+    model_class = VectorizedCoverageModel if vectorized else CoverageModel
     coverage_model = model_class(
         grid_model,
         loader.coverage_params,

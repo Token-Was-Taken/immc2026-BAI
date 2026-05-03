@@ -52,6 +52,7 @@ htmlcov/
 hexdynamic/output_results/
 hexdynamic/output_iterations/
 hexdynamic/figures/
+hexdynamic/sensitivity_results/
 hexdynamic/figures-*/
 hexdynamic/out*.json
 hexdynamic/output-*.json
