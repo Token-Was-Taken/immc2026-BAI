@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python run.py base1.json out1.json --vectorized --out_dir ./figures1)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

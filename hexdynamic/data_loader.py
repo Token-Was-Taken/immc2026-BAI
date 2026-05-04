@@ -22,10 +22,11 @@ class ResourceConstraints:
     total_drones: int
     total_fence_length: float
     # 单格最大部署数量
-    max_cameras_per_grid: int = 3
+    max_cameras_per_grid: int = 1
     max_drones_per_grid: int = 1
     max_camps_per_grid: int = 1
     max_rangers_per_grid: int = 1
+    max_fences_per_grid: int = 6  # Default: one per hexagonal side
 
 
 @dataclass
@@ -38,6 +39,14 @@ class CoverageParameters:
     wd: float = 0.3
     wc: float = 0.2
     wf: float = 0.2
+    # Synergy parameters for collaborative resource model
+    alpha_pd: float = 0.4  # Patrol + Drone synergy (default: midpoint of 0.3-0.5)
+    alpha_pc: float = 0.15  # Patrol + Camera synergy (default: midpoint of 0.1-0.2)
+
+# Default coverage effectiveness: terrain -> resource -> multiplier (1.0 = full effect)
+DEFAULT_COVERAGE_EFFECTIVENESS: Dict[str, Dict[str, float]] = {
+    'DenseGrass': {'patrol': 0.3, 'camp': 0.3},
+}
 
 
 class DataLoader:
@@ -45,6 +54,7 @@ class DataLoader:
         self.grids: List[GridData] = []
         self.deployment_matrix: Dict[str, Dict[int, int]] = {}
         self.visibility_params: Dict[str, Dict[str, float]] = {}
+        self.coverage_effectiveness: Dict[str, Dict[str, float]] = {}
         self.constraints: ResourceConstraints = None
         self.coverage_params: CoverageParameters = None
 
@@ -113,11 +123,13 @@ class DataLoader:
             if grid.grid_id in risk_map:
                 grid.risk = risk_map[grid.grid_id]
 
-    def initialize_deployment_matrix(self, edge_grids: List[int] = None):
+    def initialize_deployment_matrix(self, edge_grids: List[int] = None, grid_model=None):
         """初始化部署矩阵
         
         Args:
             edge_grids: 边缘网格ID列表，Fence只能在这些网格部署
+            grid_model: HexGridModel实例，用于获取边界边数量。如果提供，
+                        fence部署矩阵值将设置为该网格的边界边数量（0-6）
         """
         terrain_deployment = {
             'SaltMarsh':  {'patrol': 0, 'camp': 0, 'drone': 1, 'camera': 0, 'fence': 0},
@@ -139,10 +151,41 @@ class DataLoader:
                     else:
                         # 如果没有提供边缘网格列表，使用地形规则
                         can_deploy = terrain_deployment[grid.terrain_type][resource] == 1
-                    self.deployment_matrix[resource][grid.grid_id] = 1 if can_deploy else 0
+                    
+                    if can_deploy:
+                        if grid_model is not None:
+                            # 使用边界边数量作为部署矩阵值（0-6）
+                            boundary_edges = grid_model.get_boundary_edges_for_grid(grid.grid_id)
+                            num_boundary_edges = len(boundary_edges)
+                            # 限制为max_fences_per_grid（如果已设置约束）
+                            max_fences = 6
+                            if self.constraints is not None:
+                                max_fences = self.constraints.max_fences_per_grid
+                            self.deployment_matrix[resource][grid.grid_id] = min(num_boundary_edges, max_fences)
+                        else:
+                            # 如果没有grid_model，使用默认值1（向后兼容）
+                            self.deployment_matrix[resource][grid.grid_id] = 1
+                    else:
+                        self.deployment_matrix[resource][grid.grid_id] = 0
                 else:
                     # 其他资源使用地形规则
                     self.deployment_matrix[resource][grid.grid_id] = terrain_deployment[grid.terrain_type][resource]
+
+    def initialize_coverage_effectiveness(self, overrides: Dict[str, Dict[str, float]] = None):
+        """Build per-grid coverage effectiveness map.
+        
+        Merges DEFAULT_COVERAGE_EFFECTIVENESS with any overrides from config.
+        Result: self.coverage_effectiveness[grid_id][resource] = multiplier (0.0-1.0)
+        """
+        terrain_eff = {k: dict(v) for k, v in DEFAULT_COVERAGE_EFFECTIVENESS.items()}
+        if overrides:
+            for terrain, res_map in overrides.items():
+                terrain_eff.setdefault(terrain, {}).update(res_map)
+
+        self.coverage_effectiveness = {}
+        for grid in self.grids:
+            terrain = grid.terrain_type
+            self.coverage_effectiveness[grid.grid_id] = terrain_eff.get(terrain, {})
 
     def initialize_visibility_params(self):
         terrain_visibility = {
@@ -160,10 +203,11 @@ class DataLoader:
     def set_constraints(self, total_patrol: int, total_camps: int, 
                        max_rangers_per_camp: int, total_cameras: int, 
                        total_drones: int, total_fence_length: float,
-                       max_cameras_per_grid: int = 3,
+                       max_cameras_per_grid: int = 1,
                        max_drones_per_grid: int = 1,
                        max_camps_per_grid: int = 1,
-                       max_rangers_per_grid: int = 1):
+                       max_rangers_per_grid: int = 1,
+                       max_fences_per_grid: int = 6):
         self.constraints = ResourceConstraints(
             total_patrol=total_patrol,
             total_camps=total_camps,
@@ -174,18 +218,21 @@ class DataLoader:
             max_cameras_per_grid=max_cameras_per_grid,
             max_drones_per_grid=max_drones_per_grid,
             max_camps_per_grid=max_camps_per_grid,
-            max_rangers_per_grid=max_rangers_per_grid
+            max_rangers_per_grid=max_rangers_per_grid,
+            max_fences_per_grid=max_fences_per_grid
         )
 
     def set_coverage_parameters(self, patrol_radius: float = 5.0, drone_radius: float = 8.0,
                                camera_radius: float = 3.0, fence_protection: float = 0.5,
-                               wp: float = 0.3, wd: float = 0.3, wc: float = 0.2, wf: float = 0.2):
+                               wp: float = 0.3, wd: float = 0.3, wc: float = 0.2, wf: float = 0.2,
+                               alpha_pd: float = 0.4, alpha_pc: float = 0.15):
         self.coverage_params = CoverageParameters(
             patrol_radius=patrol_radius,
             drone_radius=drone_radius,
             camera_radius=camera_radius,
             fence_protection=fence_protection,
-            wp=wp, wd=wd, wc=wc, wf=wf
+            wp=wp, wd=wd, wc=wc, wf=wf,
+            alpha_pd=alpha_pd, alpha_pc=alpha_pc
         )
 
     def get_grid_by_id(self, grid_id: int) -> GridData:
@@ -214,6 +261,7 @@ class DataLoader:
         
         self.initialize_deployment_matrix()
         self.initialize_visibility_params()
+        self.initialize_coverage_effectiveness(config.get('coverage_effectiveness'))
         
         if 'constraints' in config:
             c = config['constraints']
@@ -223,9 +271,14 @@ class DataLoader:
                 max_rangers_per_camp=c.get('max_rangers_per_camp', 5),
                 total_cameras=c.get('total_cameras', 10),
                 total_drones=c.get('total_drones', 3),
-                total_fence_length=c.get('total_fence_length', 50.0)
-            )
-        
+                total_fence_length=c.get('total_fence_length', 50.0),
+                max_cameras_per_grid=c.get('max_cameras_per_grid', 1),
+                max_drones_per_grid=c.get('max_drones_per_grid', 1),
+                max_camps_per_grid=c.get('max_camps_per_grid', 1),
+                max_rangers_per_grid=c.get('max_rangers_per_grid', 1),
+                max_fences_per_grid=c.get('max_fences_per_grid', 6)
+             )
+
         if 'coverage_params' in config:
             cp = config['coverage_params']
             self.set_coverage_parameters(
@@ -236,5 +289,7 @@ class DataLoader:
                 wp=cp.get('wp', 0.3),
                 wd=cp.get('wd', 0.3),
                 wc=cp.get('wc', 0.2),
-                wf=cp.get('wf', 0.2)
+                wf=cp.get('wf', 0.2),
+                alpha_pd=cp.get('alpha_pd', 0.4),
+                alpha_pc=cp.get('alpha_pc', 0.15)
             )

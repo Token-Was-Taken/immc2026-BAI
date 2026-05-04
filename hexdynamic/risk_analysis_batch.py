@@ -144,7 +144,7 @@ def generate_single_comparison(results: List[dict], risk_key: str,
     
     # 创建图形 - 每个子图保持原始尺寸
     fig_width = 14 * n_cols  # 每个子图宽度 14
-    fig_height = 10 * n_rows  # 每个子图高度 10
+    fig_height = 7 * n_rows  # 每个子图高度压缩，减少上下间距
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
     
     if n_scenarios == 1:
@@ -170,17 +170,41 @@ def generate_single_comparison(results: List[dict], risk_key: str,
                 risks = result[risk_key]
                 hex_size = result['hex_size']
                 
-                # 绘制六边形
+                # 绘制六边形 + raw risk 数值标注
                 for g in grids:
                     gid = g['grid_id']
                     risk = risks.get(gid, 0.0)
                     cx, cy = grid_center(g["q"], g["r"], hex_size)
                     draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(risk)))
-                
+
+                    # 标注 raw risk 值
+                    raw_val = result['raw_risks'].get(gid, 0.0)
+                    text_color = 'black' if norm(risk) < 0.6 else 'white'
+                    ax.text(cx, cy, f"{raw_val:.2f}",
+                            fontsize=3 if len(grids) > 100 else 5,
+                            ha='center', va='center',
+                            color=text_color, fontweight='bold',
+                            zorder=3, alpha=0.85)
+
                 # 设置
                 setup_map_ax(ax, grids, hex_size)
                 ax.set_title(result['name'], fontsize=13, fontweight='bold', pad=10)
                 ax.axis('off')
+
+                # 在子图左下角显示 raw risk 统计
+                raw_vals = list(result['raw_risks'].values())
+                stats_text = (
+                    f"raw min:  {min(raw_vals):.4f}\n"
+                    f"raw max:  {max(raw_vals):.4f}\n"
+                    f"raw mean: {float(sum(raw_vals)/len(raw_vals)):.4f}"
+                )
+                ax.text(
+                    0.01, 0.01, stats_text,
+                    transform=ax.transAxes,
+                    fontsize=8, va='bottom', ha='left',
+                    fontfamily='monospace',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.75, edgecolor='gray')
+                )
             else:
                 # 隐藏多余的子图
                 ax.axis('off')
@@ -196,7 +220,7 @@ def generate_single_comparison(results: List[dict], risk_key: str,
     fig.suptitle(title, fontsize=16, fontweight='bold', y=0.98)
     
     # 调整布局
-    plt.subplots_adjust(left=0.05, right=0.90, top=0.95, bottom=0.05, wspace=0.1, hspace=0.15)
+    plt.subplots_adjust(left=0.05, right=0.90, top=0.95, bottom=0.05, wspace=0.1, hspace=0.05)
     
     # 保存
     fig.savefig(save_path, dpi=150, bbox_inches='tight')

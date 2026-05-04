@@ -1,0 +1,581 @@
+{
+  "resource_type": "drone",
+  "resource_values": [
+    0,
+    10,
+    20,
+    30,
+    40,
+    50,
+    60,
+    70,
+    80,
+    90,
+    100,
+    110,
+    120,
+    130,
+    140,
+    150,
+    160,
+    170,
+    180,
+    190,
+    200,
+    210,
+    220,
+    230,
+    240,
+    250,
+    260,
+    270,
+    280,
+    290,
+    300,
+    310,
+    320,
+    330,
+    340,
+    350,
+    360,
+    370,
+    380,
+    390,
+    400
+  ],
+  "results": [
+    {
+      "resource_value": 0,
+      "total_protection_benefit": 4.087532,
+      "best_fitness": 0.018217,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 0,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_0.json"
+    },
+    {
+      "resource_value": 10,
+      "total_protection_benefit": 61.172556,
+      "best_fitness": 0.272631,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 10,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_10.json"
+    },
+    {
+      "resource_value": 20,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 20,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_20.json"
+    },
+    {
+      "resource_value": 30,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 30,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_30.json"
+    },
+    {
+      "resource_value": 40,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 40,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_40.json"
+    },
+    {
+      "resource_value": 50,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 50,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_50.json"
+    },
+    {
+      "resource_value": 60,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 60,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_60.json"
+    },
+    {
+      "resource_value": 70,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 70,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_70.json"
+    },
+    {
+      "resource_value": 80,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 80,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_80.json"
+    },
+    {
+      "resource_value": 90,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 90,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_90.json"
+    },
+    {
+      "resource_value": 100,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 100,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_100.json"
+    },
+    {
+      "resource_value": 110,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 110,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_110.json"
+    },
+    {
+      "resource_value": 120,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 120,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_120.json"
+    },
+    {
+      "resource_value": 130,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 130,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_130.json"
+    },
+    {
+      "resource_value": 140,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 140,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_140.json"
+    },
+    {
+      "resource_value": 150,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 150,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_150.json"
+    },
+    {
+      "resource_value": 160,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 160,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_160.json"
+    },
+    {
+      "resource_value": 170,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 170,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_170.json"
+    },
+    {
+      "resource_value": 180,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 180,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_180.json"
+    },
+    {
+      "resource_value": 190,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 190,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_190.json"
+    },
+    {
+      "resource_value": 200,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 200,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_200.json"
+    },
+    {
+      "resource_value": 210,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 210,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_210.json"
+    },
+    {
+      "resource_value": 220,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 220,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_220.json"
+    },
+    {
+      "resource_value": 230,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 230,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_230.json"
+    },
+    {
+      "resource_value": 240,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 240,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_240.json"
+    },
+    {
+      "resource_value": 250,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 250,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_250.json"
+    },
+    {
+      "resource_value": 260,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 260,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_260.json"
+    },
+    {
+      "resource_value": 270,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 270,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_270.json"
+    },
+    {
+      "resource_value": 280,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 280,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_280.json"
+    },
+    {
+      "resource_value": 290,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 290,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_290.json"
+    },
+    {
+      "resource_value": 300,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 300,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_300.json"
+    },
+    {
+      "resource_value": 310,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 310,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_310.json"
+    },
+    {
+      "resource_value": 320,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 320,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_320.json"
+    },
+    {
+      "resource_value": 330,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 330,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_330.json"
+    },
+    {
+      "resource_value": 340,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 340,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_340.json"
+    },
+    {
+      "resource_value": 350,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 350,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_350.json"
+    },
+    {
+      "resource_value": 360,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 360,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_360.json"
+    },
+    {
+      "resource_value": 370,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 370,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_370.json"
+    },
+    {
+      "resource_value": 380,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 380,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_380.json"
+    },
+    {
+      "resource_value": 390,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 390,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_390.json"
+    },
+    {
+      "resource_value": 400,
+      "total_protection_benefit": 61.182931,
+      "best_fitness": 0.272677,
+      "resources_deployed": {
+        "total_cameras": 0,
+        "total_drones": 400,
+        "total_camps": 0,
+        "total_rangers": 0,
+        "fence_segments": 106
+      },
+      "output_json": "./sensitivity_results\\temp_output_drone_400.json"
+    }
+  ]
+}

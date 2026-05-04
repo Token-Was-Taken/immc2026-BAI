@@ -52,14 +52,15 @@ def build_species_config(species_cfg: dict) -> dict:
     return result
 
 
-def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int, float]]:
+def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
     """
-    Compute normalized risk and temporal factors.
-    
+    Compute normalized risk, raw risk and temporal factors.
+
     Returns:
-        Tuple of (risk_map, temporal_factor_map)
+        Tuple of (risk_map, temporal_factor_map, raw_risk_map)
         - risk_map: normalized risk values [0, 1]
         - temporal_factor_map: T_t × S_t (diurnal × seasonal factors)
+        - raw_risk_map: raw (unnormalized) risk values
     """
     map_cfg_raw = data['map_config']
     boundary_locations = map_cfg_raw.get('boundary_locations')
@@ -94,7 +95,8 @@ def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int,
     model_config = ModelConfigData(
         risk_weights=cfg_raw.get('risk_weights'),
         human_risk_weights=cfg_raw.get('human_risk_weights'),
-        environmental_risk_weights=cfg_raw.get('environmental_risk_weights')
+        environmental_risk_weights=cfg_raw.get('environmental_risk_weights'),
+        temporal_weights=cfg_raw.get('temporal_weights')
     )
     model = create_model_from_config(model_config)
 
@@ -112,11 +114,28 @@ def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int,
         if cfg_raw.get('environmental_risk_weights'):
             env_weights = EnvironmentalRiskWeights(**cfg_raw['environmental_risk_weights'])
 
+        from risk_model.risk.temporal import DiurnalFactorCalculator, SeasonalFactorCalculator, TemporalFactorCalculator
+        temporal_calc = None
+        if cfg_raw.get('temporal_weights'):
+            tw = cfg_raw['temporal_weights']
+            temporal_calc = TemporalFactorCalculator(
+                diurnal_calculator=DiurnalFactorCalculator(
+                    daytime_factor=tw.get('daytime_factor', 1.0),
+                    nighttime_factor=tw.get('nighttime_factor', 1.3),
+                    gamma=tw.get('gamma', 0.3)
+                ),
+                seasonal_calculator=SeasonalFactorCalculator(
+                    dry_season_factor=tw.get('dry_season_factor', 1.0),
+                    rainy_season_factor=tw.get('rainy_season_factor', 1.2)
+                )
+            )
+
         composite_calc = CompositeRiskCalculator(
             weight_manager=weight_manager,
             human_calculator=HumanRiskCalculator(weights=human_weights),
             environmental_calculator=EnvironmentalRiskCalculator(weights=env_weights),
-            density_calculator=DensityRiskCalculator(species_config=species_cfg)
+            density_calculator=DensityRiskCalculator(species_config=species_cfg),
+            temporal_calculator=temporal_calc
         )
         model = RiskModel(composite_calculator=composite_calc)
 
@@ -141,7 +160,8 @@ def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int,
     results = model.calculate_batch(grid_data_list, time_context, use_temporal_factors=use_temporal)
     
     risk_map = {id_order[i]: float(r.normalized_risk) for i, r in enumerate(results)}
-    
+    raw_risk_map = {id_order[i]: float(r.raw_risk) for i, r in enumerate(results)}
+
     # Extract temporal factors from components
     temporal_factor_map = {}
     for i, r in enumerate(results):
@@ -151,8 +171,8 @@ def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int,
         else:
             temporal_factor = 1.0
         temporal_factor_map[gid] = temporal_factor
-    
-    return risk_map, temporal_factor_map
+
+    return risk_map, temporal_factor_map, raw_risk_map
 
 
 def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_map: Dict[int, float] = None) -> DataLoader:
@@ -182,7 +202,9 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
         wp=cp.get('wp', 0.3),
         wd=cp.get('wd', 0.3),
         wc=cp.get('wc', 0.2),
-        wf=cp.get('wf', 0.2)
+        wf=cp.get('wf', 0.2),
+        alpha_pd=cp.get('alpha_pd', 0.4),
+        alpha_pc=cp.get('alpha_pc', 0.15)
     )
 
     c = data['constraints']
@@ -193,40 +215,44 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
         total_cameras=c['total_cameras'],
         total_drones=c['total_drones'],
         total_fence_length=float(c['total_fence_length']),
-        max_cameras_per_grid=c.get('max_cameras_per_grid', 3),
+        max_cameras_per_grid=c.get('max_cameras_per_grid', 1),
         max_drones_per_grid=c.get('max_drones_per_grid', 1),
         max_camps_per_grid=c.get('max_camps_per_grid', 1),
-        max_rangers_per_grid=c.get('max_rangers_per_grid', 1)
+        max_rangers_per_grid=c.get('max_rangers_per_grid', 1),
+        max_fences_per_grid=c.get('max_fences_per_grid', 6)
     )
 
     temp_grid_model = HexGridModel(loader.grids)
     edge_grids = temp_grid_model.get_edge_grids()
+    del temp_grid_model
     loader.initialize_deployment_matrix(edge_grids=edge_grids)
     loader.initialize_visibility_params()
+    loader.initialize_coverage_effectiveness(data.get('coverage_effectiveness'))
     return loader
 
 
-def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None):
+def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None):
     print(f"[1/4] Read input: {input_path}")
     data = load_input(input_path)
 
     print("[2/4] Compute normalized risk with riskIndex...")
-    risk_map, temporal_factor_map = compute_risk_with_riskindex(data)
+    risk_map, temporal_factor_map, raw_risk_map = compute_risk_with_riskindex(data)
 
     print("[3/4] Build optimization model and run DSSA...")
     loader = build_data_loader(data, risk_map, temporal_factor_map)
-    grid_model = HexGridModel(loader.grids)
 
-    model_class = VectorizedCoverageModel if vectorized else CoverageModel
     if vectorized:
+        grid_model = HexGridModel(loader.grids)
         print("      [VECTOR] 使用向量化覆盖模型 (Vectorized Coverage Model)")
-        print("         适用于大规模地图（网格数 > 1000）")
-        print("         性能提升：~3-5倍")
+    else:
+        grid_model = HexGridModel(loader.grids)
+    model_class = VectorizedCoverageModel if vectorized else CoverageModel
     coverage_model = model_class(
         grid_model,
         loader.coverage_params,
         loader.deployment_matrix,
-        loader.visibility_params
+        loader.visibility_params,
+        loader.coverage_effectiveness
     )
 
     constraints = {
@@ -239,28 +265,52 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         'max_cameras_per_grid': loader.constraints.max_cameras_per_grid,
         'max_drones_per_grid': loader.constraints.max_drones_per_grid,
         'max_camps_per_grid': loader.constraints.max_camps_per_grid,
+        'max_fences_per_grid': loader.constraints.max_fences_per_grid,
     }
 
     fixed_fences = {}
-    for edge in grid_model.get_fencing_edges():
-        gid1, gid2, _ = edge
-        if (loader.deployment_matrix['fence'].get(gid1, 0) == 1 and
-                loader.deployment_matrix['fence'].get(gid2, 0) == 1):
-            fixed_fences[tuple(sorted((gid1, gid2)))] = 1
 
     dc = data.get('dssa_config', {})
-    dssa_config = DSSAConfig(
-        population_size=dc.get('population_size', 50),
-        max_iterations=dc.get('max_iterations', 100),
-        producer_ratio=dc.get('producer_ratio', 0.2),
-        scout_ratio=dc.get('scout_ratio', 0.2),
-        ST=dc.get('ST', 0.8),
-        R2=dc.get('R2', 0.5),
-        use_time_aware_fitness=dc.get('use_time_aware_fitness', False)
-    )
+    # 如果 CLI 提供了 out_dir，则使用 CLI 提供的
+    # 否则优先使用 JSON 中的配置，或者使用默认值
+    output_dir = out_dir if out_dir is not None else dc.get('output_dir')
+    if output_dir and not os.path.isabs(output_dir):
+        # 如果是相对路径，基于当前工作目录解析
+        output_dir = os.path.abspath(output_dir)
+    if dssa_config is None:
+        dssa_config = DSSAConfig(
+            population_size=dc.get('population_size', 50),
+            max_iterations=dc.get('max_iterations', 100),
+            producer_ratio=dc.get('producer_ratio', 0.2),
+            scout_ratio=dc.get('scout_ratio', 0.2),
+            ST=dc.get('ST', 0.8),
+            R2=dc.get('R2', 0.5),
+            use_time_aware_fitness=dc.get('use_time_aware_fitness', False),
+            output_dir=output_dir,
+            force_full_deployment=dc.get('force_full_deployment', True),
+            save_iteration_visualization=dc.get('save_iteration_visualization', False),
+            use_risk_priority=dc.get('use_risk_priority', False),
+            high_risk_percentage=dc.get('high_risk_percentage', 0.3),
+            high_risk_perturbation_priority=dc.get('high_risk_perturbation_priority', 0.7)
+        )
+    if dssa_config.output_dir is None:
+        dssa_config.output_dir = output_dir
+    if dssa_config.force_full_deployment is None:
+        dssa_config.force_full_deployment = dc.get('force_full_deployment', True)
+    if dssa_config.save_iteration_visualization is None:
+        dssa_config.save_iteration_visualization = dc.get('save_iteration_visualization', False)
+    if dssa_config.use_risk_priority is None:
+        dssa_config.use_risk_priority = dc.get('use_risk_priority', False)
+    if dssa_config.high_risk_percentage is None:
+        dssa_config.high_risk_percentage = dc.get('high_risk_percentage', 0.3)
+    if dssa_config.high_risk_perturbation_priority is None:
+        dssa_config.high_risk_perturbation_priority = dc.get('high_risk_perturbation_priority', 0.7)
 
-    # 强制部署模式：默认True，除非通过命令行参数设置为False
-    force_full_deployment = not allow_partial_deployment
+    # 部署模式优先级：CLI --allow-partial-deployment > JSON dssa_config.force_full_deployment > 默认 True
+    if allow_partial_deployment:
+        force_full_deployment = False
+    else:
+        force_full_deployment = dssa_config.force_full_deployment if dssa_config.force_full_deployment is not None else True
     if force_full_deployment:
         print("      [FORCE] 强制部署模式：所有资源将被部署到上限")
     else:
@@ -270,6 +320,11 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
     if dssa_config.use_time_aware_fitness:
         print("      [TIME-AWARE] 时间感知模式：资源分配将反映时间因子的影响")
     
+    # 风险优先部署模式
+    if dssa_config.use_risk_priority:
+        print(f"      [RISK-PRIORITY] 风险优先模式：优先将资源部署到高风险网格")
+        print(f"        - 高风险网格占比：{dssa_config.high_risk_percentage*100:.0f}%")
+    
     # 解析冻结资源列表
     frozen_resources_list = []
     if freeze_resources:
@@ -277,10 +332,26 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         if frozen_resources_list:
             print(f"      [FROZEN] 冻结资源模式：{', '.join(frozen_resources_list)} 将保持不变")
     
+    # 提取 boundary_locations
+    boundary_locations = None
+    map_config = data.get('map_config', {})
+    if map_config and 'boundary_locations' in map_config:
+        bl = map_config['boundary_locations']
+        if bl:
+            boundary_locations = []
+            for item in bl:
+                if isinstance(item, dict):
+                    boundary_locations.append((item['x'], item['y']))
+                else:
+                    boundary_locations.append(tuple(item))
+    
     optimizer = DSSAOptimizer(coverage_model, constraints, dssa_config, 
                              fixed_fences=fixed_fences,
                              force_full_deployment=force_full_deployment,
-                             frozen_resources=frozen_resources_list)
+                             frozen_resources=frozen_resources_list,
+                             input_grids=data.get('grids', []),
+                             raw_risk_map=raw_risk_map,
+                             boundary_locations=boundary_locations)
     best_solution, best_fitness, fitness_history = optimizer.optimize()
 
     # 打印资源部署总结
@@ -415,6 +486,7 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             'y': src.get('y', 0),
             'terrain_type': grid.terrain_type,
             'risk_normalized': round(norm_unified_risk(grid_model.get_grid_risk(gid)), 6),
+            'raw_risk': round(float(raw_risk_map.get(gid, 0.0)), 6),
             'protection_benefit_raw': round(float(pb_per_grid[gid]), 6),
             'protection_benefit_normalized': round(norm_pb(pb_per_grid[gid]), 6),
             'residual_risk_normalized': round(norm_unified_risk(rr_per_grid[gid]), 6),
@@ -425,34 +497,61 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
                 'camera': int(best_solution.cameras.get(gid, 0))
             }
         }
+        
+        # Add fence information for grids with boundary fences (Requirement 1.5, 6)
+        # Fences are stored as (grid_id, direction) where direction is 0-5
+        grid_fence_edges = [(e[0], e[1]) for e, v in best_solution.fences.items() if v > 0 and e[0] == gid and isinstance(e[1], int)]
+        if grid_fence_edges:
+            entry['fences'] = {
+                'fence_count': len(grid_fence_edges),
+                'boundary_edge_list': [direction for _, direction in grid_fence_edges]
+            }
+
         if 'hex_size' in src:
             entry['hex_size'] = src['hex_size']
         grid_results.append(entry)
 
-    fence_edges = [
-        {'grid_id_1': int(e[0]), 'grid_id_2': int(e[1])}
-        for e, v in best_solution.fences.items() if v == 1
-    ]
+    # 计算 summary 统计量
+    all_gids = grid_model.get_all_grid_ids()
+    norm_risk_vals  = [grid_model.get_grid_risk(gid) for gid in all_gids]
+    raw_risk_vals   = [float(raw_risk_map.get(gid, 0.0)) for gid in all_gids]
+    residual_vals   = [norm_unified_risk(rr_per_grid[gid]) for gid in all_gids]
+    total_residual  = sum(rr_per_grid[gid] for gid in all_gids)
 
     output = {
         'summary': {
             'total_grids': grid_model.get_grid_count(),
             'total_risk': round(float(total_risk), 6),
-            'total_risk_weighted': round(float(total_risk_weighted), 6),  # 时间加权的总风险
+            'total_risk_weighted': round(float(total_risk_weighted), 6),
             'best_fitness': round(float(best_fitness), 6),
             'total_protection_benefit': round(float(total_protection_benefit), 6),
             'average_protection_benefit': round(float(avg_protection_benefit), 6),
+            # 部署前归一化风险统计
+            'risk_min':  round(min(norm_risk_vals), 6),
+            'risk_max':  round(max(norm_risk_vals), 6),
+            'risk_mean': round(float(np.mean(norm_risk_vals)), 6),
+            # 部署前原始风险统计
+            'raw_risk_min':  round(min(raw_risk_vals), 6),
+            'raw_risk_max':  round(max(raw_risk_vals), 6),
+            'raw_risk_mean': round(float(np.mean(raw_risk_vals)), 6),
+            # 部署后剩余风险统计
+            'residual_risk_min':  round(min(residual_vals), 6),
+            'residual_risk_max':  round(max(residual_vals), 6),
+            'residual_risk_mean': round(float(np.mean(residual_vals)), 6),
+            'total_residual_risk': round(float(total_residual), 6),
             'fitness_history': [round(float(f), 6) for f in fitness_history],
             'resources_deployed': {
                 'total_cameras': int(sum(best_solution.cameras.values())),
                 'total_drones': int(sum(best_solution.drones.values())),
                 'total_camps': int(sum(best_solution.camps.values())),
                 'total_rangers': int(sum(best_solution.rangers.values())),
-                'fence_segments': len(fence_edges)
+                'fence_segments': sum(1 for v in best_solution.fences.values() if v > 0)
             }
         },
-        'grids': grid_results,
-        'fence_edges': fence_edges
+        'visualization_config': {
+            'show_grid_ids': False
+        },
+        'grids': grid_results
     }
 
     with open(output_path, 'w', encoding='utf-8') as f:

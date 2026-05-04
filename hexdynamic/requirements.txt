@@ -1,3 +1,5 @@
 numpy>=1.20.0
 matplotlib>=3.3.0
 pandas>=1.2.0
+hypothesis>=6.0.0
+SALib>=1.4.0

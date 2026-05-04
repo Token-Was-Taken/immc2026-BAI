@@ -43,7 +43,7 @@ DEFAULTS = {
     "wf": 0.2,
     # DSSA
     "population_size": 50,
-    "max_iterations": 100,
+    "max_iterations": 1,
     "producer_ratio": 0.2,
     "scout_ratio": 0.2,
     "ST": 0.8,
@@ -56,6 +56,19 @@ DEFAULTS = {
     "human_weight": 0.4,
     "environmental_weight": 0.3,
     "density_weight": 0.3,
+    # 人为风险权重
+    "boundary_weight": 0.2,
+    "road_weight": 0.3,
+    "water_weight": 0.5,
+    # 环境风险权重
+    "fire_weight": 0.6,
+    "terrain_weight": 0.4,
+    # 时间因子权重
+    "daytime_factor": 1.0,
+    "nighttime_factor": 1.3,
+    "gamma": 0.3,
+    "dry_season_factor": 1.0,
+    "rainy_season_factor": 1.2,
     # 物种（与 DensityRiskCalculator._get_default_species 一致）
     "hex_size": 62,
 }
@@ -256,7 +269,23 @@ def generate(m: int, n: int, args) -> dict:
                 "human_weight": args.human_weight,
                 "environmental_weight": args.environmental_weight,
                 "density_weight": args.density_weight,
-            }
+            },
+            "human_risk_weights": {
+                "boundary_weight": args.boundary_weight,
+                "road_weight": args.road_weight,
+                "water_weight": args.water_weight,
+            },
+            "environmental_risk_weights": {
+                "fire_weight": args.fire_weight,
+                "terrain_weight": args.terrain_weight,
+            },
+            "temporal_weights": {
+                "daytime_factor": args.daytime_factor,
+                "nighttime_factor": args.nighttime_factor,
+                "gamma": args.gamma,
+                "dry_season_factor": args.dry_season_factor,
+                "rainy_season_factor": args.rainy_season_factor,
+            },
         },
         "species_config": {
             "rhino": {
@@ -360,6 +389,22 @@ def parse_args():
     p.add_argument("--human_weight",        type=float, default=D["human_weight"])
     p.add_argument("--environmental_weight",type=float, default=D["environmental_weight"])
     p.add_argument("--density_weight",      type=float, default=D["density_weight"])
+
+    # 人为风险权重
+    p.add_argument("--boundary_weight", type=float, default=D["boundary_weight"], help="边界邻近度权重")
+    p.add_argument("--road_weight",     type=float, default=D["road_weight"], help="道路邻近度权重")
+    p.add_argument("--water_weight",    type=float, default=D["water_weight"], help="水源邻近度权重")
+
+    # 环境风险权重
+    p.add_argument("--fire_weight",    type=float, default=D["fire_weight"], help="火灾风险权重")
+    p.add_argument("--terrain_weight", type=float, default=D["terrain_weight"], help="地形复杂度权重")
+
+    # 时间因子权重
+    p.add_argument("--daytime_factor",      type=float, default=D["daytime_factor"], help="白天风险因子")
+    p.add_argument("--nighttime_factor",    type=float, default=D["nighttime_factor"], help="夜间风险因子")
+    p.add_argument("--gamma",               type=float, default=D["gamma"], help="昼夜正弦波振幅")
+    p.add_argument("--dry_season_factor",   type=float, default=D["dry_season_factor"], help="旱季风险因子")
+    p.add_argument("--rainy_season_factor", type=float, default=D["rainy_season_factor"], help="雨季风险因子")
 
     return p.parse_args()
 

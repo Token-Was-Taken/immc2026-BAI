@@ -19,7 +19,7 @@ import sys
 # ---------------------------------------------------------------------------
 from protection_pipeline import run_pipeline
 from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison, \
-    plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map
+    plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map, plot_species_deployment_comparison, plot_protection_deployment_comparison
 
 
 def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
@@ -39,7 +39,9 @@ def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
     plot_protection_heatmap(out, hex_size, boundary_xy,            save_path=p("protection_heatmap.png"))
     plot_terrain_map(out, hex_size, boundary_xy,                   save_path=p("terrain_map.png"))
     plot_terrain_deployment_map(out, hex_size, boundary_xy,        save_path=p("terrain_deployment_map.png"))
-    plot_species_map(out, species_map, hex_size, boundary_xy,      save_path=p("species_map.png"))
+    plot_species_map(out, species_map, hex_size, boundary_xy,        save_path=p("species_map.png"))
+    plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path=p("species_deployment_comparison.png"))
+    plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path=p("protection_deployment_comparison.png"))
     print(f"[VIZ] 完成，图片保存至: {out_dir}")
 
 
@@ -94,6 +96,20 @@ def main():
         print("错误: pipeline 模式需要提供 output 路径", file=sys.stderr)
         sys.exit(1)
 
+    # 检查并创建输出目录
+    output_dir = args.out_dir
+    if output_dir:
+        import os
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"[DIR] 确保输出目录存在: {os.path.abspath(output_dir)}")
+
+    output_path = args.output
+    output_dir_for_output = os.path.dirname(output_path)
+    if output_dir_for_output:
+        import os
+        os.makedirs(output_dir_for_output, exist_ok=True)
+        print(f"[DIR] 确保输出 JSON 目录存在: {os.path.abspath(output_dir_for_output)}")
+
     # Step 1: 优化
     run_pipeline(
         input_path=args.input,
@@ -101,6 +117,7 @@ def main():
         vectorized=args.vectorized,
         allow_partial_deployment=args.allow_partial_deployment,
         freeze_resources=args.freeze_resources,
+        out_dir=args.out_dir,
     )
 
     # Step 2: 可视化
