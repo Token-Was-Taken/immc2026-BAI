@@ -170,7 +170,8 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
             r=g['r'],
             terrain_type=g.get('terrain_type', 'SparseGrass'),
             risk=risk_map.get(g['grid_id'], 0.0),
-            temporal_factor=temporal_factor_map.get(g['grid_id'], 1.0)
+            temporal_factor=temporal_factor_map.get(g['grid_id'], 1.0),
+            species_densities=g.get('species_densities', {})
         )
         for g in data['grids']
     ]
