@@ -77,10 +77,25 @@ def run_single_resource(args_tuple):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)
         elapsed = time.time() - start
+        if result.stdout:
+            for line in result.stdout.strip().splitlines():
+                print(f"  [{resource}] {line}")
         if result.returncode != 0:
             print(f"[FAIL]  {resource}: error after {elapsed:.1f}s")
-            print(result.stderr[:500])
-            return {"resource": resource, "success": False, "error": result.stderr[:200], "elapsed": elapsed}
+            if result.stderr:
+                print(result.stderr[:500])
+            return {"resource": resource, "success": False, "error": result.stderr[:200] if result.stderr else "unknown error", "elapsed": elapsed}
+        result_json_path = os.path.join(output_dir, f"sensitivity_{resource}.json")
+        empty_results = False
+        if os.path.exists(result_json_path):
+            with open(result_json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not data.get("results"):
+                empty_results = True
+                print(f"[WARN]  {resource}: completed in {elapsed:.1f}s but results are EMPTY")
+                if result.stderr:
+                    print(f"  stderr: {result.stderr[:500]}")
+                return {"resource": resource, "success": False, "error": "empty results (pipeline may have failed silently)", "elapsed": elapsed}
         print(f"[DONE]  {resource}: completed in {elapsed:.1f}s")
         return {"resource": resource, "success": True, "elapsed": elapsed}
     except Exception as e:

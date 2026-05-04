@@ -32,6 +32,11 @@ def load_sensitivity(path: str) -> dict:
 
 def compute_metrics(data: dict):
     results      = data["results"]
+
+    if not results:
+        print(f"  [WARN] No results found for {data.get('resource_type', '?')}, skipping.")
+        return None
+
     res_values   = [r["resource_value"] for r in results]
     benefits     = [r["total_protection_benefit"] for r in results]
     fitnesses    = [r["best_fitness"] for r in results]
@@ -238,6 +243,8 @@ def plot_report(data: dict, metrics: dict, out_path: str):
 def process_file(json_path: str, out_dir: str):
     data    = load_sensitivity(json_path)
     metrics = compute_metrics(data)
+    if metrics is None:
+        return
     res_type = data["resource_type"]
 
     os.makedirs(out_dir, exist_ok=True)

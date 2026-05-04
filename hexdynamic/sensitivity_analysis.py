@@ -37,9 +37,10 @@ def save_json(path: str, data: dict):
 
 def run_protection_pipeline(input_path: str, output_path: str, freeze_resources: str = None, vectorized: bool = False):
     """运行 protection_pipeline.py"""
+    pipeline_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'protection_pipeline.py')
     cmd = [
         sys.executable,
-        'hexdynamic/protection_pipeline.py',
+        pipeline_path,
         input_path,
         output_path
     ]
@@ -152,7 +153,7 @@ def run_sensitivity_analysis(
                     vectorized=vectorized
                 )
             except RuntimeError as e:
-                print(f"  警告: 优化失败，跳过此值")
+                print(f"  警告: 优化失败 ({e})，跳过此值")
                 continue
             
             # 提取结果
@@ -181,9 +182,13 @@ def run_sensitivity_analysis(
         
         result_path = os.path.join(output_dir, f'sensitivity_{res_type}.json')
         save_json(result_path, sensitivity_results)
-        print(f"\n[OK] 结果已保存: {result_path}")
         
-        # 绘制敏感性曲线
+        if not results:
+            print(f"\n[ERROR] 资源 {res_type} 的所有优化均失败，结果为空！")
+            print(f"  请检查 protection_pipeline.py 是否存在且可运行")
+        else:
+            print(f"\n[OK] 结果已保存: {result_path} ({len(results)}/{len(resource_values)} 成功)")
+        
         plot_sensitivity_results(result_path, os.path.join(output_dir, f'sensitivity_{res_type}_plot.png'))
 
 
@@ -341,6 +346,31 @@ Resources:
         output_dir=args.output,
         vectorized=args.vectorized
     )
+    
+    has_empty = False
+    resource_map = {
+        'patrol': 'total_patrol',
+        'camera': 'total_cameras',
+        'drone': 'total_drones',
+        'camp': 'total_camps',
+        'fence': 'total_fence_length',
+    }
+    resources_to_check = list(resource_map.keys()) if args.resource == 'all' else [args.resource]
+    for res in resources_to_check:
+        result_path = os.path.join(args.output, f'sensitivity_{res}.json')
+        if os.path.exists(result_path):
+            with open(result_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if not data.get('results'):
+                has_empty = True
+                break
+    
+    if has_empty:
+        print(f"\n{'='*70}")
+        print("[ERROR] 敏感性分析完成，但部分资源结果为空！")
+        print(f"  请检查 protection_pipeline.py 是否可正常运行")
+        print(f"{'='*70}\n")
+        sys.exit(2)
     
     print(f"\n{'='*70}")
     print("[OK] 敏感性分析完成！")
