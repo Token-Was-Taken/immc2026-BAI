@@ -489,7 +489,7 @@
                     <button class="coord-btn" id="coordBtn" title="显示/隐藏坐标">📍 坐标</button>
                     <div class="size-control">
                         <label for="sizeSlider">半径</label>
-                        <input type="range" id="sizeSlider" class="size-slider" min="40" max="300" value="120" title="调整网格半径">
+                        <input type="range" id="sizeSlider" class="size-slider" min="5" max="300" value="120" title="调整网格半径">
                         <span class="size-value" id="sizeValue">120</span>
                     </div>
                 </div>
@@ -1095,7 +1095,7 @@
                     // 从导入数据中获取网格半径并设置
                     if (firstGrid.hasOwnProperty('hexSizeNatural')) {
                         const importedHexSize = parseInt(firstGrid.hexSizeNatural);
-                        if (!isNaN(importedHexSize) && importedHexSize >= 40 && importedHexSize <= 300) {
+                        if (!isNaN(importedHexSize) && importedHexSize >= 5 && importedHexSize <= 300) {
                             hexSize = importedHexSize;
                             sizeSlider.value = hexSize;
                             sizeValue.textContent = hexSize;
