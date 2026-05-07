@@ -24,6 +24,8 @@ import os
 import sys
 import time
 import subprocess
+import shutil
+import glob as glob_module
 from typing import Dict, List, Tuple, Optional
 
 import matplotlib
@@ -80,7 +82,9 @@ def parse_ranges(ranges_input: Optional[List[str]]) -> Dict[str, Tuple[int, int,
 
 def run_single_resource(input_path: str, resource: str, range_tuple: Tuple[int, int, int],
                         output_dir: str, vectorized: bool, workers: int,
-                        two_step: bool, fine_step_ratio: int) -> dict:
+                        two_step: bool, fine_step_ratio: int,
+                        warm_start: bool = False, warm_start_groups: int = None,
+                        no_cache: bool = False) -> dict:
     min_val, max_val, step = range_tuple
     cmd = [
         sys.executable,
@@ -96,6 +100,12 @@ def run_single_resource(input_path: str, resource: str, range_tuple: Tuple[int, 
     if two_step:
         cmd.append("--two-step")
         cmd.extend(["--fine-step-ratio", str(fine_step_ratio)])
+    if warm_start:
+        cmd.append("--warm-start")
+    if warm_start_groups and warm_start_groups > 1:
+        cmd.extend(["--warm-start-groups", str(warm_start_groups)])
+    if no_cache:
+        cmd.append("--no-cache")
 
     print(f"\n[START] {resource}: range={min_val}-{max_val}, step={step}, workers={workers}")
     start = time.time()
@@ -336,10 +346,10 @@ Range format:  resource:min:max:step
                         help="资源范围定义，格式 resource:min:max:step。"
                              "未指定的资源使用默认范围。"
                              "例: patrol:0:50:5 camera:0:400:10")
-    parser.add_argument("--output", "-o", default="./sensitivity_results",
-                        help="敏感性分析输出目录")
-    parser.add_argument("--report-dir", default=None,
-                        help="报告图片输出目录（默认与 --output 相同）")
+    parser.add_argument("--output", "-o", default=None,
+                        help="敏感性分析中间结果目录（默认为 --report-dir 下的 sensitivity_results/）")
+    parser.add_argument("--report-dir", default="./figures/single_sensitivity",
+                        help="顶层输出目录，所有文件统一存放于此（默认 ./figures/single_sensitivity）")
     parser.add_argument("--workers", "-w", type=int, default=os.cpu_count(),
                         help="资源内并行工作进程数（默认系统核数）")
     parser.add_argument("--vectorized", action="store_true", default=False,
@@ -350,11 +360,21 @@ Range format:  resource:min:max:step
                         help="两步法细扫步长 = 粗步长 / 此值（默认5）")
     parser.add_argument("--no-report", action="store_true", default=False,
                         help="跳过报告生成")
+    parser.add_argument("--warm-start", action="store_true", default=False,
+                        help="启用热启动：按资源值递增顺序串行执行，低资源点结果作为高资源点初始解")
+    parser.add_argument("--warm-start-groups", type=int, default=None,
+                        help="分组混合模式的并行组数（需配合 --warm-start 使用）。"
+                             "默认1（纯串行），设为>1时启用分组并行，推荐设为workers数")
+    parser.add_argument("--no-cache", action="store_true", default=False,
+                        help="禁用缓存（默认启用缓存避免重复计算）")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
         print(f"Error: input file not found: {args.input}")
         sys.exit(1)
+
+    report_dir = os.path.abspath(args.report_dir)
+    sensitivity_output = args.output if args.output else os.path.join(report_dir, "sensitivity_results")
 
     ranges = parse_ranges(args.ranges)
 
@@ -362,19 +382,37 @@ Range format:  resource:min:max:step
     print("Multi-Resource Sensitivity Analysis")
     print("=" * 60)
     print(f"Input:            {args.input}")
-    print(f"Output:           {args.output}")
+    print(f"Report dir:       {report_dir}")
+    print(f"Sensitivity data: {sensitivity_output}")
     print(f"Workers/resource: {args.workers}")
     print(f"Vectorized:       {args.vectorized}")
     print(f"Two-step:         {args.two_step}")
     if args.two_step:
         print(f"Fine step ratio:  {args.fine_step_ratio}")
+    if args.warm_start:
+        groups_str = str(args.warm_start_groups) if args.warm_start_groups else "1 (serial)"
+        print(f"Warm-start:       enabled (groups={groups_str})")
+    else:
+        print(f"Warm-start:       disabled")
+    print(f"Cache:            {'disabled' if args.no_cache else 'enabled'}")
     print(f"\nResources to analyze (serial between resources, parallel within):")
     for res, (lo, hi, step) in ranges.items():
         n_points = len(range(lo, hi + 1, step))
         print(f"  {res:<10} range=[{lo}, {hi}]  step={step}  ({n_points} points)")
     print("=" * 60)
 
-    os.makedirs(args.output, exist_ok=True)
+    os.makedirs(report_dir, exist_ok=True)
+    os.makedirs(sensitivity_output, exist_ok=True)
+
+    print(f"\n[CLEAN] 清理缓存和临时文件...")
+    cache_dir = os.path.join(sensitivity_output, '.cache')
+    if os.path.exists(cache_dir):
+        shutil.rmtree(cache_dir)
+        print(f"  删除缓存目录: {cache_dir}")
+    for pattern in ['temp_input_*.json', 'temp_output_*.json']:
+        for f in glob_module.glob(os.path.join(sensitivity_output, pattern)):
+            os.remove(f)
+            print(f"  删除临时文件: {f}")
 
     input_abs = os.path.abspath(args.input)
     results = []
@@ -382,9 +420,11 @@ Range format:  resource:min:max:step
 
     for res, rng in ranges.items():
         result = run_single_resource(
-            input_abs, res, rng, args.output,
+            input_abs, res, rng, sensitivity_output,
             args.vectorized, args.workers,
             args.two_step, args.fine_step_ratio,
+            warm_start=args.warm_start, warm_start_groups=args.warm_start_groups,
+            no_cache=args.no_cache,
         )
         results.append(result)
 
@@ -405,7 +445,7 @@ Range format:  resource:min:max:step
         for r in failed:
             print(f"  {r['resource']}: {r.get('error', 'unknown')[:100]}")
 
-    config_path = os.path.join(args.output, "batch_config.json")
+    config_path = os.path.join(report_dir, "batch_config.json")
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump({
             "input": input_abs,
@@ -414,14 +454,17 @@ Range format:  resource:min:max:step
             "vectorized": args.vectorized,
             "two_step": args.two_step,
             "fine_step_ratio": args.fine_step_ratio,
+            "warm_start": args.warm_start,
+            "warm_start_groups": args.warm_start_groups,
+            "cache_enabled": not args.no_cache,
             "results": results,
             "elapsed_seconds": elapsed,
         }, f, indent=2, ensure_ascii=False)
 
     if not args.no_report and successful:
-        generate_reports(args.output, args.report_dir)
+        generate_reports(sensitivity_output, report_dir)
 
-    print(f"\n[OK] Batch analysis complete. Results in: {args.output}")
+    print(f"\n[OK] Batch analysis complete. Results in: {report_dir}")
 
 
 if __name__ == "__main__":

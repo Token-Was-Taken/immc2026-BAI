@@ -7,10 +7,13 @@
 支持：
   - 资源内并行：先生成所有 temp_input JSON，再并行运行 pipeline
   - 两步法：粗扫全范围 → 定位饱和区 → 细扫关键区间 → 合并结果
+  - 热启动：从低资源点的结果初始化高资源点的优化，加速收敛
+  - 缓存：避免重复计算相同配置的边际贡献
 
 用法：
     python sensitivity_analysis.py --input base.json --resource camera --range 0 400 10 --workers 4
     python sensitivity_analysis.py --input base.json --resource camera --range 0 400 50 --two-step --workers 4
+    python sensitivity_analysis.py --input base.json --resource camera --range 0 400 10 --warm-start
     python sensitivity_analysis.py --input base.json --resource all
 """
 
@@ -21,6 +24,7 @@ import sys
 import copy
 import subprocess
 import time
+import hashlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, List, Tuple, Optional
 import matplotlib
@@ -46,6 +50,54 @@ DEFAULT_RANGES = {
 }
 
 
+class BenefitCache:
+    def __init__(self, cache_dir: str = None):
+        self._cache = {}
+        self._cache_dir = cache_dir
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+            self._load_disk_cache()
+
+    def _cache_key(self, res_type: str, resource_value: int) -> str:
+        return f"{res_type}_{resource_value}"
+
+    def _cache_file_path(self) -> str:
+        if self._cache_dir:
+            return os.path.join(self._cache_dir, "benefit_cache.json")
+        return None
+
+    def _load_disk_cache(self):
+        path = self._cache_file_path()
+        if path and os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    self._cache = json.load(f)
+                print(f"  [CACHE] 从磁盘加载 {len(self._cache)} 条缓存记录")
+            except Exception:
+                self._cache = {}
+
+    def _save_disk_cache(self):
+        path = self._cache_file_path()
+        if path:
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(self._cache, f, indent=2)
+            except Exception:
+                pass
+
+    def get(self, res_type: str, resource_value: int) -> Optional[dict]:
+        key = self._cache_key(res_type, resource_value)
+        return self._cache.get(key)
+
+    def set(self, res_type: str, resource_value: int, result: dict):
+        key = self._cache_key(res_type, resource_value)
+        self._cache[key] = result
+        self._save_disk_cache()
+
+    def has(self, res_type: str, resource_value: int) -> bool:
+        return self._cache_key(res_type, resource_value) in self._cache
+
+
 def load_json(path: str) -> dict:
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
@@ -57,13 +109,15 @@ def save_json(path: str, data: dict):
 
 
 def _run_single_pipeline(args_tuple):
-    input_path, output_path, freeze_resources, vectorized = args_tuple
+    input_path, output_path, freeze_resources, vectorized, warm_start_path = args_tuple
     pipeline_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'protection_pipeline.py')
     cmd = [sys.executable, pipeline_path, input_path, output_path]
     if vectorized:
         cmd.append('--vectorized')
     if freeze_resources:
         cmd.extend(['--freeze-resources', freeze_resources])
+    if warm_start_path:
+        cmd.extend(['--warm-start', warm_start_path])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     return output_path, result.returncode, result.stderr
@@ -84,18 +138,33 @@ def _generate_temp_inputs(base_input: dict, res_type: str, resource_values: List
         temp_input_path = os.path.join(output_dir, f'temp_input_{res_type}_{rv}.json')
         temp_output_path = os.path.join(output_dir, f'temp_output_{res_type}_{rv}.json')
         save_json(temp_input_path, temp_input)
-        tasks.append((temp_input_path, temp_output_path, freeze_str, False))
+        tasks.append((temp_input_path, temp_output_path, freeze_str, False, None))
 
     return tasks
 
 
 def _run_pipeline_parallel(tasks: List[Tuple], workers: int, vectorized: bool,
-                           res_type: str, resource_values: List[int]) -> List[dict]:
+                           res_type: str, resource_values: List[int],
+                           cache: BenefitCache = None) -> List[dict]:
     final_tasks = []
-    for (inp, outp, freeze, _) in tasks:
-        final_tasks.append((inp, outp, freeze, vectorized))
+    final_rvs = []
+    for idx, (inp, outp, freeze, _, _) in enumerate(tasks):
+        rv = resource_values[idx]
+        if cache and cache.has(res_type, rv):
+            continue
+        final_tasks.append((inp, outp, freeze, vectorized, None))
+        final_rvs.append(rv)
 
     results = {}
+    if cache:
+        for rv in resource_values:
+            cached = cache.get(res_type, rv)
+            if cached:
+                results[rv] = cached
+
+    if final_tasks:
+        print(f"  [CACHE] 命中 {len(resource_values) - len(final_tasks)}/{len(resource_values)} 个缓存，需运行 {len(final_tasks)} 个任务")
+
     failed_rvs = []
     total = len(final_tasks)
     done = 0
@@ -104,7 +173,7 @@ def _run_pipeline_parallel(tasks: List[Tuple], workers: int, vectorized: bool,
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {}
         for idx, task in enumerate(final_tasks):
-            rv = resource_values[idx]
+            rv = final_rvs[idx]
             futures[executor.submit(_run_single_pipeline, task)] = rv
 
         for future in as_completed(futures):
@@ -128,6 +197,8 @@ def _run_pipeline_parallel(tasks: List[Tuple], workers: int, vectorized: bool,
                     'output_json': output_path
                 }
                 results[rv] = result
+                if cache:
+                    cache.set(res_type, rv, result)
                 print(f"  [{done}/{total}] {res_type}={rv} OK  benefit={result['total_protection_benefit']:.4f}  fitness={result['best_fitness']:.4f}  ({elapsed:.0f}s)")
             except Exception as e:
                 print(f"  [{done}/{total}] {res_type}={rv} PARSE ERROR: {e}")
@@ -135,7 +206,7 @@ def _run_pipeline_parallel(tasks: List[Tuple], workers: int, vectorized: bool,
 
     if failed_rvs:
         print(f"\n  [RETRY] {len(failed_rvs)} 个失败点将串行重试...")
-        rv_to_task = {resource_values[idx]: final_tasks[idx] for idx in range(len(final_tasks))}
+        rv_to_task = {final_rvs[idx]: final_tasks[idx] for idx in range(len(final_tasks))}
         for rv in sorted(failed_rvs):
             if rv not in rv_to_task:
                 continue
@@ -152,6 +223,8 @@ def _run_pipeline_parallel(tasks: List[Tuple], workers: int, vectorized: bool,
                         'output_json': output_path
                     }
                     results[rv] = result
+                    if cache:
+                        cache.set(res_type, rv, result)
                     print(f"  [RETRY OK] {res_type}={rv}  benefit={result['total_protection_benefit']:.4f}")
                 except Exception as e:
                     print(f"  [RETRY FAIL] {res_type}={rv}  parse error: {e}")
@@ -160,6 +233,131 @@ def _run_pipeline_parallel(tasks: List[Tuple], workers: int, vectorized: bool,
 
     sorted_results = [results[rv] for rv in resource_values if rv in results]
     return sorted_results
+
+
+def _run_single_group(args_tuple):
+    base_input, res_type, group_values, output_dir, vectorized, freeze_str, pipeline_path, group_id = args_tuple
+    other_resources = [r for r in RESOURCE_MAP.keys() if r != res_type]
+    group_results = {}
+    prev_output_path = None
+    prefix = f"  [G{group_id}]"
+
+    for idx, rv in enumerate(group_values):
+        temp_input = copy.deepcopy(base_input)
+        temp_input['constraints'][RESOURCE_MAP[res_type]] = rv
+        for other in other_resources:
+            temp_input['constraints'][RESOURCE_MAP[other]] = 0
+
+        temp_input_path = os.path.join(output_dir, f'temp_input_{res_type}_{rv}.json')
+        temp_output_path = os.path.join(output_dir, f'temp_output_{res_type}_{rv}.json')
+        save_json(temp_input_path, temp_input)
+
+        cmd = [sys.executable, pipeline_path, temp_input_path, temp_output_path]
+        if vectorized:
+            cmd.append('--vectorized')
+        if freeze_str:
+            cmd.extend(['--freeze-resources', freeze_str])
+        if prev_output_path and os.path.exists(prev_output_path):
+            cmd.extend(['--warm-start', prev_output_path])
+
+        warm_tag = "WARM" if (prev_output_path and os.path.exists(prev_output_path)) else "COLD"
+
+        run_start = time.time()
+        proc_result = subprocess.run(cmd, capture_output=True, text=True)
+        run_elapsed = time.time() - run_start
+
+        if proc_result.returncode != 0:
+            print(f"{prefix} [{idx+1}/{len(group_values)}] {res_type}={rv} [{warm_tag}] FAIL ({run_elapsed:.0f}s)")
+            print(f"{prefix} {proc_result.stderr[:300]}")
+            prev_output_path = None
+            continue
+
+        try:
+            output = load_json(temp_output_path)
+            result = {
+                'resource_value': rv,
+                'total_protection_benefit': output['summary']['total_protection_benefit'],
+                'best_fitness': output['summary']['best_fitness'],
+                'resources_deployed': output['summary']['resources_deployed'],
+                'output_json': temp_output_path
+            }
+            group_results[rv] = result
+            prev_output_path = temp_output_path
+            print(f"{prefix} [{idx+1}/{len(group_values)}] {res_type}={rv} [{warm_tag}] OK  benefit={result['total_protection_benefit']:.4f}  ({run_elapsed:.0f}s)")
+        except Exception as e:
+            print(f"{prefix} [{idx+1}/{len(group_values)}] {res_type}={rv} [{warm_tag}] PARSE ERROR: {e}")
+            prev_output_path = None
+
+    return group_results
+
+
+def _run_pipeline_hybrid(base_input: dict, res_type: str, resource_values: List[int],
+                         output_dir: str, vectorized: bool, num_groups: int,
+                         cache: BenefitCache = None) -> List[dict]:
+    other_resources = [r for r in RESOURCE_MAP.keys() if r != res_type]
+    freeze_str = ','.join(other_resources)
+    pipeline_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'protection_pipeline.py')
+
+    cached_results = {}
+    remaining_values = []
+    for rv in resource_values:
+        if cache and cache.has(res_type, rv):
+            cached_results[rv] = cache.get(res_type, rv)
+        else:
+            remaining_values.append(rv)
+
+    if cached_results:
+        print(f"  [CACHE] 命中 {len(cached_results)}/{len(resource_values)} 个缓存")
+
+    if not remaining_values:
+        print(f"  [HYBRID] 所有点均已缓存，跳过运行")
+        sorted_vals = sorted(resource_values)
+        return [cached_results[v] for v in sorted_vals if v in cached_results]
+
+    actual_groups = min(num_groups, len(remaining_values))
+    groups = []
+    chunk_size = (len(remaining_values) + actual_groups - 1) // actual_groups
+    for i in range(actual_groups):
+        start_idx = i * chunk_size
+        end_idx = min(start_idx + chunk_size, len(remaining_values))
+        group_chunk = remaining_values[start_idx:end_idx]
+        if group_chunk:
+            groups.append(group_chunk)
+
+    total_points = sum(len(g) for g in groups)
+    print(f"  [HYBRID] 分组模式: {actual_groups} 组并行, {total_points} 个待计算点")
+    for gi, g in enumerate(groups):
+        print(f"    组{gi+1}: {g[0]}-{g[-1]} ({len(g)}点)")
+
+    all_results = dict(cached_results)
+    start = time.time()
+
+    with ProcessPoolExecutor(max_workers=actual_groups) as executor:
+        futures = {}
+        for gi, group_vals in enumerate(groups):
+            task_args = (
+                base_input, res_type, group_vals,
+                output_dir, vectorized, freeze_str, pipeline_path, gi + 1
+            )
+            futures[executor.submit(_run_single_group, task_args)] = gi
+
+        for future in as_completed(futures):
+            gi = futures[future]
+            try:
+                group_results = future.result()
+                for rv, result in group_results.items():
+                    all_results[rv] = result
+                    if cache:
+                        cache.set(res_type, rv, result)
+                elapsed = time.time() - start
+                print(f"  [GROUP {gi+1} DONE] {len(group_results)}/{len(groups[gi])} 成功  ({elapsed:.0f}s)")
+            except Exception as e:
+                elapsed = time.time() - start
+                print(f"  [GROUP {gi+1} ERROR] {e}  ({elapsed:.0f}s)")
+
+    sorted_results = [all_results[rv] for rv in resource_values if rv in all_results]
+    return sorted_results
+
 
 
 def _find_saturation_point(results: List[dict], resource_values: List[int],
@@ -208,11 +406,21 @@ def run_sensitivity_analysis(
     workers: int = None,
     two_step: bool = False,
     fine_step_ratio: int = 5,
+    warm_start: bool = False,
+    warm_start_groups: int = None,
+    use_cache: bool = True,
 ):
     if workers is None:
         workers = os.cpu_count() or 1
 
+    if warm_start and warm_start_groups is None:
+        warm_start_groups = 1
+
     os.makedirs(output_dir, exist_ok=True)
+
+    cache = None
+    if use_cache:
+        cache = BenefitCache(cache_dir=os.path.join(output_dir, '.cache'))
 
     print(f"\n加载基础输入: {base_input_path}")
     base_input = load_json(base_input_path)
@@ -223,8 +431,9 @@ def run_sensitivity_analysis(
         resources_to_analyze = [resource_type]
 
     for res_type in resources_to_analyze:
+        mode_str = "parallel" if not warm_start else (f"hybrid({warm_start_groups}groups)" if warm_start_groups > 1 else "serial-warm")
         print(f"\n{'=' * 70}")
-        print(f"分析资源: {res_type.upper()}  (workers={workers}, vectorized={vectorized}, two_step={two_step})")
+        print(f"分析资源: {res_type.upper()}  (workers={workers}, mode={mode_str}, vectorized={vectorized}, two_step={two_step})")
         print(f"{'=' * 70}")
 
         current_range = resource_range if resource_range is not None else DEFAULT_RANGES.get(res_type)
@@ -238,8 +447,19 @@ def run_sensitivity_analysis(
         print(f"资源范围: {min_val} - {max_val}, 步长: {step}, 采样点: {len(resource_values)}")
         print(f"其他资源约束置0，冻结资源: {','.join(r for r in RESOURCE_MAP.keys() if r != res_type)}")
 
-        tasks = _generate_temp_inputs(base_input, res_type, resource_values, output_dir)
-        results = _run_pipeline_parallel(tasks, workers, vectorized, res_type, resource_values)
+        if warm_start:
+            if warm_start_groups > 1:
+                actual_groups = min(warm_start_groups, len(resource_values))
+                print(f"\n--- 分组热启动模式：{actual_groups} 组并行，组内串行热启动 ---")
+                results = _run_pipeline_hybrid(base_input, res_type, resource_values,
+                                               output_dir, vectorized, actual_groups, cache)
+            else:
+                print(f"\n--- 纯串行热启动模式：按资源值递增顺序执行 ---")
+                results = _run_pipeline_warm_start(base_input, res_type, resource_values,
+                                                   output_dir, vectorized, cache)
+        else:
+            tasks = _generate_temp_inputs(base_input, res_type, resource_values, output_dir)
+            results = _run_pipeline_parallel(tasks, workers, vectorized, res_type, resource_values, cache)
 
         if two_step and len(results) >= 3:
             print(f"\n--- 两步法：粗扫完成，定位饱和区 ---")
@@ -251,10 +471,21 @@ def run_sensitivity_analysis(
                 fine_values = [v for v in range(lo, hi + 1, fine_step) if v not in set(resource_values)]
 
                 if fine_values:
-                    fine_workers = max(1, min(4, workers // 2))
-                    print(f"  饱和点 ≈ {sat_point}, 细扫区间: [{lo}, {hi}], 步长: {fine_step}, 新增点: {len(fine_values)}, workers={fine_workers}")
-                    fine_tasks = _generate_temp_inputs(base_input, res_type, fine_values, output_dir)
-                    fine_results = _run_pipeline_parallel(fine_tasks, fine_workers, vectorized, res_type, fine_values)
+                    if warm_start:
+                        if warm_start_groups > 1:
+                            fine_groups = min(warm_start_groups, len(fine_values))
+                            print(f"  饱和点 ≈ {sat_point}, 细扫区间: [{lo}, {hi}], 步长: {fine_step}, 新增点: {len(fine_values)} (分组热启动 {fine_groups}组)")
+                            fine_results = _run_pipeline_hybrid(base_input, res_type, fine_values,
+                                                                output_dir, vectorized, fine_groups, cache)
+                        else:
+                            print(f"  饱和点 ≈ {sat_point}, 细扫区间: [{lo}, {hi}], 步长: {fine_step}, 新增点: {len(fine_values)} (串行热启动)")
+                            fine_results = _run_pipeline_warm_start(base_input, res_type, fine_values,
+                                                                    output_dir, vectorized, cache)
+                    else:
+                        fine_workers = max(1, min(4, workers // 2))
+                        print(f"  饱和点 ≈ {sat_point}, 细扫区间: [{lo}, {hi}], 步长: {fine_step}, 新增点: {len(fine_values)}, workers={fine_workers}")
+                        fine_tasks = _generate_temp_inputs(base_input, res_type, fine_values, output_dir)
+                        fine_results = _run_pipeline_parallel(fine_tasks, fine_workers, vectorized, res_type, fine_values, cache)
                     results = _merge_results(results, fine_results)
                     resource_values = sorted(set(resource_values + fine_values))
                     print(f"  合并后总数据点: {len(results)}")
@@ -366,6 +597,8 @@ def main():
 Examples:
   python sensitivity_analysis.py --input base.json --resource camera --range 0 400 10 --workers 4
   python sensitivity_analysis.py --input base.json --resource camera --range 0 400 50 --two-step --workers 4
+  python sensitivity_analysis.py --input base.json --resource camera --range 0 400 10 --warm-start
+  python sensitivity_analysis.py --input base.json --resource camera --range 0 400 10 --warm-start --warm-start-groups 4
   python sensitivity_analysis.py --input base.json --resource all --vectorized
 
 Resources:
@@ -375,6 +608,12 @@ Resources:
   camp    - 营地 (default range: 0-5, step 1)
   fence   - 围栏 (default range: 0-100, step 10)
   all     - 分析所有资源
+
+Optimization Strategies:
+  --warm-start          启用热启动（默认1组=纯串行）
+  --warm-start-groups N 分组混合模式：N组并行，组内串行热启动（推荐 N=workers 数量）
+                        例如: --warm-start --warm-start-groups 4 表示4个并行组
+  --no-cache            禁用缓存（默认启用缓存避免重复计算）
         """
     )
     parser.add_argument("--input", "-i", required=True, help="基础输入 JSON 路径")
@@ -392,6 +631,13 @@ Resources:
                         help="启用两步法：粗扫全范围后自动定位饱和区细扫")
     parser.add_argument("--fine-step-ratio", type=int, default=5,
                         help="两步法细扫步长 = 粗步长 / 此值（默认5）")
+    parser.add_argument("--warm-start", action="store_true", default=False,
+                        help="启用热启动：按资源值递增顺序串行执行，低资源点结果作为高资源点初始解")
+    parser.add_argument("--warm-start-groups", type=int, default=None,
+                        help="分组混合模式的并行组数（需配合 --warm-start 使用）。"
+                             "默认1（纯串行），设为>1时启用分组并行，推荐设为workers数")
+    parser.add_argument("--no-cache", action="store_true", default=False,
+                        help="禁用缓存（默认启用缓存避免重复计算）")
 
     args = parser.parse_args()
 
@@ -412,6 +658,9 @@ Resources:
         workers=args.workers,
         two_step=args.two_step,
         fine_step_ratio=args.fine_step_ratio,
+        warm_start=args.warm_start,
+        warm_start_groups=args.warm_start_groups,
+        use_cache=not args.no_cache,
     )
 
     has_empty = False

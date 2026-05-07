@@ -54,7 +54,8 @@ class DSSAOptimizer:
                  config: DSSAConfig = None, fixed_fences: Dict[Tuple[int, int], int] = None,
                  force_full_deployment: bool = True, frozen_resources: List[str] = None,
                  input_grids: List[Dict] = None, raw_risk_map: Dict = None,
-                 boundary_locations: List[Tuple[float, float]] = None):
+                 boundary_locations: List[Tuple[float, float]] = None,
+                 warm_start_solution: DeploymentSolution = None):
         self.coverage_model = coverage_model
         self.constraints = constraints
         self.config = config or DSSAConfig()
@@ -69,7 +70,8 @@ class DSSAOptimizer:
         self.fitness_history = []
         self.best_solution = None
         self.best_fitness = float('-inf')
-        self.initial_solution = None  # 新增：保存初始解决方案，用于冻结资源
+        self.initial_solution = None
+        self.warm_start_solution = warm_start_solution
 
         # Stagnation tracking state
         self.stagnation_count = 0
@@ -281,6 +283,204 @@ class DSSAOptimizer:
         self.population = []
         for _ in range(self.config.population_size):
             self.population.append(self._initialize_solution())
+
+        if self.warm_start_solution is not None:
+            self._inject_warm_start(self.warm_start_solution)
+
+    def _inject_warm_start(self, warm_solution: DeploymentSolution):
+        injected_count = max(1, self.config.population_size // 3)
+        repaired = self._repair_warm_start(warm_solution)
+        for i in range(injected_count):
+            if i < len(self.population):
+                if i == 0:
+                    self.population[i] = repaired
+                else:
+                    perturbed = self._perturb_solution(repaired, strength=0.3)
+                    self.population[i] = perturbed
+        print(f"      [WARM-START] 注入 {injected_count} 个热启动个体到种群")
+
+    def _repair_warm_start(self, warm_solution: DeploymentSolution) -> DeploymentSolution:
+        repaired = DeploymentSolution(
+            cameras=dict(warm_solution.cameras),
+            camps=dict(warm_solution.camps),
+            drones=dict(warm_solution.drones),
+            rangers=dict(warm_solution.rangers),
+            fences=dict(warm_solution.fences)
+        )
+        max_cam = self.constraints.get('max_cameras_per_grid', 1)
+        target_cam = self.constraints['total_cameras']
+        for gid in list(repaired.cameras.keys()):
+            repaired.cameras[gid] = min(repaired.cameras[gid], max_cam)
+        deployed_cam = sum(repaired.cameras.values())
+        if deployed_cam > target_cam:
+            sorted_gids = sorted(repaired.cameras.keys(), key=lambda g: repaired.cameras[g], reverse=True)
+            for gid in sorted_gids:
+                if deployed_cam <= target_cam:
+                    break
+                excess = min(repaired.cameras[gid], deployed_cam - target_cam)
+                repaired.cameras[gid] -= excess
+                deployed_cam -= excess
+                if repaired.cameras[gid] <= 0:
+                    del repaired.cameras[gid]
+        elif deployed_cam < target_cam:
+            grid_ids_ordered = self._get_prioritized_grid_order()
+            for gid in grid_ids_ordered:
+                if deployed_cam >= target_cam:
+                    break
+                if self.coverage_model.deployment_matrix['camera'].get(gid, 0) == 1:
+                    current = repaired.cameras.get(gid, 0)
+                    can_add = min(max_cam - current, target_cam - deployed_cam)
+                    if can_add > 0:
+                        repaired.cameras[gid] = current + can_add
+                        deployed_cam += can_add
+
+        max_drone = self.constraints.get('max_drones_per_grid', 1)
+        target_drone = self.constraints['total_drones']
+        for gid in list(repaired.drones.keys()):
+            repaired.drones[gid] = min(repaired.drones[gid], max_drone)
+        deployed_drone = sum(repaired.drones.values())
+        if deployed_drone > target_drone:
+            sorted_gids = sorted(repaired.drones.keys(), key=lambda g: repaired.drones[g], reverse=True)
+            for gid in sorted_gids:
+                if deployed_drone <= target_drone:
+                    break
+                excess = min(repaired.drones[gid], deployed_drone - target_drone)
+                repaired.drones[gid] -= excess
+                deployed_drone -= excess
+                if repaired.drones[gid] <= 0:
+                    del repaired.drones[gid]
+        elif deployed_drone < target_drone:
+            grid_ids_ordered = self._get_prioritized_grid_order()
+            for gid in grid_ids_ordered:
+                if deployed_drone >= target_drone:
+                    break
+                if self.coverage_model.deployment_matrix['drone'].get(gid, 0) == 1:
+                    current = repaired.drones.get(gid, 0)
+                    can_add = min(max_drone - current, target_drone - deployed_drone)
+                    if can_add > 0:
+                        repaired.drones[gid] = current + can_add
+                        deployed_drone += can_add
+
+        max_camp = self.constraints.get('max_camps_per_grid', 1)
+        target_camp = self.constraints['total_camps']
+        for gid in list(repaired.camps.keys()):
+            repaired.camps[gid] = min(repaired.camps[gid], max_camp)
+        deployed_camp = sum(repaired.camps.values())
+        if deployed_camp > target_camp:
+            sorted_gids = sorted(repaired.camps.keys(), key=lambda g: repaired.camps[g], reverse=True)
+            for gid in sorted_gids:
+                if deployed_camp <= target_camp:
+                    break
+                excess = min(repaired.camps[gid], deployed_camp - target_camp)
+                repaired.camps[gid] -= excess
+                deployed_camp -= excess
+                if repaired.camps[gid] <= 0:
+                    del repaired.camps[gid]
+        elif deployed_camp < target_camp:
+            grid_ids_ordered = self._get_prioritized_grid_order()
+            for gid in grid_ids_ordered:
+                if deployed_camp >= target_camp:
+                    break
+                if self.coverage_model.deployment_matrix['camp'].get(gid, 0) == 1:
+                    current = repaired.camps.get(gid, 0)
+                    can_add = min(max_camp - current, target_camp - deployed_camp)
+                    if can_add > 0:
+                        repaired.camps[gid] = current + can_add
+                        deployed_camp += can_add
+
+        target_ranger = self.constraints['total_patrol']
+        deployed_ranger = sum(repaired.rangers.values())
+        if deployed_ranger > target_ranger:
+            sorted_gids = sorted(repaired.rangers.keys(), key=lambda g: repaired.rangers[g], reverse=True)
+            for gid in sorted_gids:
+                if deployed_ranger <= target_ranger:
+                    break
+                excess = min(repaired.rangers[gid], deployed_ranger - target_ranger)
+                repaired.rangers[gid] -= excess
+                deployed_ranger -= excess
+                if repaired.rangers[gid] <= 0:
+                    del repaired.rangers[gid]
+        elif deployed_ranger < target_ranger:
+            grid_ids_ordered = self._get_prioritized_grid_order()
+            for gid in grid_ids_ordered:
+                if deployed_ranger >= target_ranger:
+                    break
+                if gid not in repaired.camps and self.coverage_model.deployment_matrix['patrol'].get(gid, 0) == 1:
+                    repaired.rangers[gid] = repaired.rangers.get(gid, 0) + 1
+                    deployed_ranger += 1
+
+        target_fence = int(self.constraints['total_fence_length'])
+        deployed_fence = sum(1 for v in repaired.fences.values() if v > 0)
+        if deployed_fence > target_fence:
+            fence_items = [(k, v) for k, v in repaired.fences.items() if v > 0]
+            random.shuffle(fence_items)
+            for i in range(deployed_fence - target_fence):
+                if i < len(fence_items):
+                    del repaired.fences[fence_items[i][0]]
+        elif deployed_fence < target_fence:
+            new_fences = self._initialize_fences()
+            for k, v in new_fences.items():
+                if k not in repaired.fences and deployed_fence < target_fence:
+                    repaired.fences[k] = v
+                    deployed_fence += 1
+
+        return repaired
+
+    def _perturb_solution(self, solution: DeploymentSolution, strength: float = 0.3) -> DeploymentSolution:
+        perturbed = DeploymentSolution(
+            cameras=dict(solution.cameras),
+            camps=dict(solution.camps),
+            drones=dict(solution.drones),
+            rangers=dict(solution.rangers),
+            fences=dict(solution.fences)
+        )
+        grid_ids_ordered = self._get_prioritized_grid_order()
+
+        if random.random() < strength and perturbed.cameras:
+            keys = list(perturbed.cameras.keys())
+            src = random.choice(keys)
+            dst_candidates = [g for g in grid_ids_ordered
+                              if g not in perturbed.cameras
+                              and self.coverage_model.deployment_matrix['camera'].get(g, 0) == 1]
+            if dst_candidates:
+                dst = random.choice(dst_candidates)
+                perturbed.cameras[dst] = perturbed.cameras[src]
+                del perturbed.cameras[src]
+
+        if random.random() < strength and perturbed.drones:
+            keys = list(perturbed.drones.keys())
+            src = random.choice(keys)
+            dst_candidates = [g for g in grid_ids_ordered
+                              if g not in perturbed.drones
+                              and self.coverage_model.deployment_matrix['drone'].get(g, 0) == 1]
+            if dst_candidates:
+                dst = random.choice(dst_candidates)
+                perturbed.drones[dst] = perturbed.drones[src]
+                del perturbed.drones[src]
+
+        if random.random() < strength and perturbed.camps:
+            keys = list(perturbed.camps.keys())
+            src = random.choice(keys)
+            dst_candidates = [g for g in grid_ids_ordered
+                              if g not in perturbed.camps
+                              and self.coverage_model.deployment_matrix['camp'].get(g, 0) == 1]
+            if dst_candidates:
+                dst = random.choice(dst_candidates)
+                perturbed.camps[dst] = perturbed.camps[src]
+                del perturbed.camps[src]
+
+        if random.random() < strength and perturbed.rangers:
+            keys = list(perturbed.rangers.keys())
+            src = random.choice(keys)
+            dst_candidates = [g for g in grid_ids_ordered
+                              if g not in perturbed.rangers
+                              and self.coverage_model.deployment_matrix['patrol'].get(g, 0) == 1]
+            if dst_candidates:
+                dst = random.choice(dst_candidates)
+                perturbed.rangers[dst] = perturbed.rangers[src]
+                del perturbed.rangers[src]
+
+        return perturbed
 
     def _apply_frozen_resources(self, solution: DeploymentSolution) -> DeploymentSolution:
         """应用冻结资源：将冻结的资源替换为初始解决方案中的值"""
