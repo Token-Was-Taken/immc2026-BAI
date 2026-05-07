@@ -33,6 +33,7 @@ from grid_model import HexGridModel
 from coverage_model import CoverageModel
 from coverage_model_vectorized import VectorizedCoverageModel
 from dssa_optimizer import DSSAOptimizer, DSSAConfig
+from coverage_model import DeploymentSolution
 
 
 def load_input(path: str) -> dict:
@@ -327,7 +328,9 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             save_iteration_visualization=dc.get('save_iteration_visualization', False),
             use_risk_priority=dc.get('use_risk_priority', False),
             high_risk_percentage=dc.get('high_risk_percentage', 0.3),
-            high_risk_perturbation_priority=dc.get('high_risk_perturbation_priority', 0.7)
+            high_risk_perturbation_priority=dc.get('high_risk_perturbation_priority', 0.7),
+            use_marginal_contribution_repair=dc.get('use_marginal_contribution_repair', False),
+            skip_conflict_resolution=dc.get('skip_conflict_resolution', False),
         )
     if dssa_config.output_dir is None:
         dssa_config.output_dir = output_dir

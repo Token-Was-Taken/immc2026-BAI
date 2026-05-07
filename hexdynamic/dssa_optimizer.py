@@ -48,6 +48,10 @@ class DSSAConfig:
     diversity_min_threshold: float = 0.3  # 种群多样性最低阈值（低于此值时注入随机解）
     diversity_inject_ratio: float = 0.2  # 多样性过低时注入随机解的比例
 
+    # --- 修复策略配置 ---
+    use_marginal_contribution_repair: bool = False  # 是否使用边际贡献 leave-one-out 修复超量（默认关闭，用快速随机移除）
+    skip_conflict_resolution: bool = False  # 是否跳过资源冲突解决（当部署矩阵确保无重叠时可开启）
+
 
 class DSSAOptimizer:
     def __init__(self, coverage_model: CoverageModel, constraints: Dict[str, any],
@@ -99,6 +103,9 @@ class DSSAOptimizer:
             max_workers=min(16, self.config.population_size),
             thread_name_prefix='fitness'
         )
+
+        self._fitness_cache = {}
+        self._fitness_cache_max_size = 10000
 
     def _initialize_solution(self) -> DeploymentSolution:
         """初始化解决方案
@@ -235,7 +242,7 @@ class DSSAOptimizer:
             rangers=rangers,
             fences=fences
         )
-        return self.coverage_model.repair_solution(solution, self.constraints, self.force_full_deployment)
+        return self.coverage_model.repair_solution(solution, self.constraints, self.force_full_deployment, self.config.use_marginal_contribution_repair, self.config.skip_conflict_resolution)
 
     def _initialize_fences(self) -> Dict[Tuple[int, int], int]:
         """初始化围栏部署
@@ -504,18 +511,33 @@ class DSSAOptimizer:
         """Evaluate fitness for multiple solutions in parallel using thread pool."""
         futures = [self._fitness_executor.submit(self.evaluate_fitness, sol)
                    for sol in solutions]
-        return [f.result() for f in concurrent.futures.as_completed(futures)]
+        return [f.result() for f in futures]
 
     def evaluate_fitness(self, solution: DeploymentSolution) -> float:
+        cache_key = self._make_cache_key(solution)
+        if cache_key in self._fitness_cache:
+            return self._fitness_cache[cache_key]
+
         is_valid, violations = self.coverage_model.validate_solution(solution, self.constraints)
         if not is_valid:
-            return -len(violations) * 1000
-        
-        # Use time-aware fitness if configured
-        if self.config.use_time_aware_fitness:
-            return self.coverage_model.calculate_time_aware_total_benefit(solution)
+            fitness = -len(violations) * 1000
+        elif self.config.use_time_aware_fitness:
+            fitness = self.coverage_model.calculate_time_aware_total_benefit(solution)
         else:
-            return self.coverage_model.calculate_total_benefit(solution)
+            fitness = self.coverage_model.calculate_total_benefit(solution)
+
+        if len(self._fitness_cache) < self._fitness_cache_max_size:
+            self._fitness_cache[cache_key] = fitness
+        return fitness
+
+    def _make_cache_key(self, solution: DeploymentSolution) -> int:
+        return hash((
+            tuple(sorted(solution.cameras.items())),
+            tuple(sorted(solution.camps.items())),
+            tuple(sorted(solution.drones.items())),
+            tuple(sorted(solution.rangers.items())),
+            tuple(sorted(solution.fences.items())),
+        ))
 
     def _get_exploration_alpha(self, iteration: int) -> float:
         """Return the effective exploration alpha for this iteration.
@@ -772,7 +794,9 @@ class DSSAOptimizer:
         )
 
         return self.coverage_model.repair_solution(
-            result, self.constraints, self.force_full_deployment
+            result, self.constraints, self.force_full_deployment,
+            self.config.use_marginal_contribution_repair,
+            self.config.skip_conflict_resolution
         )
 
     def _update_followers(self, alpha: float):
@@ -887,7 +911,9 @@ class DSSAOptimizer:
         )
 
         return self.coverage_model.repair_solution(
-            result, self.constraints, self.force_full_deployment
+            result, self.constraints, self.force_full_deployment,
+            self.config.use_marginal_contribution_repair,
+            self.config.skip_conflict_resolution
         )
 
     def _update_scouts(self):
@@ -900,15 +926,16 @@ class DSSAOptimizer:
         num_scouts = int(self.config.population_size * self.config.scout_ratio)
         start_idx = self.config.population_size - num_scouts
 
-        for i in range(start_idx, self.config.population_size):
-            solution = self.population[i]
-            fitness = self.evaluate_fitness(solution)
+        scout_solutions = self.population[start_idx:self.config.population_size]
+        scout_fitnesses = self._evaluate_fitness_parallel(scout_solutions)
 
+        for i, (solution, fitness) in enumerate(zip(scout_solutions, scout_fitnesses)):
+            pop_idx = start_idx + i
             if self.best_fitness > 0 and fitness < self.config.scout_reset_threshold * self.best_fitness:
                 if fitness < 0.5 * self.best_fitness:
-                    self.population[i] = self._initialize_solution()
+                    self.population[pop_idx] = self._initialize_solution()
                 else:
-                    self.population[i] = self._partial_reset_scout(solution)
+                    self.population[pop_idx] = self._partial_reset_scout(solution)
 
     def _update_best_solution(self):
         fitnesses = self._evaluate_fitness_parallel(self.population)
@@ -1689,7 +1716,9 @@ class DSSAOptimizer:
             result = self._discrete_reshuffle(solution)
 
         return self.coverage_model.repair_solution(
-            result, self.constraints, self.force_full_deployment
+            result, self.constraints, self.force_full_deployment,
+            self.config.use_marginal_contribution_repair,
+            self.config.skip_conflict_resolution
         )
 
     def _calculate_diversity(self) -> float:
@@ -1806,5 +1835,7 @@ class DSSAOptimizer:
         )
 
         return self.coverage_model.repair_solution(
-            result, self.constraints, self.force_full_deployment
+            result, self.constraints, self.force_full_deployment,
+            self.config.use_marginal_contribution_repair,
+            self.config.skip_conflict_resolution
         )
