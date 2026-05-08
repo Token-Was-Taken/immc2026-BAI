@@ -10,6 +10,16 @@ import concurrent.futures
 from coverage_model import CoverageModel, DeploymentSolution
 
 
+def _snapshot_solution(solution: DeploymentSolution) -> DeploymentSolution:
+    return DeploymentSolution(
+        cameras=dict(solution.cameras),
+        camps=dict(solution.camps),
+        drones=dict(solution.drones),
+        rangers=dict(solution.rangers),
+        fences=dict(solution.fences)
+    )
+
+
 @dataclass
 class DSSAConfig:
     population_size: int = 50
@@ -89,9 +99,10 @@ class DSSAOptimizer:
         self.output_dir = self.config.output_dir
         self._output_lock = threading.Lock()
         self._async_threads = []
-        self._output_queue = queue.Queue()
-        self._output_worker = None
-        self._output_worker_started = False
+        self._json_queue = queue.Queue()
+        self._plot_queue = queue.Queue()
+        self._json_worker_started = False
+        self._plot_worker_started = False
 
         # 保存构建输出 JSON 所需的参数
         self.input_grids = input_grids
@@ -1072,13 +1083,16 @@ class DSSAOptimizer:
               f"  Total = {total_elapsed:.2f}s"
               f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
 
-        if self._output_worker_started:
-            self._output_queue.put(None)
-            self._output_worker.join(timeout=120)
-            if self._output_worker.is_alive():
-                print("[ASYNC] 输出工作线程仍在运行，强制等待...")
-                self._output_worker.join(timeout=60)
-            print("[ASYNC] 所有异步输出任务完成！")
+        if self._json_worker_started:
+            self._json_queue.put(None)
+        if self._plot_worker_started:
+            self._plot_queue.put(None)
+        print("[ASYNC] 等待异步输出任务完成...")
+        if self._json_worker_started:
+            self._json_queue.join()
+        if self._plot_worker_started:
+            self._plot_queue.join()
+        print("[ASYNC] 所有异步输出任务完成！")
 
         for thread in self._async_threads:
             if thread.is_alive():
@@ -1112,59 +1126,72 @@ class DSSAOptimizer:
             'statistics': self.get_solution_statistics(solution)
         }
 
-    def _ensure_output_worker(self):
-        if not self._output_worker_started:
-            self._output_worker = threading.Thread(target=self._output_worker_loop, daemon=True)
-            self._output_worker.start()
-            self._output_worker_started = True
+    def _ensure_json_worker(self):
+        if not self._json_worker_started:
+            t = threading.Thread(target=self._json_worker_loop, daemon=True, name='json-worker')
+            t.start()
+            self._json_worker_started = True
 
-    def _output_worker_loop(self):
+    def _ensure_plot_worker(self):
+        if not self._plot_worker_started:
+            t = threading.Thread(target=self._plot_worker_loop, daemon=True, name='plot-worker')
+            t.start()
+            self._plot_worker_started = True
+
+    def _json_worker_loop(self):
         while True:
-            task = self._output_queue.get()
+            task = self._json_queue.get()
             if task is None:
-                self._output_queue.task_done()
+                self._json_queue.task_done()
                 break
             try:
-                task_type = task['type']
-                if task_type == 'json':
-                    self._write_json_files(task['iter_dir'], task['producers_data'],
-                                           task['followers_data'], task['scouts_data'])
-                elif task_type == 'plot':
-                    self._plot_deployment_map(task['iteration'], task['output_base'],
-                                              task['solution'], task['hex_size'],
-                                              task['boundary_xy'], task['terrain_patches'])
+                iter_dir = task['iter_dir']
+                os.makedirs(iter_dir, exist_ok=True)
+                producers_data = [self._serialize_solution(s) for s in task['producers']]
+                followers_data = [self._serialize_solution(s) for s in task['followers']]
+                scouts_data = [self._serialize_solution(s) for s in task['scouts']]
+                with open(os.path.join(iter_dir, "producers.json"), 'w', encoding='utf-8') as f:
+                    json.dump(producers_data, f, ensure_ascii=False)
+                with open(os.path.join(iter_dir, "followers.json"), 'w', encoding='utf-8') as f:
+                    json.dump(followers_data, f, ensure_ascii=False)
+                with open(os.path.join(iter_dir, "scouts.json"), 'w', encoding='utf-8') as f:
+                    json.dump(scouts_data, f, ensure_ascii=False)
             except Exception as e:
-                print(f"[WARN] Output worker error: {e}")
+                print(f"[WARN] JSON worker error: {e}")
             finally:
-                self._output_queue.task_done()
+                self._json_queue.task_done()
 
-    def _write_json_files(self, iter_dir, producers_data, followers_data, scouts_data):
-        try:
-            os.makedirs(iter_dir, exist_ok=True)
-            with open(os.path.join(iter_dir, "producers.json"), 'w', encoding='utf-8') as f:
-                json.dump(producers_data, f, ensure_ascii=False)
-            with open(os.path.join(iter_dir, "followers.json"), 'w', encoding='utf-8') as f:
-                json.dump(followers_data, f, ensure_ascii=False)
-            with open(os.path.join(iter_dir, "scouts.json"), 'w', encoding='utf-8') as f:
-                json.dump(scouts_data, f, ensure_ascii=False)
-        except (IOError, OSError) as e:
-            print(f"Warning: Failed to write iteration output: {e}")
+    def _plot_worker_loop(self):
+        while True:
+            task = self._plot_queue.get()
+            if task is None:
+                self._plot_queue.task_done()
+                break
+            try:
+                self._plot_deployment_map(
+                    task['iteration'], task['output_base'],
+                    task['solution'], task['hex_size'],
+                    task['boundary_xy'], task['terrain_patches']
+                )
+            except Exception as e:
+                print(f"[WARN] Plot worker error: {e}")
+            finally:
+                self._plot_queue.task_done()
 
     def _async_output_iteration_results(self, iteration: int, producers: List[DeploymentSolution],
                                      followers: List[DeploymentSolution], scouts: List[DeploymentSolution]):
         if not self.output_dir:
             return
-        self._ensure_output_worker()
+        self._ensure_json_worker()
         iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
-        producers_data = [self._serialize_solution(s) for s in producers]
-        followers_data = [self._serialize_solution(s) for s in followers]
-        scouts_data = [self._serialize_solution(s) for s in scouts]
-        self._output_queue.put({
-            'type': 'json',
+        producer_snapshots = [_snapshot_solution(s) for s in producers]
+        follower_snapshots = [_snapshot_solution(s) for s in followers]
+        scout_snapshots = [_snapshot_solution(s) for s in scouts]
+        self._json_queue.put({
             'iter_dir': iter_dir,
-            'producers_data': producers_data,
-            'followers_data': followers_data,
-            'scouts_data': scouts_data
+            'producers': producer_snapshots,
+            'followers': follower_snapshots,
+            'scouts': scout_snapshots
         })
 
     def _build_output_for_solution(self, solution: DeploymentSolution,
@@ -1297,31 +1324,25 @@ class DSSAOptimizer:
             if not getattr(self, '_viz_cache_initialized', False):
                 self._init_viz_cache(solution, fitness=self.best_fitness)
 
-        out_base = self._output_for_viz_cache
-        hex_size = self._hex_size_cache
-        boundary_xy = self._boundary_xy_cache
-        terrain_patches = list(self._terrain_patches_cache)
-
-        import copy
-        out_base_copy = copy.deepcopy(out_base)
-
-        self._ensure_output_worker()
-        self._output_queue.put({
-            'type': 'plot',
+        self._ensure_plot_worker()
+        self._plot_queue.put({
             'iteration': iteration,
-            'output_base': out_base_copy,
-            'solution': solution,
-            'hex_size': hex_size,
-            'boundary_xy': boundary_xy,
-            'terrain_patches': terrain_patches
+            'output_base': self._output_for_viz_cache,
+            'solution': _snapshot_solution(solution),
+            'hex_size': self._hex_size_cache,
+            'boundary_xy': self._boundary_xy_cache,
+            'terrain_patches': list(self._terrain_patches_cache)
         })
 
     def _plot_deployment_map(self, iteration, output_base, solution, hex_size, boundary_xy, terrain_patches):
         try:
+            import copy
             import gc
             import matplotlib
             import matplotlib.pyplot as plt
             matplotlib.rcParams["figure.max_open_warning"] = 0
+
+            output_base = copy.deepcopy(output_base)
 
             iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
             os.makedirs(iter_dir, exist_ok=True)
