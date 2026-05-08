@@ -11,6 +11,14 @@
   │
   ▼
 [Marker] 在图片上绘制六边形网格，标注地形与物种信息
+  │  导出 grid-coordinates.json
+  │
+  ├─→ [marker_to_pipeline.py] 转换为 pipeline 输入格式
+  │     输出 pipeline_input.json
+  │
+  │  或者
+  │
+  [Marker] 直接导出 Pipeline JSON
   │  导出 pipeline_input.json
   │
   │  或者
@@ -72,6 +80,49 @@
 > 配置面板参数说明见第二节（与 `generate_map.py` 参数一致）。
 
 > 未标注颜色的格子默认视为 SparseGrass。主路/小路格子坐标自动提取为 `road_locations`，水坑格子自动提取为 `water_locations`。
+
+### 导出 grid-coordinates.json 后转换
+
+完成标注后点击 `📤 导出JSON`，下载 `grid-coordinates.json`。然后使用 `marker_to_pipeline.py` 转换：
+
+**文件**：`marker_to_pipeline.py`
+
+```bash
+# 基本用法
+python marker_to_pipeline.py marker/grid-coordinates.json -o marker/pipeline_input.json
+
+# 指定时间和季节
+python marker_to_pipeline.py marker/grid-coordinates.json -o pipeline_input.json \
+    --hour_of_day 22 --season RAINY --use_temporal_factors
+
+# 固定随机种子
+python marker_to_pipeline.py marker/grid-coordinates.json -o pipeline_input.json --seed 42
+```
+
+#### colorTag 到地形映射
+
+| colorTag | 地形类型       | 说明       |
+| :------: | :--------- | :------- |
+|    1     | DenseGrass | 森林密集区（绿色） |
+|    2     | SparseGrass | 森林稀疏区（红色） |
+|    3     | WaterHole  | 水坑（蓝色）   |
+|    4     | SparseGrass | 干坑（黄色）→ 视为稀疏草地 |
+|    5     | Road       | 主路（紫色）   |
+|    6     | Road       | 小路（橙色）→ 视为道路 |
+|    7     | SaltMarsh  | 盐沼（青色）   |
+|    0     | SparseGrass | 未知/其他 → 默认稀疏草地 |
+
+#### 物种密度规则
+
+- 犀牛(rhino)和大象(elephant)：只在 SparseGrass 和 DenseGrass 有密度，WaterHole/SaltMarsh/Road 密度为 0
+- 鸟类(bird)：集中在 SaltMarsh（0.6\~1.0），其他地形密度较低
+
+#### 命令行参数
+
+与 `generate_map.py` 参数基本一致，主要差异：
+- 第一个位置参数为 `input`（grid-coordinates.json 文件路径），而非 `-m/-n`
+- 地图尺寸从 grid-coordinates.json 中自动推断
+- 坐标系使用 odd-r offset（与 Marker 工具一致）
 
 ***
 
@@ -2093,7 +2144,14 @@ sobol_coverage_results/
 
 ## 十二、变更历史（Change History）
 
-### 2026-05-08：文档全面审查与更新
+### 2026-05-08：文档全面审查与更新（v2.4）
+
+- **文档版本升级至 2.4**：基于完整代码审查，补充 `marker_to_pipeline.py` 独立章节
+- **整体流程图更新**：补充 Marker 导出 `grid-coordinates.json` → `marker_to_pipeline.py` 转换路径
+- **新增 `marker_to_pipeline.py` 使用说明**：colorTag 地形映射表、物种密度规则、与 `generate_map.py` 参数差异
+- **核心代码详细设计文档**：新增 `docs/design.md`，覆盖系统架构、模块设计、数据流、关键算法
+
+### 2026-05-08：文档全面审查与更新（v2.3）
 
 - **文档版本升级至 2.3**：基于完整代码审查，全面校验文档与代码的一致性
 - **新增根目录工具说明**：
@@ -2228,5 +2286,5 @@ sobol_coverage_results/
 
 ***
 
-*文档版本: 2.3*\
+*文档版本: 2.4\
 *最后更新: 2026-05-08*
