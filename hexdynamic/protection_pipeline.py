@@ -33,11 +33,47 @@ from grid_model import HexGridModel
 from coverage_model import CoverageModel
 from coverage_model_vectorized import VectorizedCoverageModel
 from dssa_optimizer import DSSAOptimizer, DSSAConfig
+from coverage_model import DeploymentSolution
 
 
 def load_input(path: str) -> dict:
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+
+def load_warm_start_solution(output_json_path: str) -> DeploymentSolution:
+    with open(output_json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    cameras = {}
+    camps = {}
+    drones = {}
+    rangers = {}
+    fences = {}
+
+    for grid in data.get('grids', []):
+        gid = grid['grid_id']
+        dep = grid.get('deployment', {})
+        if dep.get('camera', 0) > 0:
+            cameras[gid] = dep['camera']
+        if dep.get('drone', 0) > 0:
+            drones[gid] = dep['drone']
+        if dep.get('camp', 0) > 0:
+            camps[gid] = dep['camp']
+        if dep.get('patrol_rangers', 0) > 0:
+            rangers[gid] = dep['patrol_rangers']
+        fence_info = grid.get('fences', {})
+        if fence_info and fence_info.get('fence_count', 0) > 0:
+            for direction in fence_info.get('boundary_edge_list', []):
+                fences[(gid, direction)] = 1
+
+    return DeploymentSolution(
+        cameras=cameras,
+        camps=camps,
+        drones=drones,
+        rangers=rangers,
+        fences=fences
+    )
 
 
 def build_species_config(species_cfg: dict) -> dict:
@@ -188,7 +224,8 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
             r=g['r'],
             terrain_type=g.get('terrain_type', 'SparseGrass'),
             risk=risk_map.get(g['grid_id'], 0.0),
-            temporal_factor=temporal_factor_map.get(g['grid_id'], 1.0)
+            temporal_factor=temporal_factor_map.get(g['grid_id'], 1.0),
+            species_densities=g.get('species_densities', {})
         )
         for g in data['grids']
     ]
@@ -231,7 +268,7 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
     return loader
 
 
-def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None):
+def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None, warm_start_path: str = None):
     print(f"[1/4] Read input: {input_path}")
     data = load_input(input_path)
 
@@ -291,7 +328,9 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             save_iteration_visualization=dc.get('save_iteration_visualization', False),
             use_risk_priority=dc.get('use_risk_priority', False),
             high_risk_percentage=dc.get('high_risk_percentage', 0.3),
-            high_risk_perturbation_priority=dc.get('high_risk_perturbation_priority', 0.7)
+            high_risk_perturbation_priority=dc.get('high_risk_perturbation_priority', 0.7),
+            use_marginal_contribution_repair=dc.get('use_marginal_contribution_repair', False),
+            skip_conflict_resolution=dc.get('skip_conflict_resolution', False),
         )
     if dssa_config.output_dir is None:
         dssa_config.output_dir = output_dir
@@ -332,6 +371,14 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         if frozen_resources_list:
             print(f"      [FROZEN] 冻结资源模式：{', '.join(frozen_resources_list)} 将保持不变")
     
+    warm_start_solution = None
+    if warm_start_path:
+        try:
+            warm_start_solution = load_warm_start_solution(warm_start_path)
+            print(f"      [WARM-START] 从 {warm_start_path} 加载热启动解")
+        except Exception as e:
+            print(f"      [WARM-START] 加载热启动解失败: {e}，将使用冷启动")
+
     # 提取 boundary_locations
     boundary_locations = None
     map_config = data.get('map_config', {})
@@ -351,7 +398,8 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
                              frozen_resources=frozen_resources_list,
                              input_grids=data.get('grids', []),
                              raw_risk_map=raw_risk_map,
-                             boundary_locations=boundary_locations)
+                             boundary_locations=boundary_locations,
+                             warm_start_solution=warm_start_solution)
     best_solution, best_fitness, fitness_history = optimizer.optimize()
 
     # 打印资源部署总结
@@ -609,5 +657,11 @@ Vectorized Mode:
         default=None,
         help="Comma-separated list of resources to freeze (e.g., 'patrol,camera,drone'). Frozen resources will not be optimized."
     )
+    parser.add_argument(
+        "--warm-start",
+        type=str,
+        default=None,
+        help="Path to a previous output JSON to use as warm-start solution for the optimizer"
+    )
     args = parser.parse_args()
-    run_pipeline(args.input, args.output, vectorized=args.vectorized, allow_partial_deployment=args.allow_partial_deployment, freeze_resources=args.freeze_resources)
+    run_pipeline(args.input, args.output, vectorized=args.vectorized, allow_partial_deployment=args.allow_partial_deployment, freeze_resources=args.freeze_resources, warm_start_path=args.warm_start)

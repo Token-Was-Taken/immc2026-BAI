@@ -16,7 +16,7 @@ class HexCoordinates:
 
 
 class HexGridModel:
-    _MAX_PRECOMPUTE_BYTES = 3 * 1024**3
+    _MAX_PRECOMPUTE_BYTES = 800 * 1024**2
 
     def __init__(self, grids: List[GridData], max_radius: Optional[int] = None):
         self.grids = grids

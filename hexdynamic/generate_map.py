@@ -329,6 +329,8 @@ def generate(m: int, n: int, args) -> dict:
             "scout_ratio": args.scout_ratio,
             "ST": args.ST,
             "R2": args.R2,
+            "use_marginal_contribution_repair": False,
+            "skip_conflict_resolution": False,
         },
         "grids": grids,
     }
