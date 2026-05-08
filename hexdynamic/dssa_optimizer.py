@@ -531,13 +531,17 @@ class DSSAOptimizer:
         return fitness
 
     def _make_cache_key(self, solution: DeploymentSolution) -> int:
-        return hash((
+        if solution._cache_key is not None:
+            return solution._cache_key
+        key = hash((
             tuple(sorted(solution.cameras.items())),
             tuple(sorted(solution.camps.items())),
             tuple(sorted(solution.drones.items())),
             tuple(sorted(solution.rangers.items())),
             tuple(sorted(solution.fences.items())),
         ))
+        solution._cache_key = key
+        return key
 
     def _get_exploration_alpha(self, iteration: int) -> float:
         """Return the effective exploration alpha for this iteration.
@@ -720,6 +724,9 @@ class DSSAOptimizer:
         for i, new_fit, old_fit in zip(indices, new_fitnesses, old_fitnesses):
             if new_fit > old_fit:
                 self.population[i] = new_solutions[i]
+            if new_fit > self.best_fitness:
+                self.best_fitness = new_fit
+                self.best_solution = new_solutions[i]
 
         return escape_count
 
@@ -851,6 +858,9 @@ class DSSAOptimizer:
         for i, new_fit, old_fit in zip(indices, new_fitnesses, old_fitnesses):
             if new_fit > old_fit:
                 self.population[i] = new_solutions[i - num_producers]
+            if new_fit > self.best_fitness:
+                self.best_fitness = new_fit
+                self.best_solution = new_solutions[i - num_producers]
 
         return escape_count
 
@@ -931,6 +941,9 @@ class DSSAOptimizer:
 
         for i, (solution, fitness) in enumerate(zip(scout_solutions, scout_fitnesses)):
             pop_idx = start_idx + i
+            if fitness > self.best_fitness:
+                self.best_fitness = fitness
+                self.best_solution = solution
             if self.best_fitness > 0 and fitness < self.config.scout_reset_threshold * self.best_fitness:
                 if fitness < 0.5 * self.best_fitness:
                     self.population[pop_idx] = self._initialize_solution()
@@ -975,13 +988,10 @@ class DSSAOptimizer:
             escape_producers = self._update_producers(iteration, effective_alpha)
             escape_followers = self._update_followers(effective_alpha)
             self._update_scouts()
-            self._update_best_solution()
 
-            # 多样性监测与增强（方案C）
             diversity = self._calculate_diversity()
             if diversity < self.config.diversity_min_threshold:
                 self._inject_random_solutions(self.config.diversity_inject_ratio)
-                self._update_best_solution()
 
             # Update stagnation tracking state
             if self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance:
@@ -1076,18 +1086,12 @@ class DSSAOptimizer:
         }
 
     def _serialize_solution(self, solution: DeploymentSolution) -> Dict[str, any]:
-        pb_per_grid = self.coverage_model.calculate_protection_benefit(solution)
-        total_benefit = sum(pb_per_grid.values())
-        
         return {
             'cameras': {str(k): v for k, v in solution.cameras.items()},
             'camps': {str(k): v for k, v in solution.camps.items()},
             'drones': {str(k): v for k, v in solution.drones.items()},
             'rangers': {str(k): v for k, v in solution.rangers.items()},
             'fences': {f"{k[0]}-{k[1]}": v for k, v in solution.fences.items()},
-            'fitness': self.evaluate_fitness(solution),
-            'total_protection_benefit': total_benefit,
-            'protection_benefit_per_grid': {str(k): round(v, 6) for k, v in pb_per_grid.items()},
             'statistics': self.get_solution_statistics(solution)
         }
 

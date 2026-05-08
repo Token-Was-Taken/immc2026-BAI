@@ -1,7 +1,7 @@
 import numpy as np
 import random
 from typing import Dict, List, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from grid_model import HexGridModel
 from data_loader import CoverageParameters
 
@@ -13,6 +13,7 @@ class DeploymentSolution:
     drones: Dict[int, int]
     rangers: Dict[int, int]
     fences: Dict[Tuple[int, int], int]
+    _cache_key: int = field(default=None, init=False, repr=False, compare=False)
 
 
 class CoverageModel:
@@ -673,4 +674,5 @@ class CoverageModel:
                     solution.rangers[grid_id] = 1
                     total_rangers += 1
 
+        solution._cache_key = None
         return solution
