@@ -2821,17 +2821,19 @@
     "wp": 0.4,
     "wd": 0.3,
     "wc": 0.2,
-    "wf": 0.1
+    "wf": 0.1,
+    "alpha_pd": 0.4,
+    "alpha_pc": 0.15
   },
   "dssa_config": {
     "save_iteration_visualization": true,
     "use_risk_priority": true,
     "high_risk_percentage": 0.1,
-    "population_size": 80,
-    "max_iterations": 250,
+    "population_size": 200,
+    "max_iterations": 300,
     "producer_ratio": 0.2,
-    "scout_ratio": 0.3,
-    "ST": 0.6,
+    "scout_ratio": 0.2,
+    "ST": 0.8,
     "R2": 0.5
   },
   "grids": [

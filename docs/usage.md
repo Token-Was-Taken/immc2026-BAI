@@ -1216,12 +1216,12 @@ python images_to_video.py --input_dir ./figures --prefix deployment_map --output
 
 **文件**：`sensitivity_analysis.py`
 
-分析每种资源数量对保护效果的影响，找出边际收益递减点，辅助资源配置决策。
+分析每种资源数量对保护效果的影响，找出边际收益递减点，辅助资源配置决策。支持三种执行模式：纯并行、串行热启动、分组混合热启动。
 
 #### 用法
 
 ```bash
-# 分析单种资源
+# 分析单种资源（纯并行模式）
 python sensitivity_analysis.py --input base_input.json --resource camera --range 0 400 10
 
 # 分析所有资源（使用默认范围）
@@ -1229,6 +1229,15 @@ python sensitivity_analysis.py --input base_input.json --resource all
 
 # 向量化模式（大规模地图推荐）
 python sensitivity_analysis.py --input base_input.json --resource patrol --vectorized
+
+# 两步法：粗扫后自动细扫饱和区
+python sensitivity_analysis.py --input base_input.json --resource camera --range 0 400 50 --two-step
+
+# 串行热启动：低资源点结果作为高资源点初始解
+python sensitivity_analysis.py --input base_input.json --resource camera --range 0 400 10 --warm-start
+
+# 分组混合热启动：4组并行，组内串行热启动（推荐）
+python sensitivity_analysis.py --input base_input.json --resource camera --range 0 400 10 --warm-start --warm-start-groups 4
 ```
 
 #### 命令行参数
@@ -1240,6 +1249,12 @@ python sensitivity_analysis.py --input base_input.json --resource patrol --vecto
 | `--range MIN MAX STEP` | 各资源默认范围                 | 资源数量范围，如 `--range 0 400 10`                                   |
 | `--output, -o`         | `./sensitivity_results` | 输出目录                                                          |
 | `--vectorized`         | false                   | 使用向量化模式                                                       |
+| `--workers, -w`        | 系统CPU核数                 | 纯并行模式的工作进程数                                                   |
+| `--two-step`           | false                   | 启用两步法：粗扫全范围后自动定位饱和区细扫                                         |
+| `--fine-step-ratio`    | 5                       | 两步法细扫步长 = 粗步长 / 此值                                            |
+| `--warm-start`         | false                   | 启用热启动：按资源值递增顺序串行执行，低资源点结果作为高资源点初始解                            |
+| `--warm-start-groups`  | 1                       | 分组混合模式的并行组数（需配合 `--warm-start`）。默认1（纯串行），设为>1时启用分组并行，推荐设为workers数 |
+| `--no-cache`           | false                   | 禁用缓存（默认启用缓存避免重复计算）                                            |
 
 各资源默认范围：
 
@@ -1292,7 +1307,7 @@ python sensitivity_analysis.py --input base_input.json --resource patrol --vecto
 
 **文件**：`sensitivity_batch.py`
 
-并行运行多种资源的单因素敏感性分析，最后自动调用 `sensitivity_report.py` 生成可视化报告。每种资源可设置不同的分析范围。
+并行运行多种资源的单因素敏感性分析，最后自动调用 `sensitivity_report.py` 生成可视化报告。每种资源可设置不同的分析范围。所有输出文件统一存放在 `--report-dir` 目录下，启动前自动清理缓存和临时文件。
 
 #### 用法
 
@@ -1307,11 +1322,17 @@ python sensitivity_batch.py --input base.json \
 # 向量化模式
 python sensitivity_batch.py --input base.json --workers 4 --vectorized
 
+# 两步法 + 向量化
+python sensitivity_batch.py --input base.json --ranges camera:0:400:50 --two-step --workers 4
+
+# 分组混合热启动：4组并行，组内串行热启动
+python sensitivity_batch.py --input base.json --warm-start --warm-start-groups 4 --vectorized
+
 # 跳过报告生成
 python sensitivity_batch.py --input base.json --no-report
 
-# 指定报告输出目录
-python sensitivity_batch.py --input base.json --report-dir ./reports
+# 指定顶层输出目录
+python sensitivity_batch.py --input base.json --report-dir ./my_results
 ```
 
 #### 命令行参数
@@ -1320,11 +1341,16 @@ python sensitivity_batch.py --input base.json --report-dir ./reports
 | :--- | :--- | :--- |
 | `--input, -i` | 必填 | 基础输入 JSON 路径 |
 | `--ranges` | 所有资源默认范围 | 资源范围定义，格式 `resource:min:max:step`，可指定多个 |
-| `--output, -o` | `./sensitivity_results` | 敏感性分析输出目录 |
-| `--report-dir` | 与 `--output` 相同 | 报告图片输出目录 |
-| `--workers, -w` | 1 | 并行工作进程数（每种资源一个进程） |
+| `--output, -o` | `--report-dir` 下的 `sensitivity_results/` | 敏感性分析中间结果目录 |
+| `--report-dir` | `./figures/single_sensitivity` | 顶层输出目录，所有文件统一存放于此 |
+| `--workers, -w` | 系统CPU核数 | 资源内并行工作进程数 |
 | `--vectorized` | false | 使用向量化模式 |
+| `--two-step` | false | 启用两步法：粗扫全范围后自动定位饱和区细扫 |
+| `--fine-step-ratio` | 5 | 两步法细扫步长 = 粗步长 / 此值 |
 | `--no-report` | false | 跳过报告生成 |
+| `--warm-start` | false | 启用热启动：按资源值递增顺序串行执行，低资源点结果作为高资源点初始解 |
+| `--warm-start-groups` | 1 | 分组混合模式的并行组数（需配合 `--warm-start`）。默认1（纯串行），设为>1时启用分组并行，推荐设为workers数 |
+| `--no-cache` | false | 禁用缓存（默认启用缓存避免重复计算） |
 
 #### `--ranges` 格式
 
@@ -1342,16 +1368,22 @@ resource:min:max:step
 
 #### 输出
 
+所有文件统一存放在 `--report-dir` 目录下：
+
 ```
-sensitivity_results/
-├── sensitivity_patrol.json        # 各资源的敏感性数据
-├── sensitivity_camera.json
-├── sensitivity_drone.json
-├── sensitivity_camp.json
-├── sensitivity_fence.json
-├── sensitivity_{resource}_plot.png  # 各资源的原始曲线图
-├── batch_config.json              # 批量分析配置和运行结果
-├── report_patrol.png              # 优化后的可视化报告
+figures/single_sensitivity/          # --report-dir（默认）
+├── sensitivity_results/             # 中间结果（sensitivity_analysis.py 的输出）
+│   ├── sensitivity_patrol.json      # 各资源的敏感性数据
+│   ├── sensitivity_camera.json
+│   ├── sensitivity_drone.json
+│   ├── sensitivity_camp.json
+│   ├── sensitivity_fence.json
+│   ├── sensitivity_{resource}_plot.png  # 各资源的原始曲线图
+│   ├── temp_input_*.json            # 临时输入文件（运行后自动清理）
+│   ├── temp_output_*.json           # 临时输出文件（运行后自动清理）
+│   └── .cache/                      # 结果缓存（启动前自动清理）
+├── batch_config.json                # 批量分析配置和运行结果
+├── report_patrol.png                # 优化后的可视化报告
 ├── report_camera.png
 ├── report_drone.png
 ├── report_camp.png
@@ -1360,14 +1392,20 @@ sensitivity_results/
 
 `batch_config.json` 记录了本次批量分析的配置、各资源的运行状态和耗时。
 
+> **启动前自动清理**：每次运行时自动清理缓存目录（`.cache/`）和临时文件（`temp_input_*.json`、`temp_output_*.json`），确保从干净状态启动。
+
 #### 与单资源脚本的对比
 
 | 对比维度 | `sensitivity_analysis.py` | `sensitivity_batch.py` |
 | :--- | :--- | :--- |
 | 分析资源数 | 单种或全部（顺序执行） | 全部（并行执行） |
 | 自定义范围 | 所有资源共用一个 `--range` | 每种资源可设不同 `--ranges` |
-| 并行支持 | 无 | `--workers` 多进程并行 |
+| 并行支持 | `--workers` 多进程并行 | `--workers` 资源内并行 |
+| 热启动 | `--warm-start` + `--warm-start-groups` | 同左，参数透传 |
+| 两步法 | `--two-step` | 同左，参数透传 |
+| 缓存 | `--no-cache` 禁用 | 同左，启动前自动清理 |
 | 自动报告 | 需手动调用 `sensitivity_report.py` | 自动调用 |
+| 输出目录 | `--output` 单一目录 | `--report-dir` 顶层 + `sensitivity_results/` 子目录 |
 | 适用场景 | 单资源精细分析 | 多资源一次性分析 |
 
 ***
@@ -1419,7 +1457,10 @@ python sensitivity_report.py sensitivity_results/ --all --out_dir ./reports
 # 方式一：使用 batch 脚本一次性完成（推荐）
 python sensitivity_batch.py --input base.json --workers 4 --vectorized
 
-# 方式二：分步执行
+# 方式二：分组混合热启动（推荐，兼顾并行度和热启动优势）
+python sensitivity_batch.py --input base.json --warm-start --warm-start-groups 4 --vectorized
+
+# 方式三：分步执行
 # 1. 运行敏感性分析（生成原始数据）
 python sensitivity_analysis.py --input base_input.json --resource camera --range 0 400 10 --vectorized
 
@@ -1429,6 +1470,25 @@ python sensitivity_report.py sensitivity_results/sensitivity_camera.json
 # 3. 批量生成所有资源的报告
 python sensitivity_analysis.py --input base_input.json --resource all --vectorized
 python sensitivity_report.py sensitivity_results/ --all --out_dir ./reports
+```
+
+#### 执行模式说明
+
+sensitivity_analysis.py 和 sensitivity_batch.py 支持三种执行模式：
+
+| 模式 | 参数 | 并行度 | 热启动 | 适用场景 |
+| :--- | :--- | :--- | :--- | :--- |
+| 纯并行 | （默认） | workers 个进程 | ✗ | 采样点少、每点耗时短 |
+| 串行热启动 | `--warm-start` | 1 | ✓ 全链路 | 采样点多、资源值跨度大 |
+| 分组混合热启动 | `--warm-start --warm-start-groups N` | N 组并行 | ✓ 组内 | **推荐**，兼顾并行度和热启动优势 |
+
+分组混合策略将采样点按资源值顺序切分为 N 个连续块，每个块内部串行热启动（低资源点结果作为高资源点初始解），块之间并行执行。例如 41 个采样点、4 组并行：
+
+```
+组1 (并行): [0]COLD → [10]WARM → [20]WARM → ... → [100]WARM   ↘
+组2 (并行): [110]COLD → [120]WARM → ... → [210]WARM            并发
+组3 (并行): [220]COLD → [230]WARM → ... → [320]WARM            执行
+组4 (并行): [330]COLD → [340]WARM → ... → [400]WARM           ↗
 ```
 
 ***
@@ -2033,6 +2093,16 @@ sobol_coverage_results/
 
 ## 十二、变更历史（Change History）
 
+### 2026-05-07：敏感性分析优化——热启动、缓存、分组混合策略、目录结构统一
+
+- **sensitivity_analysis.py 新增参数**：`--workers`（纯并行模式工作进程数）、`--two-step`（两步法）、`--fine-step-ratio`、`--warm-start`（串行热启动）、`--warm-start-groups`（分组混合热启动并行组数）、`--no-cache`（禁用缓存）
+- **sensitivity_batch.py 目录结构统一**：所有输出文件统一存放在 `--report-dir`（默认 `./figures/single_sensitivity`）目录下，中间结果放在 `sensitivity_results/` 子目录中；`--output` 参数改为可选，默认为 `--report-dir/sensitivity_results/`
+- **sensitivity_batch.py 启动前自动清理**：每次运行时自动清理缓存目录（`.cache/`）和临时文件（`temp_input_*.json`、`temp_output_*.json`），确保从干净状态启动
+- **sensitivity_batch.py 新增参数**：`--two-step`、`--fine-step-ratio`、`--warm-start`、`--warm-start-groups`、`--no-cache`，参数透传至 sensitivity_analysis.py
+- **dssa_optimizer.py 热启动支持**：新增 `warm_start_solution` 参数，支持从已有解注入和扰动初始化种群（1/3 种群为热启动个体）
+- **protection_pipeline.py 热启动支持**：新增 `--warm-start` CLI 参数，从已有输出 JSON 加载部署方案作为初始解
+- **Bug 修复**：`dssa_optimizer._perturb_solution` 中 rangers 扰动的 `dst_candidates` 误用 `perturbed.camps` 判断，已修正为 `perturbed.rangers`
+
 ### 2026-05-02：新增多资源并行敏感性分析与 bug 修复
 
 - **新增 `sensitivity_batch.py`**：并行运行多种资源的单因素敏感性分析，支持每种资源设置不同的分析范围（`--ranges resource:min:max:step`），分析完成后自动调用 `sensitivity_report.py` 生成可视化报告
@@ -2140,4 +2210,4 @@ sobol_coverage_results/
 ***
 
 *文档版本: 2.2*\
-*最后更新: 2026-05-02*
+*最后更新: 2026-05-07*

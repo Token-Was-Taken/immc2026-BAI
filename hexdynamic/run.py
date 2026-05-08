@@ -11,15 +11,14 @@ run.py — 一键运行：风险计算 + DSSA 优化 + 可视化
 """
 
 import argparse
+import json
 import os
 import sys
 
-# ---------------------------------------------------------------------------
-# 复用已有模块
-# ---------------------------------------------------------------------------
 from protection_pipeline import run_pipeline
 from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison, \
     plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map, plot_species_deployment_comparison, plot_protection_deployment_comparison
+from images_to_video import find_images, create_video
 
 
 def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
@@ -123,6 +122,23 @@ def main():
     # Step 2: 可视化
     if not args.no_visualize:
         visualize(args.output, args.input, args.out_dir, args.prefix)
+
+    # Step 3: 如果启用了迭代可视化，自动生成迭代 deployment map 视频
+    try:
+        with open(args.input, 'r', encoding='utf-8') as f:
+            input_data = json.load(f)
+        dssa_cfg = input_data.get('dssa_config', {})
+        if dssa_cfg.get('save_iteration_visualization', False):
+            iter_images = find_images(args.out_dir, "deployment_map")
+            if iter_images:
+                video_path = os.path.join(args.out_dir, "iteration_deployment.mp4")
+                print(f"\n[VIDEO] 生成迭代部署地图视频...")
+                print(f"        找到 {len(iter_images)} 张迭代图片")
+                create_video(iter_images, video_path, fps=5, resize_factor=1.0)
+            else:
+                print("\n[VIDEO] 未找到迭代部署地图图片，跳过视频生成")
+    except Exception as e:
+        print(f"\n[VIDEO] 视频生成失败: {e}")
 
 
 if __name__ == "__main__":

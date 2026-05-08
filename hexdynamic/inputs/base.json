@@ -658,12 +658,12 @@
     }
   },
   "constraints": {
-    "total_patrol": 10,
-    "total_camps": 3,
+    "total_patrol": 20,
+    "total_camps": 5,
     "max_rangers_per_camp": 5,
-    "total_cameras": 5,
-    "total_drones": 3,
-    "total_fence_length": 500
+    "total_cameras": 40,
+    "total_drones": 5,
+    "total_fence_length": 1000
   },
   "coverage_params": {
     "patrol_radius": 3,
@@ -676,14 +676,14 @@
     "wf": 0.1
   },
   "dssa_config": {
-    "save_iteration_visualization": false,
+    "save_iteration_visualization": true,
     "use_risk_priority": true,
     "high_risk_percentage": 0.1,
-    "population_size": 50,
-    "max_iterations": 100,
+    "population_size": 100,
+    "max_iterations": 200,
     "producer_ratio": 0.2,
-    "scout_ratio": 0.4,
-    "ST": 0.5,
+    "scout_ratio": 0.2,
+    "ST": 0.8,
     "R2": 0.5
   },
   "grids": [

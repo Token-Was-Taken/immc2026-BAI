@@ -7281,7 +7281,7 @@
     "wf": 0.1
   },
   "dssa_config": {
-    "save_iteration_visualization": true,
+    "save_iteration_visualization": false,
     "use_risk_priority": true,
     "high_risk_percentage": 0.1,
     "population_size": 150,

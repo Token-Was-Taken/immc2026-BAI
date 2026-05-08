@@ -11,6 +11,7 @@ class GridData:
     terrain_type: str
     risk: float
     temporal_factor: float = 1.0  # T_t × S_t (diurnal × seasonal)
+    species_densities: Dict[str, float] = None
 
 
 @dataclass
@@ -169,7 +170,16 @@ class DataLoader:
                         self.deployment_matrix[resource][grid.grid_id] = 0
                 else:
                     # 其他资源使用地形规则
-                    self.deployment_matrix[resource][grid.grid_id] = terrain_deployment[grid.terrain_type][resource]
+                    terrain_ok = terrain_deployment[grid.terrain_type][resource]
+                    
+                    # 物种密度约束：patrol 和 camp 不能部署在物种密度不为零的网格
+                    if terrain_ok == 1 and resource in ('patrol', 'camp'):
+                        sd = grid.species_densities or {}
+                        has_species = any(v > 0 for v in sd.values())
+                        if has_species:
+                            terrain_ok = 0
+                    
+                    self.deployment_matrix[resource][grid.grid_id] = terrain_ok
 
     def initialize_coverage_effectiveness(self, overrides: Dict[str, Dict[str, float]] = None):
         """Build per-grid coverage effectiveness map.
