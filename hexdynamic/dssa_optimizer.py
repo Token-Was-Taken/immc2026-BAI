@@ -5,6 +5,7 @@ import random
 import json
 import os
 import threading
+import queue
 import concurrent.futures
 from coverage_model import CoverageModel, DeploymentSolution
 
@@ -87,7 +88,10 @@ class DSSAOptimizer:
 
         self.output_dir = self.config.output_dir
         self._output_lock = threading.Lock()
-        self._async_threads = []  # 跟踪所有异步线程
+        self._async_threads = []
+        self._output_queue = queue.Queue()
+        self._output_worker = None
+        self._output_worker_started = False
 
         # 保存构建输出 JSON 所需的参数
         self.input_grids = input_grids
@@ -995,7 +999,12 @@ class DSSAOptimizer:
             escape_followers = self._update_followers(effective_alpha)
             self._update_scouts()
 
-            diversity = self._calculate_diversity()
+            diversity_interval = 5
+            if iteration % diversity_interval == 0:
+                diversity = self._calculate_diversity()
+                self._last_diversity = diversity
+            else:
+                diversity = getattr(self, '_last_diversity', 1.0)
             if diversity < self.config.diversity_min_threshold:
                 self._inject_random_solutions(self.config.diversity_inject_ratio)
 
@@ -1012,8 +1021,7 @@ class DSSAOptimizer:
                 scouts = self.population[self.config.population_size - num_scouts:]
                 self._async_output_iteration_results(iteration, producers, followers, scouts)
                 self._async_plot_iteration_deployment(iteration, self.best_solution)
-            
-            # 计算total benefit
+
             pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
             total_benefit = sum(pb_per_grid.values())
 
@@ -1057,21 +1065,24 @@ class DSSAOptimizer:
         total_elapsed = time.time() - total_start
         pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
         final_total_benefit = sum(pb_per_grid.values())
-        
+
         print(f"\nOptimization completed."
               f"  Best Fitness = {self.best_fitness:.6f}"
               f"  Total Benefit = {final_total_benefit:.6f}"
               f"  Total = {total_elapsed:.2f}s"
               f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
 
-        # 等待所有异步线程完成（绘图和输出文件）
-        if self._async_threads:
-            print(f"[ASYNC] 等待 {len(self._async_threads)} 个异步任务完成...")
-            for i, thread in enumerate(self._async_threads):
-                if thread.is_alive():
-                    thread.join(timeout=60)  # 每个线程最多等待60秒
-                    print(f"[ASYNC] 任务 {i+1}/{len(self._async_threads)} 已完成")
-            print("[ASYNC] 所有异步任务完成！")
+        if self._output_worker_started:
+            self._output_queue.put(None)
+            self._output_worker.join(timeout=120)
+            if self._output_worker.is_alive():
+                print("[ASYNC] 输出工作线程仍在运行，强制等待...")
+                self._output_worker.join(timeout=60)
+            print("[ASYNC] 所有异步输出任务完成！")
+
+        for thread in self._async_threads:
+            if thread.is_alive():
+                thread.join(timeout=10)
 
         self._fitness_executor.shutdown(wait=True)
 
@@ -1101,42 +1112,74 @@ class DSSAOptimizer:
             'statistics': self.get_solution_statistics(solution)
         }
 
+    def _ensure_output_worker(self):
+        if not self._output_worker_started:
+            self._output_worker = threading.Thread(target=self._output_worker_loop, daemon=True)
+            self._output_worker.start()
+            self._output_worker_started = True
+
+    def _output_worker_loop(self):
+        while True:
+            task = self._output_queue.get()
+            if task is None:
+                self._output_queue.task_done()
+                break
+            try:
+                task_type = task['type']
+                if task_type == 'json':
+                    self._write_json_files(task['iter_dir'], task['producers_data'],
+                                           task['followers_data'], task['scouts_data'])
+                elif task_type == 'plot':
+                    self._plot_deployment_map(task['iteration'], task['output_base'],
+                                              task['solution'], task['hex_size'],
+                                              task['boundary_xy'], task['terrain_patches'])
+            except Exception as e:
+                print(f"[WARN] Output worker error: {e}")
+            finally:
+                self._output_queue.task_done()
+
+    def _write_json_files(self, iter_dir, producers_data, followers_data, scouts_data):
+        try:
+            os.makedirs(iter_dir, exist_ok=True)
+            with open(os.path.join(iter_dir, "producers.json"), 'w', encoding='utf-8') as f:
+                json.dump(producers_data, f, ensure_ascii=False)
+            with open(os.path.join(iter_dir, "followers.json"), 'w', encoding='utf-8') as f:
+                json.dump(followers_data, f, ensure_ascii=False)
+            with open(os.path.join(iter_dir, "scouts.json"), 'w', encoding='utf-8') as f:
+                json.dump(scouts_data, f, ensure_ascii=False)
+        except (IOError, OSError) as e:
+            print(f"Warning: Failed to write iteration output: {e}")
+
     def _async_output_iteration_results(self, iteration: int, producers: List[DeploymentSolution],
                                      followers: List[DeploymentSolution], scouts: List[DeploymentSolution]):
-        """异步输出每轮迭代的详细结果到磁盘（Producer/Follower/Scout 分组）"""
         if not self.output_dir:
             return
+        self._ensure_output_worker()
+        iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
+        producers_data = [self._serialize_solution(s) for s in producers]
+        followers_data = [self._serialize_solution(s) for s in followers]
+        scouts_data = [self._serialize_solution(s) for s in scouts]
+        self._output_queue.put({
+            'type': 'json',
+            'iter_dir': iter_dir,
+            'producers_data': producers_data,
+            'followers_data': followers_data,
+            'scouts_data': scouts_data
+        })
 
-        def _write_files():
-            try:
-                iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
-                os.makedirs(iter_dir, exist_ok=True)
-
-                producers_data = [self._serialize_solution(s) for s in producers]
-                with open(os.path.join(iter_dir, "producers.json"), 'w', encoding='utf-8') as f:
-                    json.dump(producers_data, f, indent=2, ensure_ascii=False)
-
-                followers_data = [self._serialize_solution(s) for s in followers]
-                with open(os.path.join(iter_dir, "followers.json"), 'w', encoding='utf-8') as f:
-                    json.dump(followers_data, f, indent=2, ensure_ascii=False)
-
-                scouts_data = [self._serialize_solution(s) for s in scouts]
-                with open(os.path.join(iter_dir, "scouts.json"), 'w', encoding='utf-8') as f:
-                    json.dump(scouts_data, f, indent=2, ensure_ascii=False)
-
-            except (IOError, OSError) as e:
-                print(f"Warning: Failed to write iteration output: {e}")
-
-        thread = threading.Thread(target=_write_files, daemon=True)
-        thread.start()
-        self._async_threads.append(thread)
-
-    def _build_output_for_solution(self, solution: DeploymentSolution) -> Dict[str, Any]:
-        """构建完整的输出 JSON 结构（类似 protection_pipeline.py 中的逻辑）
-        """
+    def _build_output_for_solution(self, solution: DeploymentSolution,
+                                    pb_per_grid: Dict[int, float] = None,
+                                    protection_effect: Dict[int, float] = None,
+                                    fitness: float = None) -> Dict[str, Any]:
         import numpy as np
-        
-        pb_per_grid = self.coverage_model.calculate_protection_benefit(solution)
+
+        if pb_per_grid is None:
+            pb_per_grid = self.coverage_model.calculate_protection_benefit(solution)
+        if protection_effect is None:
+            protection_effect = self.coverage_model.calculate_protection_effect(solution)
+        if fitness is None:
+            fitness = self.evaluate_fitness(solution)
+
         total_risk = sum(self.grid_model.get_grid_risk(gid) for gid in self.grid_model.get_all_grid_ids())
 
         total_risk_weighted = 0.0
@@ -1150,8 +1193,6 @@ class DSSAOptimizer:
 
         risk_vals = [self.grid_model.get_grid_risk(gid) for gid in self.grid_model.get_all_grid_ids()]
         risk_min, risk_max = min(risk_vals), max(risk_vals)
-
-        protection_effect = self.coverage_model.calculate_protection_effect(solution)
 
         rr_per_grid = {
             gid: self.grid_model.get_grid_risk(gid) * np.exp(-protection_effect[gid])
@@ -1169,7 +1210,7 @@ class DSSAOptimizer:
 
         input_grid_map = {g['grid_id']: g for g in (self.input_grids or [])} if self.input_grids else {}
         grid_results = []
-        
+
         if self.input_grids:
             for grid in self.input_grids:
                 gid = grid['grid_id']
@@ -1193,18 +1234,18 @@ class DSSAOptimizer:
                         'camera': int(solution.cameras.get(gid, 0))
                     }
                 }
-                
+
                 grid_fence_edges = [(e[0], e[1]) for e, v in solution.fences.items() if v > 0 and e[0] == gid and isinstance(e[1], int)]
                 if grid_fence_edges:
                     entry['fences'] = {
                         'fence_count': len(grid_fence_edges),
                         'boundary_edge_list': [direction for _, direction in grid_fence_edges]
                     }
-                
+
                 if 'hex_size' in grid:
                     entry['hex_size'] = grid['hex_size']
                 grid_results.append(entry)
-        
+
         all_gids = self.grid_model.get_all_grid_ids()
         norm_risk_vals = [self.grid_model.get_grid_risk(gid) for gid in all_gids]
         raw_risk_vals = [float(self.raw_risk_map.get(gid, 0.0)) if self.raw_risk_map else 0.0 for gid in all_gids]
@@ -1216,7 +1257,7 @@ class DSSAOptimizer:
                 'total_grids': self.grid_model.get_grid_count(),
                 'total_risk': round(float(total_risk), 6),
                 'total_risk_weighted': round(float(total_risk_weighted), 6),
-                'best_fitness': round(float(self.evaluate_fitness(solution)), 6),
+                'best_fitness': round(float(fitness), 6),
                 'total_protection_benefit': round(float(total_protection_benefit), 6),
                 'average_protection_benefit': round(float(avg_protection_benefit), 6),
                 'risk_min': round(min(norm_risk_vals), 6),
@@ -1243,117 +1284,112 @@ class DSSAOptimizer:
             },
             'grids': grid_results
         }
-        
+
         return output
 
     def _async_plot_iteration_deployment(self, iteration: int, solution: DeploymentSolution):
-        """异步绘制当前迭代的最优 deployment map（缓存绘制参数+重新绘制）"""
         if not (self.output_dir and self.config.save_iteration_visualization):
             return
         if not (self.input_grids):
             return
 
-        def _plot_fast():
+        with self._output_lock:
+            if not getattr(self, '_viz_cache_initialized', False):
+                self._init_viz_cache(solution, fitness=self.best_fitness)
+
+        out_base = self._output_for_viz_cache
+        hex_size = self._hex_size_cache
+        boundary_xy = self._boundary_xy_cache
+        terrain_patches = list(self._terrain_patches_cache)
+
+        import copy
+        out_base_copy = copy.deepcopy(out_base)
+
+        self._ensure_output_worker()
+        self._output_queue.put({
+            'type': 'plot',
+            'iteration': iteration,
+            'output_base': out_base_copy,
+            'solution': solution,
+            'hex_size': hex_size,
+            'boundary_xy': boundary_xy,
+            'terrain_patches': terrain_patches
+        })
+
+    def _plot_deployment_map(self, iteration, output_base, solution, hex_size, boundary_xy, terrain_patches):
+        try:
+            import gc
+            import matplotlib
+            import matplotlib.pyplot as plt
+            matplotlib.rcParams["figure.max_open_warning"] = 0
+
+            iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
+            os.makedirs(iter_dir, exist_ok=True)
+
+            from visualize_output import (
+                make_figure, setup_map_ax, draw_hex, draw_boundary,
+                draw_deployed_fence_edges, grid_center, TERRAIN_COLORS,
+                RESOURCE_MARKERS, _draw_resources, _edge_grid_ids
+            )
+
+            fig, ax_map, _, ax_leg = make_figure(has_colorbar=False)
+
+            for (cx, cy, fc) in terrain_patches:
+                draw_hex(ax_map, cx, cy, hex_size * 0.97,
+                        facecolor=fc, alpha=0.45)
+
+            grids = output_base['grids']
+            edge_ids = _edge_grid_ids(grids, boundary_xy)
+
+            for g in grids:
+                gid = g['grid_id']
+                dep = g.get('deployment', {})
+                dep['camera'] = solution.cameras.get(gid, 0)
+                dep['drone'] = solution.drones.get(gid, 0)
+                dep['camp'] = solution.camps.get(gid, 0)
+                dep['patrol_rangers'] = solution.rangers.get(gid, 0)
+                grid_fence_edges = [(e[0], e[1]) for e, v in solution.fences.items()
+                                   if v > 0 and e[0] == gid and isinstance(e[1], int)]
+                if grid_fence_edges:
+                    g['fences'] = {
+                        'fence_count': len(grid_fence_edges),
+                        'boundary_edge_list': [direction for _, direction in grid_fence_edges]
+                    }
+                elif 'fences' in g:
+                    del g['fences']
+
+            _draw_resources(ax_map, grids, output_base, hex_size, edge_ids)
+            draw_deployed_fence_edges(ax_map, grids, output_base, hex_size)
+            setup_map_ax(ax_map, grids, hex_size)
+            draw_boundary(ax_map, grids, boundary_xy, hex_size)
+
+            ax_map.set_title(f"Iteration {iteration:04d}", fontsize=13, fontweight='bold', pad=8)
+
+            self._draw_legend(ax_leg)
+
+            save_path = os.path.join(iter_dir, "deployment_map.png")
+            fig.savefig(save_path, dpi=150, bbox_inches="tight")
+
+            plt.close(fig)
+            plt.close('all')
+            gc.collect()
+
+        except Exception as e:
+            print(f"[ERROR] Failed to plot iteration {iteration} deployment: {e}")
+            import traceback
+            traceback.print_exc()
             try:
-                import os
-                import gc
-                import matplotlib
                 import matplotlib.pyplot as plt
-                matplotlib.rcParams["figure.max_open_warning"] = 0
-
-                iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
-                os.makedirs(iter_dir, exist_ok=True)
-
-                # 使用锁保护缓存初始化
-                with self._output_lock:
-                    if not hasattr(self, '_viz_cache_initialized') or not self._viz_cache_initialized:
-                        self._init_viz_cache(solution)
-
-                # 获取缓存
-                out_base = self._output_for_viz_cache
-                hex_size = self._hex_size_cache
-                boundary_xy = self._boundary_xy_cache
-                terrain_patches = self._terrain_patches_cache
-
-                # 创建新图，使用与原始函数相同的布局
-                from visualize_output import (
-                    make_figure, setup_map_ax, draw_hex, draw_boundary,
-                    draw_deployed_fence_edges, grid_center, TERRAIN_COLORS,
-                    RESOURCE_MARKERS, _draw_resources, _edge_grid_ids
-                )
-
-                fig, ax_map, _, ax_leg = make_figure(has_colorbar=False)
-
-                # 绘制地形（使用缓存的参数，避免重新计算）
-                for (cx, cy, fc) in terrain_patches:
-                    draw_hex(ax_map, cx, cy, hex_size * 0.97,
-                            facecolor=fc, alpha=0.45)
-
-                # 绘制资源部署
-                grids = out_base['grids']
-                edge_ids = _edge_grid_ids(grids, boundary_xy)
-
-                # 更新 deployment 数据（每次迭代可能不同）
-                for g in grids:
-                    gid = g['grid_id']
-                    dep = g.get('deployment', {})
-                    dep['camera'] = solution.cameras.get(gid, 0)
-                    dep['drone'] = solution.drones.get(gid, 0)
-                    dep['camp'] = solution.camps.get(gid, 0)
-                    dep['patrol_rangers'] = solution.rangers.get(gid, 0)
-                    # 更新 fences 数据
-                    grid_fence_edges = [(e[0], e[1]) for e, v in solution.fences.items()
-                                       if v > 0 and e[0] == gid and isinstance(e[1], int)]
-                    if grid_fence_edges:
-                        g['fences'] = {
-                            'fence_count': len(grid_fence_edges),
-                            'boundary_edge_list': [direction for _, direction in grid_fence_edges]
-                        }
-                    elif 'fences' in g:
-                        del g['fences']
-
-                _draw_resources(ax_map, grids, out_base, hex_size, edge_ids)
-                draw_deployed_fence_edges(ax_map, grids, out_base, hex_size)
-                setup_map_ax(ax_map, grids, hex_size)
-                draw_boundary(ax_map, grids, boundary_xy, hex_size)
-
-                # 添加标题
-                ax_map.set_title(f"Iteration {iteration:04d}", fontsize=13, fontweight='bold', pad=8)
-
-                # 绘制图例
-                self._draw_legend(ax_leg)
-
-                # 保存
-                save_path = os.path.join(iter_dir, "deployment_map.png")
-                fig.savefig(save_path, dpi=150, bbox_inches="tight")
-
-                # 清理
-                plt.close(fig)
                 plt.close('all')
+                import gc
                 gc.collect()
+            except:
+                pass
 
-            except Exception as e:
-                print(f"[ERROR] Failed to plot iteration {iteration} deployment: {e}")
-                import traceback
-                traceback.print_exc()
-                try:
-                    import matplotlib.pyplot as plt
-                    plt.close('all')
-                    import gc
-                    gc.collect()
-                except:
-                    pass
-
-        thread = threading.Thread(target=_plot_fast, daemon=True)
-        thread.start()
-        self._async_threads.append(thread)
-
-    def _init_viz_cache(self, solution: DeploymentSolution):
-        """初始化可视化缓存（只在第一次调用时执行）"""
+    def _init_viz_cache(self, solution: DeploymentSolution, fitness: float = None):
         from visualize_output import grid_center, TERRAIN_COLORS
 
-        # 构建输出数据并缓存
-        out = self._build_output_for_solution(solution)
+        out = self._build_output_for_solution(solution, fitness=fitness)
         self._output_for_viz_cache = out
 
         hex_size = self.input_grids[0].get('hex_size', 10) if len(self.input_grids) > 0 else 10
