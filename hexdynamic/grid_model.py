@@ -16,9 +16,10 @@ class HexCoordinates:
 
 
 class HexGridModel:
-    _MAX_PRECOMPUTE_BYTES = 800 * 1024**2
+    _DEFAULT_MAX_PRECOMPUTE_BYTES = 800 * 1024**2
 
-    def __init__(self, grids: List[GridData], max_radius: Optional[int] = None):
+    def __init__(self, grids: List[GridData], max_radius: Optional[int] = None,
+                 max_precompute_bytes: Optional[int] = None):
         self.grids = grids
         self.grid_dict = {grid.grid_id: grid for grid in grids}
         self._id_to_idx: Dict[int, int] = {g.grid_id: i for i, g in enumerate(grids)}
@@ -33,6 +34,9 @@ class HexGridModel:
         self._distance_matrix = None
         self._distance_matrix_loaded = False
         self._distance_sparse = None
+        self._max_precompute_bytes = (max_precompute_bytes
+                                      if max_precompute_bytes is not None
+                                      else self._DEFAULT_MAX_PRECOMPUTE_BYTES)
 
     @property
     def distance_matrix(self) -> np.ndarray:
@@ -74,9 +78,9 @@ class HexGridModel:
     def _try_build_distance_matrix(self) -> Optional[np.ndarray]:
         n = len(self.grids)
         estimated_bytes = n * n * 4
-        if estimated_bytes > self._MAX_PRECOMPUTE_BYTES:
+        if estimated_bytes > self._max_precompute_bytes:
             print(f"      [MEM] 距离矩阵需 {estimated_bytes/1024**3:.2f} GiB > 阈值 "
-                  f"{self._MAX_PRECOMPUTE_BYTES/1024**3:.1f} GiB，跳过预计算")
+                  f"{self._max_precompute_bytes/1024**3:.1f} GiB，跳过预计算")
             return None
         try:
             dist = self._build_distance_matrix_vectorized()

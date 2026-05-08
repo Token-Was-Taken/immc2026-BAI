@@ -376,7 +376,7 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         try:
             warm_start_solution = load_warm_start_solution(warm_start_path)
             print(f"      [WARM-START] 从 {warm_start_path} 加载热启动解")
-        except Exception as e:
+        except (IOError, OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             print(f"      [WARM-START] 加载热启动解失败: {e}，将使用冷启动")
 
     # 提取 boundary_locations

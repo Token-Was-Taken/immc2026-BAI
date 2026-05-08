@@ -73,7 +73,7 @@ class BenefitCache:
                 with open(path, 'r', encoding='utf-8') as f:
                     self._cache = json.load(f)
                 print(f"  [CACHE] 从磁盘加载 {len(self._cache)} 条缓存记录")
-            except Exception:
+            except (IOError, OSError, json.JSONDecodeError):
                 self._cache = {}
 
     def _save_disk_cache(self):
@@ -82,7 +82,7 @@ class BenefitCache:
             try:
                 with open(path, 'w', encoding='utf-8') as f:
                     json.dump(self._cache, f, indent=2)
-            except Exception:
+            except (IOError, OSError):
                 pass
 
     def get(self, res_type: str, resource_value: int) -> Optional[dict]:
@@ -200,7 +200,7 @@ def _run_pipeline_parallel(tasks: List[Tuple], workers: int, vectorized: bool,
                 if cache:
                     cache.set(res_type, rv, result)
                 print(f"  [{done}/{total}] {res_type}={rv} OK  benefit={result['total_protection_benefit']:.4f}  fitness={result['best_fitness']:.4f}  ({elapsed:.0f}s)")
-            except Exception as e:
+            except (IOError, OSError, json.JSONDecodeError, KeyError, ValueError) as e:
                 print(f"  [{done}/{total}] {res_type}={rv} PARSE ERROR: {e}")
                 failed_rvs.append(rv)
 
@@ -226,7 +226,7 @@ def _run_pipeline_parallel(tasks: List[Tuple], workers: int, vectorized: bool,
                     if cache:
                         cache.set(res_type, rv, result)
                     print(f"  [RETRY OK] {res_type}={rv}  benefit={result['total_protection_benefit']:.4f}")
-                except Exception as e:
+                except (IOError, OSError, json.JSONDecodeError, KeyError, ValueError) as e:
                     print(f"  [RETRY FAIL] {res_type}={rv}  parse error: {e}")
             else:
                 print(f"  [RETRY FAIL] {res_type}={rv}  {stderr[:200]}")
@@ -284,7 +284,7 @@ def _run_single_group(args_tuple):
             group_results[rv] = result
             prev_output_path = temp_output_path
             print(f"{prefix} [{idx+1}/{len(group_values)}] {res_type}={rv} [{warm_tag}] OK  benefit={result['total_protection_benefit']:.4f}  ({run_elapsed:.0f}s)")
-        except Exception as e:
+        except (IOError, OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             print(f"{prefix} [{idx+1}/{len(group_values)}] {res_type}={rv} [{warm_tag}] PARSE ERROR: {e}")
             prev_output_path = None
 
@@ -351,7 +351,7 @@ def _run_pipeline_hybrid(base_input: dict, res_type: str, resource_values: List[
                         cache.set(res_type, rv, result)
                 elapsed = time.time() - start
                 print(f"  [GROUP {gi+1} DONE] {len(group_results)}/{len(groups[gi])} 成功  ({elapsed:.0f}s)")
-            except Exception as e:
+            except (IOError, OSError, json.JSONDecodeError, KeyError, ValueError) as e:
                 elapsed = time.time() - start
                 print(f"  [GROUP {gi+1} ERROR] {e}  ({elapsed:.0f}s)")
 

@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, List, Tuple, Callable, Optional
+from typing import Dict, List, Tuple, Callable, Optional, Any
 from dataclasses import dataclass, asdict
 import random
 import json
@@ -52,9 +52,13 @@ class DSSAConfig:
     use_marginal_contribution_repair: bool = False  # 是否使用边际贡献 leave-one-out 修复超量（默认关闭，用快速随机移除）
     skip_conflict_resolution: bool = False  # 是否跳过资源冲突解决（当部署矩阵确保无重叠时可开启）
 
+    # --- 性能配置 ---
+    fitness_cache_max_size: int = 10000  # 适应度缓存最大条目数
+    fitness_workers: int = 16  # 并行适应度评估线程数
+
 
 class DSSAOptimizer:
-    def __init__(self, coverage_model: CoverageModel, constraints: Dict[str, any],
+    def __init__(self, coverage_model: CoverageModel, constraints: Dict[str, Any],
                  config: DSSAConfig = None, fixed_fences: Dict[Tuple[int, int], int] = None,
                  force_full_deployment: bool = True, frozen_resources: List[str] = None,
                  input_grids: List[Dict] = None, raw_risk_map: Dict = None,
@@ -100,12 +104,12 @@ class DSSAOptimizer:
 
         # Thread pool for parallel fitness evaluation
         self._fitness_executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=min(16, self.config.population_size),
+            max_workers=min(self.config.fitness_workers, self.config.population_size),
             thread_name_prefix='fitness'
         )
 
         self._fitness_cache = {}
-        self._fitness_cache_max_size = 10000
+        self._fitness_cache_max_size = self.config.fitness_cache_max_size
 
     def _initialize_solution(self) -> DeploymentSolution:
         """初始化解决方案
@@ -531,6 +535,7 @@ class DSSAOptimizer:
         return fitness
 
     def _make_cache_key(self, solution: DeploymentSolution) -> int:
+        """生成适应度缓存的哈希键，基于部署方案的资源分配"""
         if solution._cache_key is not None:
             return solution._cache_key
         key = hash((
@@ -951,6 +956,7 @@ class DSSAOptimizer:
                     self.population[pop_idx] = self._partial_reset_scout(solution)
 
     def _update_best_solution(self):
+        """更新全局最优解：评估所有个体适应度，保留最高者"""
         fitnesses = self._evaluate_fitness_parallel(self.population)
         for solution, fitness in zip(self.population, fitnesses):
             if fitness > self.best_fitness:
@@ -1071,7 +1077,7 @@ class DSSAOptimizer:
 
         return self.best_solution, self.best_fitness, self.fitness_history
 
-    def get_solution_statistics(self, solution: DeploymentSolution) -> Dict[str, any]:
+    def get_solution_statistics(self, solution: DeploymentSolution) -> Dict[str, Any]:
         return {
             'total_cameras': sum(solution.cameras.values()),
             'total_drones': sum(solution.drones.values()),
@@ -1085,7 +1091,7 @@ class DSSAOptimizer:
             'fence_edges': [edge for edge, count in solution.fences.items() if count > 0]
         }
 
-    def _serialize_solution(self, solution: DeploymentSolution) -> Dict[str, any]:
+    def _serialize_solution(self, solution: DeploymentSolution) -> Dict[str, Any]:
         return {
             'cameras': {str(k): v for k, v in solution.cameras.items()},
             'camps': {str(k): v for k, v in solution.camps.items()},
@@ -1097,6 +1103,7 @@ class DSSAOptimizer:
 
     def _async_output_iteration_results(self, iteration: int, producers: List[DeploymentSolution],
                                      followers: List[DeploymentSolution], scouts: List[DeploymentSolution]):
+        """异步输出每轮迭代的详细结果到磁盘（Producer/Follower/Scout 分组）"""
         if not self.output_dir:
             return
 
@@ -1117,14 +1124,14 @@ class DSSAOptimizer:
                 with open(os.path.join(iter_dir, "scouts.json"), 'w', encoding='utf-8') as f:
                     json.dump(scouts_data, f, indent=2, ensure_ascii=False)
 
-            except Exception as e:
+            except (IOError, OSError) as e:
                 print(f"Warning: Failed to write iteration output: {e}")
 
         thread = threading.Thread(target=_write_files, daemon=True)
         thread.start()
         self._async_threads.append(thread)
 
-    def _build_output_for_solution(self, solution: DeploymentSolution) -> Dict[str, any]:
+    def _build_output_for_solution(self, solution: DeploymentSolution) -> Dict[str, Any]:
         """构建完整的输出 JSON 结构（类似 protection_pipeline.py 中的逻辑）
         """
         import numpy as np

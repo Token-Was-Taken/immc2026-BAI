@@ -1,6 +1,6 @@
 import numpy as np
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass, field
 from grid_model import HexGridModel
 from data_loader import CoverageParameters
@@ -209,7 +209,7 @@ class CoverageModel:
         return total_benefit
 
     def validate_solution(self, solution: DeploymentSolution,
-                          constraints: Dict[str, any]) -> Tuple[bool, List[str]]:
+                          constraints: Dict[str, Any]) -> Tuple[bool, List[str]]:
         violations = []
 
         total_cameras = sum(solution.cameras.values())
@@ -341,7 +341,7 @@ class CoverageModel:
         return contributions
 
     def repair_solution(self, solution: DeploymentSolution,
-                       constraints: Dict[str, any],
+                       constraints: Dict[str, Any],
                        force_full_deployment: bool = True,
                        use_marginal_contribution: bool = False,
                        skip_conflict_resolution: bool = False) -> DeploymentSolution:
