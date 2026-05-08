@@ -87,7 +87,9 @@ class DSSAOptimizer:
 
         self.output_dir = self.config.output_dir
         self._output_lock = threading.Lock()
-        self._async_threads = []  # 跟踪所有异步线程
+        self._async_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix='async'
+        )
 
         # 保存构建输出 JSON 所需的参数
         self.input_grids = input_grids
@@ -1064,14 +1066,10 @@ class DSSAOptimizer:
               f"  Total = {total_elapsed:.2f}s"
               f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
 
-        # 等待所有异步线程完成（绘图和输出文件）
-        if self._async_threads:
-            print(f"[ASYNC] 等待 {len(self._async_threads)} 个异步任务完成...")
-            for i, thread in enumerate(self._async_threads):
-                if thread.is_alive():
-                    thread.join(timeout=60)  # 每个线程最多等待60秒
-                    print(f"[ASYNC] 任务 {i+1}/{len(self._async_threads)} 已完成")
-            print("[ASYNC] 所有异步任务完成！")
+        # 等待所有异步任务完成
+        print(f"[ASYNC] 等待异步任务队列清空...")
+        self._async_executor.shutdown(wait=True)
+        print("[ASYNC] 所有异步任务完成！")
 
         self._fitness_executor.shutdown(wait=True)
 
@@ -1127,9 +1125,7 @@ class DSSAOptimizer:
             except (IOError, OSError) as e:
                 print(f"Warning: Failed to write iteration output: {e}")
 
-        thread = threading.Thread(target=_write_files, daemon=True)
-        thread.start()
-        self._async_threads.append(thread)
+        self._async_executor.submit(_write_files)
 
     def _build_output_for_solution(self, solution: DeploymentSolution) -> Dict[str, Any]:
         """构建完整的输出 JSON 结构（类似 protection_pipeline.py 中的逻辑）
@@ -1344,9 +1340,7 @@ class DSSAOptimizer:
                 except:
                     pass
 
-        thread = threading.Thread(target=_plot_fast, daemon=True)
-        thread.start()
-        self._async_threads.append(thread)
+        self._async_executor.submit(_plot_fast)
 
     def _init_viz_cache(self, solution: DeploymentSolution):
         """初始化可视化缓存（只在第一次调用时执行）"""
