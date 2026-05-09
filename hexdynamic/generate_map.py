@@ -71,6 +71,12 @@ DEFAULTS = {
     "rainy_season_factor": 1.2,
     # 物种（与 DensityRiskCalculator._get_default_species 一致）
     "hex_size": 62,
+    # DSSA 高级配置
+    "save_iteration_visualization": False,
+    "use_risk_priority": True,
+    "high_risk_percentage": 0.1,
+    "force_full_deployment": True,
+    "high_risk_perturbation_priority": 0.7,
 }
 
 TERRAIN_TYPES = ["SparseGrass", "DenseGrass", "WaterHole", "SaltMarsh", "Road"]
@@ -329,6 +335,11 @@ def generate(m: int, n: int, args) -> dict:
             "scout_ratio": args.scout_ratio,
             "ST": args.ST,
             "R2": args.R2,
+            "save_iteration_visualization": args.save_iteration_visualization,
+            "use_risk_priority": args.use_risk_priority,
+            "high_risk_percentage": args.high_risk_percentage,
+            "force_full_deployment": args.force_full_deployment,
+            "high_risk_perturbation_priority": args.high_risk_perturbation_priority,
             "use_marginal_contribution_repair": False,
             "skip_conflict_resolution": False,
         },
@@ -386,6 +397,18 @@ def parse_args():
     p.add_argument("--scout_ratio",     type=float, default=D["scout_ratio"])
     p.add_argument("--ST",              type=float, default=D["ST"])
     p.add_argument("--R2",              type=float, default=D["R2"])
+
+    # DSSA 高级配置
+    p.add_argument("--save_iteration_visualization", action="store_true", default=D["save_iteration_visualization"],
+                   help="保存迭代可视化")
+    p.add_argument("--use_risk_priority", action="store_true", default=D["use_risk_priority"],
+                   help="启用风险优先部署")
+    p.add_argument("--high_risk_percentage", type=float, default=D["high_risk_percentage"],
+                   help="高风险网格占比（0-1）")
+    p.add_argument("--force_full_deployment", action="store_true", default=D["force_full_deployment"],
+                   help="强制部署模式")
+    p.add_argument("--high_risk_perturbation_priority", type=float, default=D["high_risk_perturbation_priority"],
+                   help="高风险扰动优先级（0-1）")
 
     # 风险模型权重
     p.add_argument("--human_weight",        type=float, default=D["human_weight"])

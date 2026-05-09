@@ -2830,7 +2830,7 @@
     "use_risk_priority": true,
     "high_risk_percentage": 0.1,
     "population_size": 200,
-    "max_iterations": 300,
+    "max_iterations": 400,
     "producer_ratio": 0.2,
     "scout_ratio": 0.2,
     "ST": 0.8,

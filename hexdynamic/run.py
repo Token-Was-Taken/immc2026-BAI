@@ -21,11 +21,34 @@ from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison,
 from images_to_video import find_images, create_video, render_all_maps
 
 
-def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
+def auto_grid_dpi(grids, max_grid_dpi=80):
+    """
+    根据地图网格数量自动计算合适的 grid_dpi，确保图片清晰且尺寸合理。
+    grid_dpi 最大不超过 max_grid_dpi。
+    """
+    if not grids:
+        return max_grid_dpi
+    qs = {g["q"] for g in grids}
+    rs = {g["r"] for g in grids}
+    num_cols = len(qs)
+    num_rows = len(rs)
+    max_dim = max(num_cols, num_rows)
+    if max_dim == 0:
+        return max_grid_dpi
+    target_max_pixels = 4000
+    calculated = int(target_max_pixels / max_dim)
+    calculated = max(calculated, 20)
+    return min(calculated, max_grid_dpi)
+
+
+def visualize(output_path: str, input_path: str, out_dir: str, prefix: str, grid_dpi: int = None, save_dpi: int = 150):
     os.makedirs(out_dir, exist_ok=True)
     print(f"\n[VIZ] 加载数据: {output_path}")
     out, out_map, species_map, hex_size, boundary_xy = load_data(output_path, input_path)
+    if grid_dpi is None:
+        grid_dpi = auto_grid_dpi(out["grids"])
     print(f"      网格数: {len(out['grids'])}, hex_size: {hex_size}")
+    print(f"      grid_dpi: {grid_dpi} (auto), save_dpi: {save_dpi}")
 
     pre = prefix + "_" if prefix else ""
 
@@ -33,14 +56,14 @@ def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
         return os.path.join(out_dir, f"{pre}{name}")
 
     print("[VIZ] 生成图片...")
-    plot_risk_heatmap(out, out_map, hex_size, boundary_xy,         save_path=p("risk_heatmap.png"))
-    plot_risk_comparison(out, hex_size, boundary_xy,               save_path=p("risk_comparison.png"))
-    plot_protection_heatmap(out, hex_size, boundary_xy,            save_path=p("protection_heatmap.png"))
-    plot_terrain_map(out, hex_size, boundary_xy,                   save_path=p("terrain_map.png"))
-    plot_terrain_deployment_map(out, hex_size, boundary_xy,        save_path=p("terrain_deployment_map.png"))
-    plot_species_map(out, species_map, hex_size, boundary_xy,        save_path=p("species_map.png"))
-    plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path=p("species_deployment_comparison.png"))
-    plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path=p("protection_deployment_comparison.png"))
+    plot_risk_heatmap(out, out_map, hex_size, boundary_xy,         save_path=p("risk_heatmap.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_risk_comparison(out, hex_size, boundary_xy,               save_path=p("risk_comparison.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_protection_heatmap(out, hex_size, boundary_xy,            save_path=p("protection_heatmap.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_terrain_map(out, hex_size, boundary_xy,                   save_path=p("terrain_map.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_terrain_deployment_map(out, hex_size, boundary_xy,        save_path=p("terrain_deployment_map.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_species_map(out, species_map, hex_size, boundary_xy,        save_path=p("species_map.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path=p("species_deployment_comparison.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path=p("protection_deployment_comparison.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
     print(f"[VIZ] 完成，图片保存至: {out_dir}")
 
 
@@ -76,6 +99,10 @@ def parse_args():
                    help="pipeline 输入 JSON（--visualize-only 时用于物种数据）")
     p.add_argument("--out_dir", "-d", default="./figures", help="图片输出目录")
     p.add_argument("--prefix", default="", help="输出文件名前缀")
+    p.add_argument("--grid_dpi", type=int, default=None,
+                   help="每个六边形网格在输出图片中占用的像素宽度（默认根据地图大小自动计算，最大80）")
+    p.add_argument("--dpi", type=int, default=150,
+                   help="matplotlib savefig 的 DPI，控制输出图片的打印分辨率")
 
     return p.parse_args()
 
@@ -87,7 +114,7 @@ def main():
         # --visualize-only 模式：第一个位置参数 (args.input) 就是 output JSON
         output_json = args.input
         input_json  = args.output  # 可选，用于物种数据
-        visualize(output_json, input_json, args.out_dir, args.prefix)
+        visualize(output_json, input_json, args.out_dir, args.prefix, grid_dpi=args.grid_dpi, save_dpi=args.dpi)
         return
 
     # 正常模式：需要 output 路径
@@ -121,7 +148,7 @@ def main():
 
     # Step 2: 可视化
     if not args.no_visualize:
-        visualize(args.output, args.input, args.out_dir, args.prefix)
+        visualize(args.output, args.input, args.out_dir, args.prefix, grid_dpi=args.grid_dpi, save_dpi=args.dpi)
 
     # Step 3: 如果启用了迭代可视化，自动生成迭代 deployment map 视频
     try:

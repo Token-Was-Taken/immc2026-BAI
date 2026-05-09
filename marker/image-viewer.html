@@ -2183,7 +2183,12 @@
                     producer_ratio: getFloat('pi_producer_ratio'),
                     scout_ratio: getFloat('pi_scout_ratio'),
                     ST: getFloat('pi_ST'),
-                    R2: getFloat('pi_R2')
+                    R2: getFloat('pi_R2'),
+                    save_iteration_visualization: document.getElementById('pi_save_iter_vis').checked,
+                    use_risk_priority: document.getElementById('pi_use_risk_priority').checked,
+                    high_risk_percentage: getFloat('pi_high_risk_pct'),
+                    force_full_deployment: document.getElementById('pi_force_full_deploy').checked,
+                    high_risk_perturbation_priority: getFloat('pi_high_risk_perturb')
                 },
                 grids: gridsOutput
             };
@@ -2368,6 +2373,27 @@
                 </label>
                 <label>R2 参数
                     <input id="pi_R2" type="number" step="0.05" min="0" max="1" value="0.5" style="width:100%;margin-top:4px;background:#1a1a1a;border:1px solid #444;color:#fff;padding:6px;border-radius:4px;">
+                </label>
+
+                <!-- DSSA 高级配置 -->
+                <div style="grid-column:1/-1;color:#aaa;font-size:0.8rem;border-bottom:1px solid #444;padding-bottom:4px;margin-top:8px;">DSSA 高级配置</div>
+                <label style="grid-column:1/-1;display:flex;align-items:center;gap:8px;">
+                    <input id="pi_save_iter_vis" type="checkbox">
+                    保存迭代可视化 (save_iteration_visualization)
+                </label>
+                <label style="grid-column:1/-1;display:flex;align-items:center;gap:8px;">
+                    <input id="pi_use_risk_priority" type="checkbox" checked>
+                    启用风险优先部署 (use_risk_priority)
+                </label>
+                <label style="grid-column:1/-1;display:flex;align-items:center;gap:8px;">
+                    <input id="pi_force_full_deploy" type="checkbox" checked>
+                    强制部署模式 (force_full_deployment)
+                </label>
+                <label>高风险网格占比
+                    <input id="pi_high_risk_pct" type="number" step="0.05" min="0" max="1" value="0.1" style="width:100%;margin-top:4px;background:#1a1a1a;border:1px solid #444;color:#fff;padding:6px;border-radius:4px;">
+                </label>
+                <label>高风险扰动优先级
+                    <input id="pi_high_risk_perturb" type="number" step="0.05" min="0" max="1" value="0.7" style="width:100%;margin-top:4px;background:#1a1a1a;border:1px solid #444;color:#fff;padding:6px;border-radius:4px;">
                 </label>
             </div>
 

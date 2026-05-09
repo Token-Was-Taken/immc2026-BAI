@@ -103,22 +103,80 @@ def load_data(output_path, input_path=None):
 # 布局辅助：地图 ax 设置 + 右侧图例 ax
 # ---------------------------------------------------------------------------
 
-def make_figure(has_colorbar=False):
+def compute_figsize(grids, hex_size, grid_dpi=80, save_dpi=150, has_colorbar=False):
+    """
+    根据 grid_dpi（每个网格在输出图片中的像素数）动态计算 figsize。
+
+    grid_dpi: 每个六边形网格在最终图片中占用的像素宽度（直径方向）
+    save_dpi: matplotlib savefig 的 DPI
+    返回: (fig_width_inches, fig_height_inches)
+    """
+    if not grids:
+        return (14, 9)
+    xs, ys = [], []
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        xs.append(cx)
+        ys.append(cy)
+    margin = hex_size * 2
+    data_width = max(xs) - min(xs) + hex_size * 2 + margin * 2
+    data_height = max(ys) - min(ys) + hex_size * 2 + margin * 2
+    hex_pixel_span = hex_size * math.sqrt(3)
+    if hex_pixel_span == 0:
+        hex_pixel_span = 1.0
+    scale = grid_dpi / hex_pixel_span
+    map_pixel_w = data_width * scale
+    map_pixel_h = data_height * scale
+    legend_pixel_w = grid_dpi * 4.5
+    cbar_pixel_w = grid_dpi * 0.8 if has_colorbar else 0
+    total_pixel_w = map_pixel_w + cbar_pixel_w + legend_pixel_w
+    total_pixel_h = max(map_pixel_h, grid_dpi * 6)
+    fig_w = total_pixel_w / save_dpi
+    fig_h = total_pixel_h / save_dpi
+    map_frac_w = map_pixel_w / total_pixel_w
+    map_frac_h = map_pixel_h / total_pixel_h
+    cbar_frac_w = cbar_pixel_w / total_pixel_w
+    legend_frac_w = legend_pixel_w / total_pixel_w
+    return (fig_w, fig_h), (map_frac_w, map_frac_h, cbar_frac_w, legend_frac_w)
+
+
+def make_figure(grids=None, hex_size=1.0, grid_dpi=80, save_dpi=150, has_colorbar=False):
     """
     返回 (fig, ax_map, ax_cbar_or_None, ax_legend)
     has_colorbar=True  → 三列：地图 | 颜色条 | 图例
     has_colorbar=False → 两列：地图 | 图例
     """
-    fig = plt.figure(figsize=(14, 9))
-    if has_colorbar:
-        # 地图 70%，颜色条 3%（紧贴地图），图例 20%，留白 2%+5%
-        ax_map  = fig.add_axes([0.02, 0.06, 0.68, 0.86])
-        ax_cbar = fig.add_axes([0.72, 0.12, 0.025, 0.62])
-        ax_leg  = fig.add_axes([0.77, 0.06, 0.21, 0.86])
+    if grids is not None and len(grids) > 0:
+        figsize, fracs = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar)
+        map_fw, map_fh, cbar_fw, legend_fw = fracs
+        fig = plt.figure(figsize=figsize)
+        left_pad = 0.02
+        right_pad = 0.01
+        top_pad = 0.08
+        bottom_pad = 0.06
+        usable_w = 1.0 - left_pad - right_pad
+        usable_h = 1.0 - top_pad - bottom_pad
+        if has_colorbar:
+            ax_map  = fig.add_axes([left_pad, bottom_pad, map_fw * usable_w, map_fh * usable_h])
+            cbar_left = left_pad + map_fw * usable_w + 0.005
+            ax_cbar = fig.add_axes([cbar_left, bottom_pad + 0.06, cbar_fw * usable_w, (map_fh - 0.12) * usable_h])
+            leg_left = cbar_left + cbar_fw * usable_w + 0.01
+            ax_leg  = fig.add_axes([leg_left, bottom_pad, legend_fw * usable_w, usable_h])
+        else:
+            ax_map  = fig.add_axes([left_pad, bottom_pad, map_fw * usable_w, map_fh * usable_h])
+            leg_left = left_pad + map_fw * usable_w + 0.01
+            ax_leg  = fig.add_axes([leg_left, bottom_pad, legend_fw * usable_w, usable_h])
+            ax_cbar = None
     else:
-        ax_map  = fig.add_axes([0.02, 0.06, 0.76, 0.86])
-        ax_cbar = None
-        ax_leg  = fig.add_axes([0.80, 0.06, 0.18, 0.86])
+        fig = plt.figure(figsize=(14, 9))
+        if has_colorbar:
+            ax_map  = fig.add_axes([0.02, 0.06, 0.68, 0.86])
+            ax_cbar = fig.add_axes([0.72, 0.12, 0.025, 0.62])
+            ax_leg  = fig.add_axes([0.77, 0.06, 0.21, 0.86])
+        else:
+            ax_map  = fig.add_axes([0.02, 0.06, 0.76, 0.86])
+            ax_cbar = None
+            ax_leg  = fig.add_axes([0.80, 0.06, 0.18, 0.86])
     ax_leg.axis("off")
     return fig, ax_map, ax_cbar, ax_leg
 
@@ -457,19 +515,18 @@ def _draw_resources(ax, grids, out, hex_size, edge_ids):
 # 图 1：风险热力图
 # ---------------------------------------------------------------------------
 
-def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path):
+def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
     summary = out["summary"]
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("YlOrRd")
     norm = Normalize(vmin=0, vmax=1)
 
-    fig, ax, ax_cbar, ax_leg = make_figure(has_colorbar=True)
+    fig, ax, ax_cbar, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=True)
 
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
         draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g["risk_normalized"])))
-        # 添加网格 ID 标注
         if show_grid_ids:
             ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
@@ -497,12 +554,12 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path):
                     fontfamily="monospace")
         y -= 0.09
 
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
 
 
-def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
+def plot_protection_heatmap(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
     summary = out["summary"]
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
@@ -516,12 +573,11 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
 
     def _draw(title, value_key, vmax, path):
         norm = Normalize(vmin=0, vmax=vmax if vmax > 0 else 1)
-        fig, ax, ax_cbar, ax_leg = make_figure(has_colorbar=True)
+        fig, ax, ax_cbar, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=True)
 
         for g in grids:
             cx, cy = grid_center(g["q"], g["r"], hex_size)
             draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g.get(value_key, 0))))
-            # 添加网格 ID 标注
             if show_grid_ids:
                 ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
@@ -539,7 +595,7 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
                         fontsize=8, va="top", fontfamily="monospace")
             y -= 0.09
 
-        fig.savefig(path, dpi=150, bbox_inches="tight")
+        fig.savefig(path, dpi=save_dpi, bbox_inches="tight")
         plt.close(fig)
         print(f"  saved: {path}")
 
@@ -556,27 +612,27 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path):
           raw_max, raw_path)
 
 
-def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
+def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     """上下对比：部署前风险（risk_normalized）vs 部署后剩余风险（residual_risk_normalized）"""
     grids = out["grids"]
     summary = out["summary"]
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
 
-    # 检查是否有 residual_risk_normalized 字段
     if not grids or "residual_risk_normalized" not in grids[0]:
         print("  [skip] risk_comparison.png — 输出数据缺少 residual_risk_normalized 字段")
         return
 
     cmap = matplotlib.colormaps.get_cmap("YlOrRd")
 
-    # 先计算两侧数据，确定统一的颜色条上限
     risk_before = [g["risk_normalized"] for g in grids]
     risk_after  = [g["residual_risk_normalized"] for g in grids]
     vmax = max(max(risk_before), max(risk_after))
     norm = Normalize(vmin=0, vmax=vmax)
 
-    fig = plt.figure(figsize=(14, 13))
-    # 颜色条在最左边，然后是两个热力图上下排列，summary在最右边
+    figsize_single, _ = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar=True)
+    fig_w = figsize_single[0]
+    fig_h = figsize_single[1] * 2 + 0.5
+    fig = plt.figure(figsize=(fig_w, fig_h))
     ax_cbar   = fig.add_axes([0.02, 0.08, 0.02, 0.80])
     ax_before = fig.add_axes([0.07, 0.52, 0.70, 0.46])
     ax_after  = fig.add_axes([0.07, 0.06, 0.70, 0.46])
@@ -592,7 +648,6 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
                  facecolor=cmap(norm(g["risk_normalized"])))
         draw_hex(ax_after, cx, cy, hex_size * 0.97,
                  facecolor=cmap(norm(g["residual_risk_normalized"])))
-        # 在两个子图上都添加网格 ID 标注
         if show_grid_ids:
             ax_before.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
             ax_after.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
@@ -611,7 +666,6 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
     cb.set_label("Risk Level", fontsize=9)
     cb.ax.tick_params(labelsize=8)
 
-    # 右侧指标：展示保护前后的风险统计
     n = len(grids)
     mean_before = sum(risk_before) / n
     mean_after  = sum(risk_after) / n
@@ -641,20 +695,19 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path):
                     fontfamily="monospace")
         y -= 0.07
 
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
 
 
-def plot_terrain_map(out, hex_size, boundary_xy, save_path):
+def plot_terrain_map(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
-    fig, ax, _, ax_leg = make_figure(has_colorbar=False)
+    fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
         draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"))
-        # 添加网格 ID 标注
         if show_grid_ids:
             ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
@@ -665,22 +718,21 @@ def plot_terrain_map(out, hex_size, boundary_xy, save_path):
 
     handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, label=t)
                for t, c in TERRAIN_COLORS.items()]
-    # Add fence handle
     handles.append(
         plt.Line2D([0], [1], color="#1a1a1a", linewidth=FENCE_EDGE_LINEWIDTH * 2, 
                    label="Fence (bold edge)")
     )
     legend_in_ax(ax_leg, handles, "Terrain Type", y_start=0.97)
 
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
 
 
-def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path):
+def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
     edge_ids = _edge_grid_ids(grids, boundary_xy)
-    fig, ax, _, ax_leg = make_figure(has_colorbar=False)
+    fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
@@ -707,19 +759,19 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path):
     y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=0.97)
     legend_in_ax(ax_leg, res_handles, "Resources", y_start=y)
 
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
 
 
-def plot_species_map(out, species_map, hex_size, boundary_xy, save_path):
+def plot_species_map(out, species_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
     if not species_map:
         print("  [skip] species_map.png — 无物种数据（请提供 --input 参数）")
         return
 
     all_species = sorted({sp for sd in species_map.values() for sp in sd})
-    fig, ax, _, ax_leg = make_figure(has_colorbar=False)
+    fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
@@ -759,16 +811,19 @@ def plot_species_map(out, species_map, hex_size, boundary_xy, save_path):
     y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=0.97)
     legend_in_ax(ax_leg, species_handles, "Species Density", y_start=y)
 
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
 
 
-def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path):
+def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     """物种密度与部署资源对比图（上：物种密度，下：部署资源）"""
     grids = out["grids"]
 
-    fig = plt.figure(figsize=(16, 15))
+    figsize_single, _ = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar=False)
+    fig_w = figsize_single[0]
+    fig_h = figsize_single[1] * 2 + 0.5
+    fig = plt.figure(figsize=(fig_w, fig_h))
     
     # 上半部分：物种密度
     ax1 = fig.add_axes([0.05, 0.52, 0.7, 0.46])
@@ -850,19 +905,22 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
         ]
         legend_in_ax(ax_leg1, species_handles, "Species Density", y_start=y)
 
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
 
 
-def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path):
+def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     """保护收益热力图与部署资源对比图（上：Protection Heatmap，下：Deployment Map）"""
     grids = out["grids"]
     summary = out["summary"]
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     edge_ids = _edge_grid_ids(grids, boundary_xy)
 
-    fig = plt.figure(figsize=(16, 16))
+    figsize_single, _ = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar=True)
+    fig_w = figsize_single[0]
+    fig_h = figsize_single[1] * 2 + 0.5
+    fig = plt.figure(figsize=(fig_w, fig_h))
     
     # 上半部分：Protection Heatmap
     ax1 = fig.add_axes([0.07, 0.52, 0.65, 0.46])
@@ -956,7 +1014,7 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path)
     )
     legend_in_ax(ax_leg, res_handles, "Resources", y_start=y)
 
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
 
@@ -974,6 +1032,10 @@ def parse_args():
     p.add_argument("--input", "-i", default=None, help="pipeline 输入 JSON 路径（用于物种数据）")
     p.add_argument("--out_dir", "-d", default="./figures", help="图片输出目录")
     p.add_argument("--prefix", default="", help="输出文件名前缀")
+    p.add_argument("--grid_dpi", type=int, default=80,
+                   help="每个六边形网格在输出图片中占用的像素宽度，值越大图片越清晰但文件越大")
+    p.add_argument("--dpi", type=int, default=150,
+                   help="matplotlib savefig 的 DPI，控制输出图片的打印分辨率")
     return p.parse_args()
 
 
@@ -986,28 +1048,37 @@ def main():
     print(f"  网格数: {len(out['grids'])}, hex_size: {hex_size}")
     if boundary_xy:
         print(f"  边界格子数: {len(boundary_xy)}")
+    print(f"  grid_dpi: {args.grid_dpi}, save_dpi: {args.dpi}")
 
     pre = args.prefix + "_" if args.prefix else ""
     print("生成图片...")
 
     plot_risk_heatmap(out, out_map, hex_size, boundary_xy,
-                      save_path=os.path.join(args.out_dir, f"{pre}risk_heatmap.png"))
+                      save_path=os.path.join(args.out_dir, f"{pre}risk_heatmap.png"),
+                      grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     plot_risk_comparison(out, hex_size, boundary_xy,
-                         save_path=os.path.join(args.out_dir, f"{pre}risk_comparison.png"))
+                         save_path=os.path.join(args.out_dir, f"{pre}risk_comparison.png"),
+                         grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     plot_protection_heatmap(out, hex_size, boundary_xy,
-                            save_path=os.path.join(args.out_dir, f"{pre}protection_heatmap.png"))
+                            save_path=os.path.join(args.out_dir, f"{pre}protection_heatmap.png"),
+                            grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     plot_terrain_map(out, hex_size, boundary_xy,
-                     save_path=os.path.join(args.out_dir, f"{pre}terrain_map.png"))
+                     save_path=os.path.join(args.out_dir, f"{pre}terrain_map.png"),
+                     grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     plot_terrain_deployment_map(out, hex_size, boundary_xy,
-                                save_path=os.path.join(args.out_dir, f"{pre}terrain_deployment_map.png"))
+                                save_path=os.path.join(args.out_dir, f"{pre}terrain_deployment_map.png"),
+                                grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     plot_species_map(out, species_map, hex_size, boundary_xy,
-                     save_path=os.path.join(args.out_dir, f"{pre}species_map.png"))
+                     save_path=os.path.join(args.out_dir, f"{pre}species_map.png"),
+                     grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     
     plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy,
-                                      save_path=os.path.join(args.out_dir, f"{pre}species_deployment_comparison.png"))
+                                      save_path=os.path.join(args.out_dir, f"{pre}species_deployment_comparison.png"),
+                                      grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     
     plot_protection_deployment_comparison(out, hex_size, boundary_xy,
-                                          save_path=os.path.join(args.out_dir, f"{pre}protection_deployment_comparison.png"))
+                                          save_path=os.path.join(args.out_dir, f"{pre}protection_deployment_comparison.png"),
+                                          grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     print("完成。")
 
 

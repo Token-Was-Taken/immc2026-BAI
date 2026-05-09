@@ -167,18 +167,30 @@ python generate_map.py -m 15 -n 15 --seed 42 -o map.json
 | `--max_rangers_per_camp` | 5                     | 每营地最大人员                   |
 | `--total_cameras`        | 10                    | 摄像头总数                     |
 | `--total_drones`         | 3                     | 无人机总数                     |
-| `--total_fence_length`   | 50                    | 围栏参数（已不影响结果，围栏固定部署在所有边缘格） |
+| `--total_fence_length`   | 50                    | 围栏总长度                     |
 | `--patrol_radius`        | 5.0                   | 巡逻覆盖衰减半径                  |
 | `--drone_radius`         | 8.0                   | 无人机覆盖半径                   |
 | `--camera_radius`        | 3.0                   | 摄像头覆盖半径                   |
 | `--fence_protection`     | 0.5                   | 每段围栏保护系数                  |
-| `--wp/wd/wc/wf`          | 0.3/0.3/0.2/0.2       | 巡逻/无人机/摄像头/围栏权重           |
-| `--population_size`      | 50                    | DSSA 种群大小                 |
+| `--wp`                   | 0.3                   | 巡逻权重                      |
+| `--wd`                   | 0.3                   | 无人机权重                     |
+| `--wc`                   | 0.2                   | 摄像头权重                     |
+| `--wf`                   | 0.2                   | 围栏权重                      |
+| `--population_size`       | 50                    | DSSA 种群大小                 |
 | `--max_iterations`       | 100                   | DSSA 最大迭代次数               |
+| `--producer_ratio`        | 0.2                   | DSSA 生产者比例                |
+| `--scout_ratio`          | 0.2                   | DSSA 侦察者比例                |
+| `--ST`                   | 0.8                   | DSSA 禁忌表阈值                |
+| `--R2`                   | 0.5                   | DSSA R2 参数                  |
+| `--save_iteration_visualization` | False             | 保存迭代可视化                  |
+| `--use_risk_priority`    | True                  | 启用风险优先部署                 |
+| `--high_risk_percentage` | 0.1                   | 高风险网格占比（0-1）             |
+| `--force_full_deployment` | True                  | 强制部署模式                   |
+| `--high_risk_perturbation_priority` | 0.7         | 高风险扰动优先级（0-1）            |
 | `--human_weight`         | 0.4                   | 综合风险：人为风险权重 ω₁            |
 | `--environmental_weight` | 0.3                   | 综合风险：环境风险权重 ω₂            |
 | `--density_weight`       | 0.3                   | 综合风险：物种密度权重 ω₃            |
-| `--boundary_weight`      | 0.2                   | 人为风险：边界邻近度权重              |
+| `--boundary_weight`       | 0.2                   | 人为风险：边界邻近度权重              |
 | `--road_weight`          | 0.3                   | 人为风险：道路邻近度权重              |
 | `--water_weight`         | 0.5                   | 人为风险：水源邻近度权重              |
 | `--fire_weight`          | 0.6                   | 环境风险：火灾风险权重               |
@@ -188,6 +200,183 @@ python generate_map.py -m 15 -n 15 --seed 42 -o map.json
 | `--gamma`                | 0.3                   | 时间因子：昼夜正弦波振幅              |
 | `--dry_season_factor`    | 1.0                   | 时间因子：旱季风险因子               |
 | `--rainy_season_factor`  | 1.2                   | 时间因子：雨季风险因子               |
+
+### 完整配置参数详细说明
+
+下面列出 Input JSON 中所有配置参数的完整说明，按功能模块分组：
+
+#### 1. 地图配置 (map_config)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `map_width` | int | 必填 | 地图列数 |
+| `map_height` | int | 必填 | 地图行数 |
+| `boundary_type` | string | "RECTANGLE" | 边界类型，目前仅支持 RECTANGLE |
+| `road_locations` | array | [] | 道路格子坐标，格式 `[[x1,y1], [x2,y2], ...]`，坐标系为笛卡尔坐标 |
+| `water_locations` | array | [] | 水源格子坐标，格式同上 |
+| `boundary_locations` | array | [] | 边界格子坐标，用于风险计算 |
+
+#### 2. 时间配置 (time)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `hour_of_day` | int | 12 | 小时（0-23），白天建议 6-18，夜间建议 19-5 |
+| `season` | string | "DRY" | 季节："DRY"（旱季）或 "RAINY"（雨季） |
+| `use_temporal_factors` | bool | false | 是否启用昼夜/季节时间因子计算 |
+
+#### 3. 资源约束 (constraints)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `total_patrol` | int | 20 | 巡逻人员总数 |
+| `total_camps` | int | 5 | 营地总数 |
+| `max_rangers_per_camp` | int | 5 | 每个营地最多人员数 |
+| `total_cameras` | int | 10 | 摄像头总数 |
+| `total_drones` | int | 3 | 无人机总数 |
+| `total_fence_length` | float | 50 | 围栏总长度（单位：网格数） |
+| `max_cameras_per_grid` | int | 3 | 单格最大摄像头数量 |
+| `max_drones_per_grid` | int | 1 | 单格最大无人机数量 |
+| `max_camps_per_grid` | int | 1 | 单格最大营地数量 |
+| `max_rangers_per_grid` | int | 1 | 单格最大巡逻人员数量 |
+
+#### 4. 覆盖参数 (coverage_params)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `patrol_radius` | float | 5.0 | 巡逻人员覆盖半径（网格数），使用指数衰减 |
+| `drone_radius` | float | 8.0 | 无人机覆盖半径（网格数） |
+| `camera_radius` | float | 3.0 | 摄像头覆盖半径（网格数） |
+| `fence_protection` | float | 0.5 | 围栏保护系数（0.0-1.0），影响边界网格防护效果 |
+| `wp` | float | 0.3 | 巡逻覆盖权重，影响适应度函数中巡逻贡献的占比 |
+| `wd` | float | 0.3 | 无人机覆盖权重 |
+| `wc` | float | 0.2 | 摄像头覆盖权重 |
+| `wf` | float | 0.2 | 围栏覆盖权重 |
+| `alpha_pd` | float | 0.4 | 巡逻+无人机协同系数（0.0-1.0），协同增强覆盖效果 |
+| `alpha_pc` | float | 0.15 | 巡逻+摄像头协同系数（0.0-1.0） |
+
+#### 5. 风险模型权重 (risk_model_config)
+
+##### 5.1 综合风险权重 (risk_weights)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `human_weight` (ω₁) | float | 0.4 | 人为风险在综合风险中的权重 |
+| `environmental_weight` (ω₂) | float | 0.3 | 环境风险在综合风险中的权重 |
+| `density_weight` (ω₃) | float | 0.3 | 物种密度风险在综合风险中的权重 |
+
+> **综合风险公式**：`R = ω₁·H + ω₂·E + ω₃·D`，三个权重之和建议为 1.0
+
+##### 5.2 人为风险权重 (human_risk_weights)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `boundary_weight` | float | 0.2 | 边界邻近度权重，越接近边界的网格人为风险越高 |
+| `road_weight` | float | 0.3 | 道路邻近度权重，越接近道路的网格盗猎风险越高 |
+| `water_weight` | float | 0.5 | 水源邻近度权重，野生动物频繁活动区域风险较高 |
+
+##### 5.3 环境风险权重 (environmental_risk_weights)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `fire_weight` | float | 0.6 | 火灾风险权重，基于网格的 `fire_risk` 字段 |
+| `terrain_weight` | float | 0.4 | 地形复杂度权重，基于网格的 `terrain_complexity` 字段 |
+
+##### 5.4 时间因子权重 (temporal_weights)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `daytime_factor` | float | 1.0 | 白天风险因子基准值 |
+| `nighttime_factor` | float | 1.3 | 夜间风险因子基准值，夜间风险通常更高 |
+| `gamma` | float | 0.3 | 昼夜正弦波振幅，控制白天到夜间风险的平滑过渡 |
+| `dry_season_factor` | float | 1.0 | 旱季风险因子基准值 |
+| `rainy_season_factor` | float | 1.2 | 雨季风险因子基准值，雨季盗猎活动可能更频繁 |
+
+#### 6. 物种配置 (species_config)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `{species_name}.weight` | float | 必填 | 该物种的保护权重，影响优化目标 |
+| `{species_name}.rainy_season_multiplier` | float | 必填 | 雨季系数，物种在雨季的活动/风险倍数 |
+| `{species_name}.dry_season_multiplier` | float | 必填 | 旱季系数，物种在旱季的活动/风险倍数 |
+
+**示例**：
+```json
+"species_config": {
+  "rhino":    { "weight": 0.5, "rainy_season_multiplier": 1.2, "dry_season_multiplier": 1.0 },
+  "elephant": { "weight": 0.3, "rainy_season_multiplier": 1.3, "dry_season_multiplier": 0.9 },
+  "bird":     { "weight": 0.2, "rainy_season_multiplier": 1.5, "dry_season_multiplier": 0.8 }
+}
+```
+
+#### 7. DSSA 优化参数 (dssa_config)
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `population_size` | int | 50 | 遗传算法种群大小，越大搜索空间越广但计算越慢 |
+| `max_iterations` | int | 100 | 最大迭代次数，达到后停止优化 |
+| `producer_ratio` | float | 0.2 | 生产者比例（0.0-1.0），种群中生产者占比 |
+| `scout_ratio` | float | 0.2 | 侦察者比例（0.0-1.0），种群中侦察者占比 |
+| `ST` | float | 0.8 | 禁忌表阈值（ Suitability Threshold），高于此值的解被加入禁忌表 |
+| `R2` | float | 0.5 | 侦察者搜索半径参数，控制侦察者的探索范围 |
+| `save_iteration_visualization` | bool | false | 是否保存每轮迭代的可视化图像（异步绘制，不阻塞优化） |
+| `use_risk_priority` | bool | true | 启用风险优先部署模式，优先将资源部署到高风险网格 |
+| `high_risk_percentage` | float | 0.1 | 高风险网格占比（0.0-1.0），前 X% 的高风险网格被优先部署 |
+| `force_full_deployment` | bool | true | 强制部署模式，启用时所有资源都会被部署到上限 |
+| `high_risk_perturbation_priority` | float | 0.7 | 高风险扰动优先级（0.0-1.0），在风险优先模式下扰动操作的概率 |
+| `use_marginal_contribution_repair` | bool | false | 启用边际贡献修复，减少部署冲突 |
+| `skip_conflict_resolution` | bool | false | 跳过冲突解决步骤，直接使用优化结果（可能产生非法解） |
+| `output_dir` | string | null | 迭代输出目录路径，保存每轮迭代的中间结果 |
+| `use_time_aware_fitness` | bool | false | 启用时间感知适应度，资源分配反映时间因子影响 |
+
+##### DSSA 高级参数详解
+
+**风险优先部署模式** (`use_risk_priority: true`)：
+- 系统会根据综合风险值对所有网格排序
+- 前 `high_risk_percentage` 比例的网格被标记为"高风险网格"
+- 资源初始化时会优先部署到高风险网格
+- 扰动操作优先作用于高风险网格中的资源
+- `high_risk_perturbation_priority` 控制扰动操作的优先级
+
+**强制部署模式** (`force_full_deployment: true`)：
+- 所有资源（巡逻、摄像头、无人机、营地、围栏）都会被部署到上限
+- 优化器会根据收益选择最优部署位置
+- 禁用后，优化器可以决定是否部署某个资源
+
+#### 8. 网格数据 (grids)
+
+每个网格是一个对象，包含以下字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `grid_id` | int | 是 | 网格唯一标识符 |
+| `q` | int | 是 | 六边形轴坐标 q 值 |
+| `r` | int | 是 | 六边形轴坐标 r 值 |
+| `x` | int | 是 | 笛卡尔坐标 x（原点在左下） |
+| `y` | int | 是 | 笛卡尔坐标 y（向上为正） |
+| `hex_size` | float | 否 | 网格像素半径（用于可视化） |
+| `terrain_type` | string | 是 | 地形类型：DenseGrass/SparseGrass/WaterHole/SaltMarsh/Road |
+| `fire_risk` | float | 是 | 火灾风险值（0.0-1.0） |
+| `terrain_complexity` | float | 是 | 地形复杂度（0.0-1.0） |
+| `vegetation_type` | string | 是 | 植被类型：GRASSLAND/FOREST/SHRUB |
+| `species_densities` | object | 是 | 各物种密度，如 `{ "rhino": 0.4, "elephant": 0.3, "bird": 0.5 }` |
+
+#### 9. 覆盖效果折扣 (coverage_effectiveness)
+
+可选配置，定义不同地形对各资源覆盖效果的折扣系数：
+
+```json
+"coverage_effectiveness": {
+  "DenseGrass": { "patrol": 0.3, "camp": 0.3 }
+}
+```
+
+这表示在 DenseGrass 地形中，巡逻和营地的覆盖效果打 3 折（0.3）。未配置的地形默认系数为 1.0。
+
+#### 10. 配置优先级
+
+命令行参数 > Input JSON > 默认值
+
+例如：`run.py --max_iterations 200 input.json` 会使用 200 次迭代，即使 input.json 中设置为 100。
 
 ***
 

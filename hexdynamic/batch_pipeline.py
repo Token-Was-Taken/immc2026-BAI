@@ -40,9 +40,26 @@ def scan_input_files(input_dir: str, pattern: str = "*.json") -> List[str]:
     return files
 
 
+def auto_grid_dpi(grids, max_grid_dpi=80):
+    if not grids:
+        return max_grid_dpi
+    qs = {g["q"] for g in grids}
+    rs = {g["r"] for g in grids}
+    num_cols = len(qs)
+    num_rows = len(rs)
+    max_dim = max(num_cols, num_rows)
+    if max_dim == 0:
+        return max_grid_dpi
+    target_max_pixels = 4000
+    calculated = int(target_max_pixels / max_dim)
+    calculated = max(calculated, 20)
+    return min(calculated, max_grid_dpi)
+
+
 def process_single(input_path: str, output_dir: str, prefix: str,
                    vectorized: bool, allow_partial: bool,
-                   freeze_resources: str | None) -> Dict:
+                   freeze_resources: str | None,
+                   grid_dpi: int = None, save_dpi: int = 150) -> Dict:
     from protection_pipeline import run_pipeline
     from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison, \
         plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map, \
@@ -72,19 +89,22 @@ def process_single(input_path: str, output_dir: str, prefix: str,
 
     out_data, out_map, species_map, hex_size, boundary_xy = load_data(output_json, input_path)
 
+    if grid_dpi is None:
+        grid_dpi = auto_grid_dpi(out_data["grids"])
+
     pre = ""
     def p(name):
         return os.path.join(scenario_dir, f"{pre}{name}")
 
-    print(f"  [VIZ] Generating figures ({len(out['grids'])} grids)...")
-    plot_risk_heatmap(out_data, out_map, hex_size, boundary_xy,         save_path=p("risk_heatmap.png"))
-    plot_risk_comparison(out_data, hex_size, boundary_xy,               save_path=p("risk_comparison.png"))
-    plot_protection_heatmap(out_data, hex_size, boundary_xy,            save_path=p("protection_heatmap.png"))
-    plot_terrain_map(out_data, hex_size, boundary_xy,                   save_path=p("terrain_map.png"))
-    plot_terrain_deployment_map(out_data, hex_size, boundary_xy,        save_path=p("terrain_deployment_map.png"))
-    plot_species_map(out_map, species_map, hex_size, boundary_xy,       save_path=p("species_map.png"))
-    plot_species_deployment_comparison(out_data, species_map, hex_size, boundary_xy, save_path=p("species_deployment_comparison.png"))
-    plot_protection_deployment_comparison(out_data, hex_size, boundary_xy, save_path=p("protection_deployment_comparison.png"))
+    print(f"  [VIZ] Generating figures ({len(out['grids'])} grids, grid_dpi={grid_dpi}, save_dpi={save_dpi})...")
+    plot_risk_heatmap(out_data, out_map, hex_size, boundary_xy,         save_path=p("risk_heatmap.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_risk_comparison(out_data, hex_size, boundary_xy,               save_path=p("risk_comparison.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_protection_heatmap(out_data, hex_size, boundary_xy,            save_path=p("protection_heatmap.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_terrain_map(out_data, hex_size, boundary_xy,                   save_path=p("terrain_map.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_terrain_deployment_map(out_data, hex_size, boundary_xy,        save_path=p("terrain_deployment_map.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_species_map(out_map, species_map, hex_size, boundary_xy,       save_path=p("species_map.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_species_deployment_comparison(out_data, species_map, hex_size, boundary_xy, save_path=p("species_deployment_comparison.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_protection_deployment_comparison(out_data, hex_size, boundary_xy, save_path=p("protection_deployment_comparison.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
 
     summary = out.get("summary", {})
     return {
@@ -175,6 +195,10 @@ Output structure:
                         help="Comma-separated list of frozen resources (e.g., 'patrol,camera')")
     parser.add_argument("--no-visualize", action="store_true", default=False,
                         help="Skip visualization, only run optimization")
+    parser.add_argument("--grid_dpi", type=int, default=None,
+                        help="Per-grid pixel width in output images (default: auto-calculated, max 80)")
+    parser.add_argument("--dpi", type=int, default=150,
+                        help="matplotlib savefig DPI for output images")
 
     args = parser.parse_args()
 
@@ -216,6 +240,8 @@ Output structure:
                 vectorized=args.vectorized,
                 allow_partial=args.allow_partial_deployment,
                 freeze_resources=args.freeze_resources,
+                grid_dpi=args.grid_dpi,
+                save_dpi=args.dpi,
             )
             results.append(result)
             print(f"  OK  fitness={result['best_fitness']:.4f}  PB={result['total_protection_benefit']:.2f}")
