@@ -17,7 +17,9 @@ import sys
 
 from protection_pipeline import run_pipeline
 from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison, \
-    plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map, plot_species_deployment_comparison, plot_protection_deployment_comparison
+    plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, \
+    plot_species_map, plot_species_deployment_comparison, plot_protection_deployment_comparison, \
+    plot_fitness_history
 from images_to_video import find_images, create_video, render_all_maps
 
 
@@ -64,6 +66,7 @@ def visualize(output_path: str, input_path: str, out_dir: str, prefix: str, grid
     plot_species_map(out, species_map, hex_size, boundary_xy,        save_path=p("species_map.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
     plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path=p("species_deployment_comparison.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
     plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path=p("protection_deployment_comparison.png"), grid_dpi=grid_dpi, save_dpi=save_dpi)
+    plot_fitness_history(out, save_path=p("fitness_history.png"), save_dpi=save_dpi)
     print(f"[VIZ] 完成，图片保存至: {out_dir}")
 
 

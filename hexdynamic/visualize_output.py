@@ -1019,6 +1019,46 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     print(f"  saved: {save_path}")
 
 
+def plot_fitness_history(out, save_path, save_dpi=150):
+    fitness_history = out.get("summary", {}).get("fitness_history")
+    if not fitness_history:
+        print("  [skip] fitness_history.png — 输出数据缺少 fitness_history 字段")
+        return
+
+    iterations = list(range(1, len(fitness_history) + 1))
+    best_val = max(fitness_history)
+    best_iter = fitness_history.index(best_val) + 1
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(iterations, fitness_history, color="#2196F3", linewidth=1.2, alpha=0.85, label="Best Fitness")
+    ax.scatter([best_iter], [best_val], color="#F44336", s=60, zorder=5, label=f"Best: {best_val:.6f} (iter {best_iter})")
+    ax.axhline(y=best_val, color="#F44336", linewidth=0.6, linestyle="--", alpha=0.5)
+
+    ax.set_xlabel("Iteration", fontsize=11)
+    ax.set_ylabel("Best Fitness", fontsize=11)
+    ax.set_title("Fitness Convergence", fontsize=13, fontweight="bold", pad=8)
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(1, len(fitness_history))
+
+    summary = out.get("summary", {})
+    stats_text = (
+        f"Total Iterations: {len(fitness_history)}\n"
+        f"Best Fitness: {best_val:.6f}\n"
+        f"Best Iteration: {best_iter}\n"
+        f"Initial Fitness: {fitness_history[0]:.6f}\n"
+        f"Improvement: {best_val - fitness_history[0]:.6f}"
+    )
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+            fontsize=8, va="top", fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.8, edgecolor="#ccc"))
+
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved: {save_path}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1079,6 +1119,9 @@ def main():
     plot_protection_deployment_comparison(out, hex_size, boundary_xy,
                                           save_path=os.path.join(args.out_dir, f"{pre}protection_deployment_comparison.png"),
                                           grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+    plot_fitness_history(out,
+                         save_path=os.path.join(args.out_dir, f"{pre}fitness_history.png"),
+                         save_dpi=args.dpi)
     print("完成。")
 
 

@@ -20,6 +20,97 @@ def _snapshot_solution(solution: DeploymentSolution) -> DeploymentSolution:
     )
 
 
+class _SerializationBuffer:
+    """可复用的序列化缓冲区，避免反复分配 dict/list 导致内存碎片"""
+    __slots__ = ('cameras', 'camps', 'drones', 'rangers', 'fences',
+                 'cam_locs', 'camp_locs', 'drone_locs', 'ranger_locs', 'fence_edges',
+                 'statistics', 'output')
+
+    def __init__(self):
+        self.cameras = {}
+        self.camps = {}
+        self.drones = {}
+        self.rangers = {}
+        self.fences = {}
+        self.cam_locs = []
+        self.camp_locs = []
+        self.drone_locs = []
+        self.ranger_locs = []
+        self.fence_edges = []
+        self.statistics = {}
+        self.output = {}
+
+    def clear(self):
+        self.cameras.clear()
+        self.camps.clear()
+        self.drones.clear()
+        self.rangers.clear()
+        self.fences.clear()
+        self.cam_locs.clear()
+        self.camp_locs.clear()
+        self.drone_locs.clear()
+        self.ranger_locs.clear()
+        self.fence_edges.clear()
+        self.statistics.clear()
+        self.output.clear()
+
+    def fill_from(self, solution: DeploymentSolution) -> Dict[str, Any]:
+        total_cameras = 0
+        for k, v in solution.cameras.items():
+            self.cameras[str(k)] = v
+            total_cameras += v
+            if v > 0:
+                self.cam_locs.append(k)
+
+        total_camps = 0
+        for k, v in solution.camps.items():
+            self.camps[str(k)] = v
+            total_camps += v
+            if v > 0:
+                self.camp_locs.append(k)
+
+        total_drones = 0
+        for k, v in solution.drones.items():
+            self.drones[str(k)] = v
+            total_drones += v
+            if v > 0:
+                self.drone_locs.append(k)
+
+        total_rangers = 0
+        for k, v in solution.rangers.items():
+            self.rangers[str(k)] = v
+            total_rangers += v
+            if v > 0:
+                self.ranger_locs.append(k)
+
+        total_fence_length = 0
+        for k, v in solution.fences.items():
+            self.fences[f"{k[0]}-{k[1]}"] = v
+            total_fence_length += v
+            if v > 0:
+                self.fence_edges.append(k)
+
+        self.statistics['total_cameras'] = total_cameras
+        self.statistics['total_drones'] = total_drones
+        self.statistics['total_camps'] = total_camps
+        self.statistics['total_rangers'] = total_rangers
+        self.statistics['total_fence_length'] = total_fence_length
+        self.statistics['camera_locations'] = list(self.cam_locs)
+        self.statistics['drone_locations'] = list(self.drone_locs)
+        self.statistics['ranger_locations'] = list(self.ranger_locs)
+        self.statistics['camp_locations'] = list(self.camp_locs)
+        self.statistics['fence_edges'] = list(self.fence_edges)
+
+        self.output['cameras'] = self.cameras
+        self.output['camps'] = self.camps
+        self.output['drones'] = self.drones
+        self.output['rangers'] = self.rangers
+        self.output['fences'] = self.fences
+        self.output['statistics'] = self.statistics
+
+        return self.output
+
+
 @dataclass
 class DSSAConfig:
     population_size: int = 50
@@ -1109,13 +1200,69 @@ class DSSAOptimizer:
         }
 
     def _serialize_solution(self, solution: DeploymentSolution) -> Dict[str, Any]:
+        cameras_ser = {}
+        total_cameras = 0
+        camera_locations = []
+        for k, v in solution.cameras.items():
+            cameras_ser[str(k)] = v
+            total_cameras += v
+            if v > 0:
+                camera_locations.append(k)
+
+        camps_ser = {}
+        total_camps = 0
+        camp_locations = []
+        for k, v in solution.camps.items():
+            camps_ser[str(k)] = v
+            total_camps += v
+            if v > 0:
+                camp_locations.append(k)
+
+        drones_ser = {}
+        total_drones = 0
+        drone_locations = []
+        for k, v in solution.drones.items():
+            drones_ser[str(k)] = v
+            total_drones += v
+            if v > 0:
+                drone_locations.append(k)
+
+        rangers_ser = {}
+        total_rangers = 0
+        ranger_locations = []
+        for k, v in solution.rangers.items():
+            rangers_ser[str(k)] = v
+            total_rangers += v
+            if v > 0:
+                ranger_locations.append(k)
+
+        fences_ser = {}
+        total_fence_length = 0
+        fence_edges = []
+        for k, v in solution.fences.items():
+            fences_ser[f"{k[0]}-{k[1]}"] = v
+            total_fence_length += v
+            if v > 0:
+                fence_edges.append(k)
+
         return {
-            'cameras': {str(k): v for k, v in solution.cameras.items()},
-            'camps': {str(k): v for k, v in solution.camps.items()},
-            'drones': {str(k): v for k, v in solution.drones.items()},
-            'rangers': {str(k): v for k, v in solution.rangers.items()},
-            'fences': {f"{k[0]}-{k[1]}": v for k, v in solution.fences.items()},
-            'statistics': self.get_solution_statistics(solution)
+            'cameras': cameras_ser,
+            'camps': camps_ser,
+            'drones': drones_ser,
+            'rangers': rangers_ser,
+            'fences': fences_ser,
+            'statistics': {
+                'total_cameras': total_cameras,
+                'total_drones': total_drones,
+                'total_camps': total_camps,
+                'total_rangers': total_rangers,
+                'total_fence_length': total_fence_length,
+                'camera_locations': camera_locations,
+                'drone_locations': drone_locations,
+                'ranger_locations': ranger_locations,
+                'camp_locations': camp_locations,
+                'fence_edges': fence_edges
+            }
         }
 
     def _ensure_json_worker(self):
@@ -1125,6 +1272,7 @@ class DSSAOptimizer:
             self._json_worker_started = True
 
     def _json_worker_loop(self):
+        buf = _SerializationBuffer()
         while True:
             task = self._json_queue.get()
             if task is None:
@@ -1133,22 +1281,37 @@ class DSSAOptimizer:
             try:
                 iter_dir = task['iter_dir']
                 os.makedirs(iter_dir, exist_ok=True)
-                producers_data = [self._serialize_solution(s) for s in task['producers']]
-                followers_data = [self._serialize_solution(s) for s in task['followers']]
-                scouts_data = [self._serialize_solution(s) for s in task['scouts']]
-                if producers_data:
+
+                self._write_solutions_json(
+                    os.path.join(iter_dir, "producers.json"),
+                    task['producers'], buf)
+                self._write_solutions_json(
+                    os.path.join(iter_dir, "followers.json"),
+                    task['followers'], buf)
+                self._write_solutions_json(
+                    os.path.join(iter_dir, "scouts.json"),
+                    task['scouts'], buf)
+
+                if task['producers']:
+                    buf.fill_from(task['producers'][0])
                     with open(os.path.join(iter_dir, "best.json"), 'w', encoding='utf-8') as f:
-                        json.dump(producers_data[0], f, ensure_ascii=False)
-                with open(os.path.join(iter_dir, "producers.json"), 'w', encoding='utf-8') as f:
-                    json.dump(producers_data, f, ensure_ascii=False)
-                with open(os.path.join(iter_dir, "followers.json"), 'w', encoding='utf-8') as f:
-                    json.dump(followers_data, f, ensure_ascii=False)
-                with open(os.path.join(iter_dir, "scouts.json"), 'w', encoding='utf-8') as f:
-                    json.dump(scouts_data, f, ensure_ascii=False)
+                        json.dump(buf.output, f, ensure_ascii=False)
+                    buf.clear()
             except Exception as e:
                 print(f"[WARN] JSON worker error: {e}")
             finally:
                 self._json_queue.task_done()
+
+    def _write_solutions_json(self, path: str, solutions: list, buf: _SerializationBuffer):
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('[')
+            for i, s in enumerate(solutions):
+                if i > 0:
+                    f.write(',')
+                buf.fill_from(s)
+                json.dump(buf.output, f, ensure_ascii=False)
+                buf.clear()
+            f.write(']')
 
     def _async_output_iteration_results(self, iteration: int, producers: List[DeploymentSolution],
                                      followers: List[DeploymentSolution], scouts: List[DeploymentSolution]):
@@ -1156,14 +1319,11 @@ class DSSAOptimizer:
             return
         self._ensure_json_worker()
         iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
-        producer_snapshots = [_snapshot_solution(s) for s in producers]
-        follower_snapshots = [_snapshot_solution(s) for s in followers]
-        scout_snapshots = [_snapshot_solution(s) for s in scouts]
         self._json_queue.put({
             'iter_dir': iter_dir,
-            'producers': producer_snapshots,
-            'followers': follower_snapshots,
-            'scouts': scout_snapshots
+            'producers': list(producers),
+            'followers': list(followers),
+            'scouts': list(scouts)
         })
 
     def _initialize_risk_groups(self):

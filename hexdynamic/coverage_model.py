@@ -355,15 +355,17 @@ class CoverageModel:
                             if v > 0 and self.deployment_matrix['patrol'].get(k, 0) == 1}
         solution.fences = {k: v for k, v in solution.fences.items() if v > 0}
 
-        for grid_id in self.grid_ids:
-            if solution.cameras.get(grid_id, 0) > self.deployment_matrix['camera'][grid_id]:
+        for grid_id in list(solution.cameras.keys()):
+            if solution.cameras.get(grid_id, 0) > self.deployment_matrix['camera'].get(grid_id, 0):
                 solution.cameras.pop(grid_id, None)
 
-            if solution.camps.get(grid_id, 0) > self.deployment_matrix['camp'][grid_id]:
+        for grid_id in list(solution.camps.keys()):
+            if solution.camps.get(grid_id, 0) > self.deployment_matrix['camp'].get(grid_id, 0):
                 solution.camps.pop(grid_id, None)
                 solution.rangers.pop(grid_id, None)
 
-            if solution.drones.get(grid_id, 0) > self.deployment_matrix['drone'][grid_id]:
+        for grid_id in list(solution.drones.keys()):
+            if solution.drones.get(grid_id, 0) > self.deployment_matrix['drone'].get(grid_id, 0):
                 solution.drones.pop(grid_id, None)
 
         for grid_id in list(solution.rangers.keys()):
@@ -371,8 +373,10 @@ class CoverageModel:
                 solution.rangers.pop(grid_id, None)
 
         if not skip_conflict_resolution:
+            occupied_grids = set(solution.cameras.keys()) | set(solution.drones.keys()) | \
+                            set(solution.camps.keys()) | set(solution.rangers.keys())
             conflict_grids = []
-            for grid_id in self.grid_ids:
+            for grid_id in occupied_grids:
                 types_present = []
                 if solution.rangers.get(grid_id, 0) > 0:
                     types_present.append('patrol')
