@@ -31,7 +31,6 @@ class DSSAConfig:
     use_time_aware_fitness: bool = False  # 启用时间感知的适应度计算
     output_dir: Optional[str] = None  # 输出目录，每轮迭代的JSON文件保存到这个目录
     force_full_deployment: Optional[bool] = None
-    save_iteration_visualization: bool = False  # 是否保存每轮迭代的 deployment map 可视化
     
     # --- 风险优先部署配置 ---
     use_risk_priority: bool = False  # 是否启用风险优先部署
@@ -100,9 +99,7 @@ class DSSAOptimizer:
         self._output_lock = threading.Lock()
         self._async_threads = []
         self._json_queue = queue.Queue()
-        self._plot_queue = queue.Queue()
         self._json_worker_started = False
-        self._plot_worker_started = False
 
         # 保存构建输出 JSON 所需的参数
         self.input_grids = input_grids
@@ -1031,7 +1028,6 @@ class DSSAOptimizer:
                 followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
                 scouts = self.population[self.config.population_size - num_scouts:]
                 self._async_output_iteration_results(iteration, producers, followers, scouts)
-                self._async_plot_iteration_deployment(iteration, self.best_solution)
 
             pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
             total_benefit = sum(pb_per_grid.values())
@@ -1085,13 +1081,9 @@ class DSSAOptimizer:
 
         if self._json_worker_started:
             self._json_queue.put(None)
-        if self._plot_worker_started:
-            self._plot_queue.put(None)
         print("[ASYNC] 等待异步输出任务完成...")
         if self._json_worker_started:
             self._json_queue.join()
-        if self._plot_worker_started:
-            self._plot_queue.join()
         print("[ASYNC] 所有异步输出任务完成！")
 
         for thread in self._async_threads:
@@ -1132,12 +1124,6 @@ class DSSAOptimizer:
             t.start()
             self._json_worker_started = True
 
-    def _ensure_plot_worker(self):
-        if not self._plot_worker_started:
-            t = threading.Thread(target=self._plot_worker_loop, daemon=True, name='plot-worker')
-            t.start()
-            self._plot_worker_started = True
-
     def _json_worker_loop(self):
         while True:
             task = self._json_queue.get()
@@ -1150,6 +1136,9 @@ class DSSAOptimizer:
                 producers_data = [self._serialize_solution(s) for s in task['producers']]
                 followers_data = [self._serialize_solution(s) for s in task['followers']]
                 scouts_data = [self._serialize_solution(s) for s in task['scouts']]
+                if producers_data:
+                    with open(os.path.join(iter_dir, "best.json"), 'w', encoding='utf-8') as f:
+                        json.dump(producers_data[0], f, ensure_ascii=False)
                 with open(os.path.join(iter_dir, "producers.json"), 'w', encoding='utf-8') as f:
                     json.dump(producers_data, f, ensure_ascii=False)
                 with open(os.path.join(iter_dir, "followers.json"), 'w', encoding='utf-8') as f:
@@ -1160,23 +1149,6 @@ class DSSAOptimizer:
                 print(f"[WARN] JSON worker error: {e}")
             finally:
                 self._json_queue.task_done()
-
-    def _plot_worker_loop(self):
-        while True:
-            task = self._plot_queue.get()
-            if task is None:
-                self._plot_queue.task_done()
-                break
-            try:
-                self._plot_deployment_map(
-                    task['iteration'], task['output_base'],
-                    task['solution'], task['hex_size'],
-                    task['boundary_xy'], task['terrain_patches']
-                )
-            except Exception as e:
-                print(f"[WARN] Plot worker error: {e}")
-            finally:
-                self._plot_queue.task_done()
 
     def _async_output_iteration_results(self, iteration: int, producers: List[DeploymentSolution],
                                      followers: List[DeploymentSolution], scouts: List[DeploymentSolution]):
@@ -1194,325 +1166,6 @@ class DSSAOptimizer:
             'scouts': scout_snapshots
         })
 
-    def _build_output_for_solution(self, solution: DeploymentSolution,
-                                    pb_per_grid: Dict[int, float] = None,
-                                    protection_effect: Dict[int, float] = None,
-                                    fitness: float = None) -> Dict[str, Any]:
-        import numpy as np
-
-        if pb_per_grid is None:
-            pb_per_grid = self.coverage_model.calculate_protection_benefit(solution)
-        if protection_effect is None:
-            protection_effect = self.coverage_model.calculate_protection_effect(solution)
-        if fitness is None:
-            fitness = self.evaluate_fitness(solution)
-
-        total_risk = sum(self.grid_model.get_grid_risk(gid) for gid in self.grid_model.get_all_grid_ids())
-
-        total_risk_weighted = 0.0
-        for gid in self.grid_model.get_all_grid_ids():
-            normalized_risk = self.grid_model.get_grid_risk(gid)
-            temporal_factor = self.grid_model.get_grid_temporal_factor(gid)
-            total_risk_weighted += normalized_risk * temporal_factor
-
-        total_protection_benefit = sum(pb_per_grid.values())
-        avg_protection_benefit = float(np.mean(list(pb_per_grid.values())))
-
-        risk_vals = [self.grid_model.get_grid_risk(gid) for gid in self.grid_model.get_all_grid_ids()]
-        risk_min, risk_max = min(risk_vals), max(risk_vals)
-
-        rr_per_grid = {
-            gid: self.grid_model.get_grid_risk(gid) * np.exp(-protection_effect[gid])
-            for gid in self.grid_model.get_all_grid_ids()
-        }
-
-        def norm_unified_risk(v):
-            return float((v - risk_min) / (risk_max - risk_min)) if risk_max != risk_min else float(v)
-
-        pb_vals = list(pb_per_grid.values())
-        pb_min, pb_max = min(pb_vals), max(pb_vals)
-
-        def norm_pb(v):
-            return float((v - pb_min) / (pb_max - pb_min)) if pb_max != pb_min else float(v)
-
-        input_grid_map = {g['grid_id']: g for g in (self.input_grids or [])} if self.input_grids else {}
-        grid_results = []
-
-        if self.input_grids:
-            for grid in self.input_grids:
-                gid = grid['grid_id']
-                src = grid
-                entry = {
-                    'grid_id': gid,
-                    'q': grid.get('q', 0),
-                    'r': grid.get('r', 0),
-                    'x': grid.get('x', 0),
-                    'y': grid.get('y', 0),
-                    'terrain_type': grid.get('terrain_type', 'SparseGrass'),
-                    'risk_normalized': round(norm_unified_risk(self.grid_model.get_grid_risk(gid)), 6),
-                    'raw_risk': round(float(self.raw_risk_map.get(gid, 0.0)) if self.raw_risk_map else 0.0, 6),
-                    'protection_benefit_raw': round(float(pb_per_grid.get(gid, 0.0)), 6),
-                    'protection_benefit_normalized': round(norm_pb(pb_per_grid.get(gid, 0.0)), 6),
-                    'residual_risk_normalized': round(norm_unified_risk(rr_per_grid.get(gid, 0.0)), 6),
-                    'deployment': {
-                        'patrol_rangers': int(solution.rangers.get(gid, 0)),
-                        'camp': int(solution.camps.get(gid, 0)),
-                        'drone': int(solution.drones.get(gid, 0)),
-                        'camera': int(solution.cameras.get(gid, 0))
-                    }
-                }
-
-                grid_fence_edges = [(e[0], e[1]) for e, v in solution.fences.items() if v > 0 and e[0] == gid and isinstance(e[1], int)]
-                if grid_fence_edges:
-                    entry['fences'] = {
-                        'fence_count': len(grid_fence_edges),
-                        'boundary_edge_list': [direction for _, direction in grid_fence_edges]
-                    }
-
-                if 'hex_size' in grid:
-                    entry['hex_size'] = grid['hex_size']
-                grid_results.append(entry)
-
-        all_gids = self.grid_model.get_all_grid_ids()
-        norm_risk_vals = [self.grid_model.get_grid_risk(gid) for gid in all_gids]
-        raw_risk_vals = [float(self.raw_risk_map.get(gid, 0.0)) if self.raw_risk_map else 0.0 for gid in all_gids]
-        residual_vals = [norm_unified_risk(rr_per_grid[gid]) for gid in all_gids]
-        total_residual = sum(rr_per_grid[gid] for gid in all_gids)
-
-        output = {
-            'summary': {
-                'total_grids': self.grid_model.get_grid_count(),
-                'total_risk': round(float(total_risk), 6),
-                'total_risk_weighted': round(float(total_risk_weighted), 6),
-                'best_fitness': round(float(fitness), 6),
-                'total_protection_benefit': round(float(total_protection_benefit), 6),
-                'average_protection_benefit': round(float(avg_protection_benefit), 6),
-                'risk_min': round(min(norm_risk_vals), 6),
-                'risk_max': round(max(norm_risk_vals), 6),
-                'risk_mean': round(float(np.mean(norm_risk_vals)), 6),
-                'raw_risk_min': round(min(raw_risk_vals), 6),
-                'raw_risk_max': round(max(raw_risk_vals), 6),
-                'raw_risk_mean': round(float(np.mean(raw_risk_vals)), 6),
-                'residual_risk_min': round(min(residual_vals), 6),
-                'residual_risk_max': round(max(residual_vals), 6),
-                'residual_risk_mean': round(float(np.mean(residual_vals)), 6),
-                'total_residual_risk': round(float(total_residual), 6),
-                'fitness_history': [round(float(f), 6) for f in self.fitness_history],
-                'resources_deployed': {
-                    'total_cameras': int(sum(solution.cameras.values())),
-                    'total_drones': int(sum(solution.drones.values())),
-                    'total_camps': int(sum(solution.camps.values())),
-                    'total_rangers': int(sum(solution.rangers.values())),
-                    'fence_segments': sum(1 for v in solution.fences.values() if v > 0)
-                }
-            },
-            'visualization_config': {
-                'show_grid_ids': False
-            },
-            'grids': grid_results
-        }
-
-        return output
-
-    def _async_plot_iteration_deployment(self, iteration: int, solution: DeploymentSolution):
-        if not (self.output_dir and self.config.save_iteration_visualization):
-            return
-        if not (self.input_grids):
-            return
-
-        with self._output_lock:
-            if not getattr(self, '_viz_cache_initialized', False):
-                self._init_viz_cache(solution, fitness=self.best_fitness)
-
-        self._ensure_plot_worker()
-        self._plot_queue.put({
-            'iteration': iteration,
-            'output_base': self._output_for_viz_cache,
-            'solution': _snapshot_solution(solution),
-            'hex_size': self._hex_size_cache,
-            'boundary_xy': self._boundary_xy_cache,
-            'terrain_patches': list(self._terrain_patches_cache)
-        })
-
-    def _plot_deployment_map(self, iteration, output_base, solution, hex_size, boundary_xy, terrain_patches):
-        try:
-            import copy
-            import gc
-            import matplotlib
-            import matplotlib.pyplot as plt
-            matplotlib.rcParams["figure.max_open_warning"] = 0
-
-            output_base = copy.deepcopy(output_base)
-
-            iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
-            os.makedirs(iter_dir, exist_ok=True)
-
-            from visualize_output import (
-                make_figure, setup_map_ax, draw_hex, draw_boundary,
-                draw_deployed_fence_edges, grid_center, TERRAIN_COLORS,
-                RESOURCE_MARKERS, _draw_resources, _edge_grid_ids
-            )
-
-            fig, ax_map, _, ax_leg = make_figure(has_colorbar=False)
-
-            for (cx, cy, fc) in terrain_patches:
-                draw_hex(ax_map, cx, cy, hex_size * 0.97,
-                        facecolor=fc, alpha=0.45)
-
-            grids = output_base['grids']
-            edge_ids = _edge_grid_ids(grids, boundary_xy)
-
-            for g in grids:
-                gid = g['grid_id']
-                dep = g.get('deployment', {})
-                dep['camera'] = solution.cameras.get(gid, 0)
-                dep['drone'] = solution.drones.get(gid, 0)
-                dep['camp'] = solution.camps.get(gid, 0)
-                dep['patrol_rangers'] = solution.rangers.get(gid, 0)
-                grid_fence_edges = [(e[0], e[1]) for e, v in solution.fences.items()
-                                   if v > 0 and e[0] == gid and isinstance(e[1], int)]
-                if grid_fence_edges:
-                    g['fences'] = {
-                        'fence_count': len(grid_fence_edges),
-                        'boundary_edge_list': [direction for _, direction in grid_fence_edges]
-                    }
-                elif 'fences' in g:
-                    del g['fences']
-
-            _draw_resources(ax_map, grids, output_base, hex_size, edge_ids)
-            draw_deployed_fence_edges(ax_map, grids, output_base, hex_size)
-            setup_map_ax(ax_map, grids, hex_size)
-            draw_boundary(ax_map, grids, boundary_xy, hex_size)
-
-            ax_map.set_title(f"Iteration {iteration:04d}", fontsize=13, fontweight='bold', pad=8)
-
-            self._draw_legend(ax_leg)
-
-            save_path = os.path.join(iter_dir, "deployment_map.png")
-            fig.savefig(save_path, dpi=150, bbox_inches="tight")
-
-            plt.close(fig)
-            plt.close('all')
-            gc.collect()
-
-        except Exception as e:
-            print(f"[ERROR] Failed to plot iteration {iteration} deployment: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                import matplotlib.pyplot as plt
-                plt.close('all')
-                import gc
-                gc.collect()
-            except:
-                pass
-
-    def _init_viz_cache(self, solution: DeploymentSolution, fitness: float = None):
-        from visualize_output import grid_center, TERRAIN_COLORS
-
-        out = self._build_output_for_solution(solution, fitness=fitness)
-        self._output_for_viz_cache = out
-
-        hex_size = self.input_grids[0].get('hex_size', 10) if len(self.input_grids) > 0 else 10
-        self._hex_size_cache = hex_size
-
-        # 提取 boundary_locations
-        boundary_xy = self.boundary_locations
-        if not boundary_xy and self.input_grids:
-            for g in self.input_grids:
-                if 'boundary_locations' in g:
-                    bl = g['boundary_locations']
-                    if bl:
-                        boundary_xy = []
-                        for item in bl:
-                            if isinstance(item, dict):
-                                boundary_xy.append((item['x'], item['y']))
-                            else:
-                                boundary_xy.append(tuple(item))
-                        break
-
-        self._boundary_xy_cache = boundary_xy
-
-        # 预计算地形绘制参数（cx, cy, facecolor）
-        grids = out['grids']
-        terrain_patches = []
-        for g in grids:
-            cx, cy = grid_center(g['q'], g['r'], hex_size)
-            fc = TERRAIN_COLORS.get(g['terrain_type'], '#ccc')
-            terrain_patches.append((cx, cy, fc))
-        self._terrain_patches_cache = terrain_patches
-
-        self._viz_cache_initialized = True
-
-    def _draw_legend(self, ax_leg):
-        """绘制图例"""
-        import matplotlib.patches as mpatches
-        import matplotlib.pyplot as plt
-
-        TERRAIN_COLORS = {
-            "SparseGrass": "#a8d5a2",
-            "DenseGrass":  "#2d6a2d",
-            "WaterHole":   "#5b9bd5",
-            "SaltMarsh":   "#c8b97a",
-            "Road":        "#888888",
-        }
-
-        RESOURCE_MARKERS = {
-            "camera":         ("s", "#1f77b4", "Camera"),
-            "drone":          ("^", "#ff7f0e", "Drone"),
-            "camp":           ("D", "#9467bd", "Camp"),
-            "patrol_rangers": ("o", "#2ca02c", "Patrol"),
-        }
-
-        FENCE_COLOR = "#c0392b"
-        FENCE_EDGE_LINEWIDTH = 3.0
-
-        # 地形图例
-        terrain_handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, alpha=0.5, label=t)
-                       for t, c in TERRAIN_COLORS.items()]
-        res_handles = [
-            plt.Line2D([0], [0], marker=m, color="w", markerfacecolor=c,
-                   markeredgecolor="black", markersize=8, label=l)
-            for _, (m, c, l) in RESOURCE_MARKERS.items()
-        ]
-        fence_handle = plt.Line2D([0], [0], color=FENCE_COLOR, linewidth=FENCE_EDGE_LINEWIDTH, label="Fence")
-
-        y = 0.97
-        ax_leg.text(0.05, y, "Terrain Type", transform=ax_leg.transAxes,
-                fontsize=9, fontweight="bold", va="top")
-        y -= 0.06
-        for h in terrain_handles:
-            rect = mpatches.FancyBboxPatch((0.05, y - 0.025), 0.12, 0.04,
-                                       boxstyle="square,pad=0",
-                                       facecolor=h.get_facecolor(),
-                                       edgecolor="black", linewidth=0.5,
-                                       transform=ax_leg.transAxes, clip_on=False)
-            ax_leg.add_patch(rect)
-            ax_leg.text(0.22, y - 0.005, h.get_label(), transform=ax_leg.transAxes,
-                    fontsize=9, va="center")
-            y -= 0.055
-
-        y -= 0.02
-        ax_leg.text(0.05, y, "Resources", transform=ax_leg.transAxes,
-                fontsize=9, fontweight="bold", va="top")
-        y -= 0.06
-        for h in res_handles + [fence_handle]:
-            marker = h.get_marker()
-            if marker and marker != 'None':
-                mfc = h.get_markerfacecolor()
-                mec = h.get_markeredgecolor()
-                ax_leg.plot(0.11, y - 0.005, marker=marker, color="w",
-                        markerfacecolor=mfc, markeredgecolor=mec,
-                        markersize=8, transform=ax_leg.transAxes,
-                        clip_on=False)
-            else:
-                ax_leg.plot([0.05, 0.17], [y - 0.005, y - 0.005], 
-                        color=h.get_color(), linewidth=h.get_linewidth(),
-                        transform=ax_leg.transAxes, clip_on=False)
-            ax_leg.text(0.22, y - 0.005, h.get_label(), transform=ax_leg.transAxes,
-                    fontsize=9, va="center")
-            y -= 0.055
-    
     def _initialize_risk_groups(self):
         """初始化高/低风险网格分组
         

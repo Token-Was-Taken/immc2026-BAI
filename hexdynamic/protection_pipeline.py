@@ -325,7 +325,6 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             use_time_aware_fitness=dc.get('use_time_aware_fitness', False),
             output_dir=output_dir,
             force_full_deployment=dc.get('force_full_deployment', True),
-            save_iteration_visualization=dc.get('save_iteration_visualization', False),
             use_risk_priority=dc.get('use_risk_priority', False),
             high_risk_percentage=dc.get('high_risk_percentage', 0.3),
             high_risk_perturbation_priority=dc.get('high_risk_perturbation_priority', 0.7),
@@ -336,8 +335,6 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         dssa_config.output_dir = output_dir
     if dssa_config.force_full_deployment is None:
         dssa_config.force_full_deployment = dc.get('force_full_deployment', True)
-    if dssa_config.save_iteration_visualization is None:
-        dssa_config.save_iteration_visualization = dc.get('save_iteration_visualization', False)
     if dssa_config.use_risk_priority is None:
         dssa_config.use_risk_priority = dc.get('use_risk_priority', False)
     if dssa_config.high_risk_percentage is None:

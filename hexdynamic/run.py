@@ -18,7 +18,7 @@ import sys
 from protection_pipeline import run_pipeline
 from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison, \
     plot_protection_heatmap, plot_terrain_map, plot_terrain_deployment_map, plot_species_map, plot_species_deployment_comparison, plot_protection_deployment_comparison
-from images_to_video import find_images, create_video
+from images_to_video import find_images, create_video, render_all_maps
 
 
 def visualize(output_path: str, input_path: str, out_dir: str, prefix: str):
@@ -129,12 +129,11 @@ def main():
             input_data = json.load(f)
         dssa_cfg = input_data.get('dssa_config', {})
         if dssa_cfg.get('save_iteration_visualization', False):
-            iter_images = find_images(args.out_dir, "deployment_map")
-            if iter_images:
+            print(f"\n[VIDEO] 生成迭代部署地图视频...")
+            image_paths = render_all_maps(args.out_dir, args.input, args.out_dir)
+            if image_paths:
                 video_path = os.path.join(args.out_dir, "iteration_deployment.mp4")
-                print(f"\n[VIDEO] 生成迭代部署地图视频...")
-                print(f"        找到 {len(iter_images)} 张迭代图片")
-                create_video(iter_images, video_path, fps=5, resize_factor=1.0)
+                create_video(image_paths, video_path, fps=5, resize_factor=1.0)
             else:
                 print("\n[VIDEO] 未找到迭代部署地图图片，跳过视频生成")
     except Exception as e:
