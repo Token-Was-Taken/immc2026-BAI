@@ -1762,85 +1762,159 @@
          * @param {Map}   gridIdMap - gridId(marker) → gridsOutput index 的映射
          * @param {Map}   markerNeighbors - marker gridId → neighbor marker gridId[]
          */
-        function assignSpeciesDensities(grids, speciesNames, gridIdMap, markerNeighbors) {
+        function assignSpeciesDensities(grids, speciesNames, gridIdMap, markerNeighbors, densityConfigs) {
             grids.forEach(g => { g.species_densities = {}; speciesNames.forEach(sp => { g.species_densities[sp] = 0.0; }); });
             if (speciesNames.length === 0) return;
-            const roadMarkerIds = new Set();
-            gridCoordinates.forEach(mg => {
-                const color = gridColorMap.get(mg.gridId);
-                if (color === '#a855f7' || color === '#f97316') {
-                    roadMarkerIds.add(mg.gridId);
-                    (markerNeighbors.get(mg.gridId) || []).forEach(nb => roadMarkerIds.add(nb));
-                }
-            });
+
+            const configs = densityConfigs && densityConfigs.length > 0 ? densityConfigs : null;
+
             const outputIdxToMarkerId = new Map();
             gridCoordinates.forEach(mg => { if (gridIdMap.has(mg.gridId)) outputIdxToMarkerId.set(gridIdMap.get(mg.gridId), mg.gridId); });
-            const isRoadProhibited = idx => { const mid = outputIdxToMarkerId.get(idx); return mid !== undefined && roadMarkerIds.has(mid); };
-            const wetMarkerIds = new Set();
-            gridCoordinates.forEach(mg => {
-                const color = gridColorMap.get(mg.gridId);
-                if (color === '#06b6d4' || color === '#3b82f6') {
-                    wetMarkerIds.add(mg.gridId);
-                    (markerNeighbors.get(mg.gridId) || []).forEach(nb => wetMarkerIds.add(nb));
+
+            const isRoadProhibited = idx => {
+                const mid = outputIdxToMarkerId.get(idx);
+                if (mid === undefined) return true;
+                const color = gridColorMap.get(mid);
+                return color === '#a855f7' || color === '#f97316' ||
+                    (markerNeighbors.get(mid) || []).some(nb => {
+                        const nc = gridColorMap.get(nb);
+                        return nc === '#a855f7' || nc === '#f97316';
+                    });
+            };
+
+            if (!configs) {
+                const birdSp = speciesNames.find(s => s.toLowerCase().includes('bird'));
+                if (birdSp) {
+                    const saltmarshIds = new Set();
+                    gridCoordinates.forEach(mg => {
+                        if (gridColorMap.get(mg.gridId) === '#06b6d4') {
+                            saltmarshIds.add(mg.gridId);
+                            (markerNeighbors.get(mg.gridId) || []).forEach(nb => saltmarshIds.add(nb));
+                        }
+                    });
+                    grids.forEach((g, idx) => {
+                        if (isRoadProhibited(idx)) return;
+                        const mid = outputIdxToMarkerId.get(idx);
+                        if (mid && saltmarshIds.has(mid) && Math.random() < 0.10)
+                            g.species_densities[birdSp] = parseFloat((0.5 + Math.random() * 0.5).toFixed(2));
+                    });
                 }
-            });
-            const birdSp = speciesNames.find(s => s.toLowerCase().includes('bird'));
-            if (birdSp) {
-                const saltMarshIds = new Set();
+                const rhinoSp = speciesNames.find(s => s.toLowerCase().includes('rhino'));
+                const elephantSp = speciesNames.find(s => s.toLowerCase().includes('elephant'));
+                const waterholeSaltmarshIds = new Set();
                 gridCoordinates.forEach(mg => {
-                    if (gridColorMap.get(mg.gridId) === '#06b6d4') {
-                        saltMarshIds.add(mg.gridId);
-                        (markerNeighbors.get(mg.gridId) || []).forEach(nb => saltMarshIds.add(nb));
+                    const color = gridColorMap.get(mg.gridId);
+                    if (color === '#3b82f6' || color === '#06b6d4') waterholeSaltmarshIds.add(mg.gridId);
+                });
+                const candidateIndices = grids.map((g, idx) => ({ g, idx }))
+                    .filter(({ g, idx }) => {
+                        if (isRoadProhibited(idx)) return false;
+                        if (!speciesNames.every(sp => g.species_densities[sp] === 0.0)) return false;
+                        const mid = outputIdxToMarkerId.get(idx);
+                        if (mid && waterholeSaltmarshIds.has(mid)) return false;
+                        return mid !== undefined;
+                    }).map(({ idx }) => idx);
+                const maxCount = Math.max(1, Math.floor(grids.length * 0.05));
+                const shuffled = candidateIndices.slice().sort(() => Math.random() - 0.5);
+                const selected = shuffled.slice(0, Math.min(maxCount, shuffled.length));
+                if (selected.length === 0) return;
+                const NUM_ELEPHANT_ZONES = 2, NUM_RHINO_ZONES = 3, totalZones = 5;
+                const step = Math.max(1, Math.floor(selected.length / totalZones));
+                const zoneCenters = [];
+                for (let z = 0; z < totalZones && z * step < selected.length; z++) zoneCenters.push(selected[z * step]);
+                const getRC = idx => {
+                    const mid = outputIdxToMarkerId.get(idx);
+                    const mg = gridCoordinates.find(m => m.gridId === mid);
+                    return mg ? { row: mg.row, col: mg.col } : { row: 0, col: 0 };
+                };
+                const dist2 = (a, b) => (a.row - b.row) ** 2 + (a.col - b.col) ** 2;
+                const eCenters = zoneCenters.slice(0, NUM_ELEPHANT_ZONES).map(getRC);
+                const rCenters = zoneCenters.slice(NUM_ELEPHANT_ZONES).map(getRC);
+                selected.forEach(idx => {
+                    const rc = getRC(idx);
+                    const minE = eCenters.length ? Math.min(...eCenters.map(c => dist2(rc, c))) : Infinity;
+                    const minR = rCenters.length ? Math.min(...rCenters.map(c => dist2(rc, c))) : Infinity;
+                    const g = grids[idx];
+                    if (elephantSp && minE <= minR) g.species_densities[elephantSp] = parseFloat((0.4 + Math.random() * 0.6).toFixed(2));
+                    else if (rhinoSp) g.species_densities[rhinoSp] = parseFloat((0.4 + Math.random() * 0.6).toFixed(2));
+                });
+                return;
+            }
+
+            const otherSpecies = configs.filter(c => !c.species.toLowerCase().includes('bird') && speciesNames.includes(c.species));
+
+            otherSpecies.forEach(config => {
+                const { species, candidateRatio, assignProb, densityMin, densityMax } = config;
+                if (!speciesNames.includes(species)) return;
+                const candidateIndices = grids.map((g, idx) => idx)
+                    .filter(idx => {
+                        if (isRoadProhibited(idx)) return false;
+                        if (!speciesNames.every(sp => grids[idx].species_densities[sp] === 0.0)) return false;
+                        return outputIdxToMarkerId.has(idx);
+                    });
+                const maxCount = Math.max(1, Math.floor(grids.length * (candidateRatio / 100)));
+                const shuffled = candidateIndices.slice().sort(() => Math.random() - 0.5);
+                const selected = shuffled.slice(0, Math.min(maxCount, shuffled.length));
+                const zoneRatio = otherSpecies.indexOf(config) / Math.max(1, otherSpecies.length);
+                const getRC = idx => {
+                    const mid = outputIdxToMarkerId.get(idx);
+                    const mg = gridCoordinates.find(m => m.gridId === mid);
+                    return mg ? { row: mg.row, col: mg.col } : { row: 0, col: 0 };
+                };
+                const dist2 = (a, b) => (a.row - b.row) ** 2 + (a.col - b.col) ** 2;
+                selected.forEach(idx => {
+                    if (Math.random() * 100 > assignProb) return;
+                    const g = grids[idx];
+                    if (otherSpecies.length > 1) {
+                        let closestSpecies = species;
+                        let minDist = Infinity;
+                        otherSpecies.forEach(other => {
+                            const otherIndices = otherSpecies.indexOf(other) < otherSpecies.indexOf(config)
+                                ? selected.slice(0, Math.floor(selected.length * (otherSpecies.indexOf(other) / otherSpecies.length)))
+                                : [];
+                            const centerRC = otherIndices.length > 0
+                                ? otherIndices.reduce((acc, i) => {
+                                    const rc = getRC(i);
+                                    return { row: acc.row + rc.row, col: acc.col + rc.col };
+                                }, { row: 0, col: 0 })
+                                : { row: 0, col: 0 };
+                            const avgRC = otherIndices.length > 0
+                                ? { row: centerRC.row / otherIndices.length, col: centerRC.col / otherIndices.length }
+                                : { row: 9999, col: 9999 };
+                            const d = dist2(getRC(idx), avgRC);
+                            if (d < minDist) { minDist = d; closestSpecies = other.species; }
+                        });
+                        if (closestSpecies === species) {
+                            const val = densityMin + Math.random() * (densityMax - densityMin);
+                            g.species_densities[species] = parseFloat(val.toFixed(2));
+                        }
+                    } else {
+                        const val = densityMin + Math.random() * (densityMax - densityMin);
+                        g.species_densities[species] = parseFloat(val.toFixed(2));
                     }
                 });
-                grids.forEach((g, idx) => {
-                    if (isRoadProhibited(idx)) return;
-                    const mid = outputIdxToMarkerId.get(idx);
-                    if (mid && saltMarshIds.has(mid) && Math.random() < 0.10)
-                        g.species_densities[birdSp] = parseFloat((0.5 + Math.random() * 0.5).toFixed(2));
-                });
-            }
-            const rhinoSp = speciesNames.find(s => s.toLowerCase().includes('rhino'));
-            const elephantSp = speciesNames.find(s => s.toLowerCase().includes('elephant'));
-            
-            // 收集水坑和盐沼的marker IDs（犀牛和大象不能分布在这些网格）
-            const waterholeSaltmarshIds = new Set();
-            gridCoordinates.forEach(mg => {
-                const color = gridColorMap.get(mg.gridId);
-                // #3b82f6 = 水坑(蓝色), #06b6d4 = 盐沼(青色)
-                if (color === '#3b82f6' || color === '#06b6d4') {
-                    waterholeSaltmarshIds.add(mg.gridId);
-                }
             });
-            
-            const candidateIndices = grids.map((g, idx) => ({ g, idx }))
-                .filter(({ g, idx }) => {
-                    if (isRoadProhibited(idx)) return false;
-                    if (!speciesNames.every(sp => g.species_densities[sp] === 0.0)) return false;
-                    const mid = outputIdxToMarkerId.get(idx);
-                    // 排除水坑和盐沼网格
-                    if (mid && waterholeSaltmarshIds.has(mid)) return false;
-                    return mid !== undefined;
-                }).map(({ idx }) => idx);
-            const maxCount = Math.max(1, Math.floor(grids.length * 0.05));
-            const shuffled = candidateIndices.slice().sort(() => Math.random() - 0.5);
-            const selected = shuffled.slice(0, Math.min(maxCount, shuffled.length));
-            if (selected.length === 0) return;
-            const NUM_ELEPHANT_ZONES = 2, NUM_RHINO_ZONES = 3, totalZones = 5;
-            const zoneCenters = [];
-            const step = Math.max(1, Math.floor(selected.length / totalZones));
-            for (let z = 0; z < totalZones && z * step < selected.length; z++) zoneCenters.push(selected[z * step]);
-            const getRC = idx => { const mid = outputIdxToMarkerId.get(idx); const mg = gridCoordinates.find(m => m.gridId === mid); return mg ? { row: mg.row, col: mg.col } : { row: 0, col: 0 }; };
-            const dist2 = (a, b) => (a.row - b.row) ** 2 + (a.col - b.col) ** 2;
-            const eCenters = zoneCenters.slice(0, NUM_ELEPHANT_ZONES).map(getRC);
-            const rCenters = zoneCenters.slice(NUM_ELEPHANT_ZONES).map(getRC);
-            selected.forEach(idx => {
-                const rc = getRC(idx);
-                const minE = eCenters.length ? Math.min(...eCenters.map(c => dist2(rc, c))) : Infinity;
-                const minR = rCenters.length ? Math.min(...rCenters.map(c => dist2(rc, c))) : Infinity;
-                const g = grids[idx];
-                if (elephantSp && minE <= minR) g.species_densities[elephantSp] = parseFloat((0.4 + Math.random() * 0.6).toFixed(2));
-                else if (rhinoSp) g.species_densities[rhinoSp] = parseFloat((0.4 + Math.random() * 0.6).toFixed(2));
+
+            configs.forEach(config => {
+                const { species, assignProb, densityMin, densityMax } = config;
+                if (!speciesNames.includes(species)) return;
+                if (species.toLowerCase().includes('bird')) {
+                    const saltmarshIds = new Set();
+                    gridCoordinates.forEach(mg => {
+                        if (gridColorMap.get(mg.gridId) === '#06b6d4') {
+                            saltmarshIds.add(mg.gridId);
+                            (markerNeighbors.get(mg.gridId) || []).forEach(nb => saltmarshIds.add(nb));
+                        }
+                    });
+                    grids.forEach((g, idx) => {
+                        if (isRoadProhibited(idx)) return;
+                        const mid = outputIdxToMarkerId.get(idx);
+                        if (mid && saltmarshIds.has(mid) && Math.random() * 100 < assignProb) {
+                            const val = densityMin + Math.random() * (densityMax - densityMin);
+                            g.species_densities[species] = parseFloat(val.toFixed(2));
+                        }
+                    });
+                }
             });
         }
 
@@ -1866,12 +1940,45 @@
             container.appendChild(row);
         }
 
+        const defaultDensityConfigs = [
+            { species: 'bird',     candidateRatio: 100, assignProb: 10, densityMin: 0.5, densityMax: 1.0 },
+            { species: 'rhino',   candidateRatio: 5,   assignProb: 100, densityMin: 0.4, densityMax: 1.0 },
+            { species: 'elephant', candidateRatio: 5,   assignProb: 100, densityMin: 0.4, densityMax: 1.0 }
+        ];
+
+        function addDensityRow(species='', candidateRatio=5, assignProb=100, densityMin=0.4, densityMax=1.0) {
+            const container = document.getElementById('densityRows');
+            const row = document.createElement('div');
+            row.style.cssText = 'display:grid;grid-template-columns:1fr 0.55fr 0.55fr 0.55fr 0.55fr 28px;gap:6px;margin-bottom:6px;';
+            const inputStyle = 'width:100%;background:#1a1a1a;border:1px solid #444;color:#fff;padding:5px;border-radius:4px;font-size:0.78rem;';
+            row.innerHTML = `
+                <input type="text"   class="dn-species"        value="${species}"        placeholder="物种名" style="${inputStyle}">
+                <input type="number" class="dn-candidate-ratio" value="${candidateRatio}" step="1"   min="0"   max="100"  title="候选网格比例%" style="${inputStyle}">
+                <input type="number" class="dn-assign-prob"    value="${assignProb}"     step="1"   min="0"   max="100"  title="分配概率%"    style="${inputStyle}">
+                <input type="number" class="dn-density-min"    value="${densityMin}"     step="0.05" min="0"   max="1"   title="密度下限"     style="${inputStyle}">
+                <input type="number" class="dn-density-max"    value="${densityMax}"     step="0.05" min="0"   max="1"   title="密度上限"     style="${inputStyle}">
+                <button onclick="this.parentElement.remove(); updateDensityHint();" style="background:#3a3a3a;color:#ef4444;border:1px solid #ef4444;border-radius:4px;cursor:pointer;font-size:0.85rem;padding:0;">✕</button>
+            `;
+            container.appendChild(row);
+        }
+
+        function updateDensityHint() {
+            const hint = document.getElementById('densityDefaultHint');
+            if (!hint) return;
+            const hasCustom = document.querySelectorAll('#densityRows > div').length > 0;
+            hint.style.display = hasCustom ? 'none' : 'block';
+        }
+
         function openPipelineModal() {
-            // 初始化物种行（只在首次打开时填充）
-            const container = document.getElementById('speciesRows');
-            if (container.children.length === 0) {
+            const speciesContainer = document.getElementById('speciesRows');
+            if (speciesContainer.children.length === 0) {
                 defaultSpecies.forEach(s => addSpeciesRow(s.name, s.weight, s.rainy, s.dry));
             }
+            const densityContainer = document.getElementById('densityRows');
+            if (densityContainer.children.length === 0) {
+                defaultDensityConfigs.forEach(c => addDensityRow(c.species, c.candidateRatio, c.assignProb, c.densityMin, c.densityMax));
+            }
+            updateDensityHint();
             document.getElementById('pipelineModal').style.display = 'flex';
         }
 
@@ -1896,6 +2003,16 @@
                     speciesConfig[name] = { weight, rainy_season_multiplier: rainy, dry_season_multiplier: dry };
                     speciesNames.push(name);
                 }
+            });
+
+            const densityConfigs = [];
+            document.querySelectorAll('#densityRows > div').forEach(row => {
+                const species       = row.querySelector('.dn-species').value.trim();
+                const candidateRatio = parseFloat(row.querySelector('.dn-candidate-ratio').value) || 5;
+                const assignProb     = parseFloat(row.querySelector('.dn-assign-prob').value) || 100;
+                const densityMin     = parseFloat(row.querySelector('.dn-density-min').value) || 0.4;
+                const densityMax     = parseFloat(row.querySelector('.dn-density-max').value) || 1.0;
+                if (species) densityConfigs.push({ species, candidateRatio, assignProb, densityMin, densityMax });
             });
 
             // 收集所有在 presetColors 里有颜色标注的格子（保护区内）
@@ -1998,7 +2115,7 @@
             });
 
             // 分配物种密度
-            assignSpeciesDensities(gridsOutput, speciesNames, gridIdMap, markerNeighbors);
+            assignSpeciesDensities(gridsOutput, speciesNames, gridIdMap, markerNeighbors, densityConfigs);
 
             // 清理临时字段
             gridsOutput.forEach(g => delete g._markerGridId);
@@ -2041,6 +2158,7 @@
                     }
                 },
                 species_config: speciesConfig,
+                density_distribution_config: densityConfigs.length > 0 ? densityConfigs : null,
                 constraints: {
                     total_patrol: getInt('pi_patrol'),
                     total_camps: getInt('pi_camps'),
@@ -2214,6 +2332,21 @@
                         <span>物种名称</span><span>保护权重</span><span>雨季系数</span><span>旱季系数</span><span></span>
                     </div>
                     <div id="speciesRows"></div>
+                </div>
+
+                <!-- 物种密度分布配置 -->
+                <div style="grid-column:1/-1;color:#aaa;font-size:0.8rem;border-bottom:1px solid #444;padding-bottom:4px;margin-top:8px;">
+                    物种密度分布配置
+                    <button onclick="addDensityRow()" style="margin-left:10px;background:#3a3a3a;color:#60a5fa;border:1px solid #60a5fa;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:0.75rem;">+ 添加</button>
+                </div>
+                <div style="grid-column:1/-1;">
+                    <div style="display:grid;grid-template-columns:1fr 0.55fr 0.55fr 0.55fr 0.55fr 28px;gap:6px;margin-bottom:4px;color:#666;font-size:0.72rem;padding:0 2px;">
+                        <span>物种</span><span>候选上限%</span><span>分配概率%</span><span>密度下限</span><span>密度上限</span><span></span>
+                    </div>
+                    <div id="densityRows"></div>
+                    <div id="densityDefaultHint" style="color:#555;font-size:0.72rem;margin-top:4px;">
+                        💡 未添加的物种按默认规则（鸟类10%概率0.5-1.0，犀牛/大象候选5%密度0.4-1.0）自动分配
+                    </div>
                 </div>
 
                 <!-- DSSA 优化参数 -->
