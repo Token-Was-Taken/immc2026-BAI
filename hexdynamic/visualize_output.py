@@ -458,9 +458,9 @@ FENCE_COLOR = "#c0392b"
 FENCE_EDGE_LINEWIDTH = 3.0  # Thicker for better visibility
 
 SPECIES_STYLE = {
-    "rhino":    {"marker": "^", "color": "#8B4513", "size_scale": 120},
-    "elephant": {"marker": "s", "color": "#708090", "size_scale": 120},
-    "bird":     {"marker": "o", "color": "#FF6347",  "size_scale": 80},
+    "rhino":    {"marker": "^", "color": "#8B4513", "size_scale": 120, "fill_color": "#8B4513"},
+    "elephant": {"marker": "s", "color": "#708090", "size_scale": 120, "fill_color": "#708090"},
+    "bird":     {"marker": "o", "color": "#FF6347",  "size_scale": 80,  "fill_color": "#FF6347"},
 }
 
 
@@ -517,7 +517,7 @@ def _draw_resources(ax, grids, out, hex_size, edge_ids):
 
 def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
-    summary = out["summary"]
+    summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("YlOrRd")
     norm = Normalize(vmin=0, vmax=1)
@@ -537,13 +537,15 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path, grid_dpi=8
     add_colorbar(fig, ax_cbar, cmap, norm, "Normalized Risk")
 
     risk_vals = [g["risk_normalized"] for g in grids]
+    n_grids = len(grids)
+    total_risk = sum(risk_vals)
     items = [
-        ("Summary",     None,                                           True),
-        ("Total Grids", str(summary['total_grids']),                    False),
-        ("Risk Min",    f"{min(risk_vals):.4f}",                        False),
-        ("Risk Max",    f"{max(risk_vals):.4f}",                        False),
-        ("Risk Mean",   f"{sum(risk_vals)/len(risk_vals):.4f}",         False),
-        ("Total Risk",  f"{summary.get('total_risk', sum(risk_vals)):.4f}", False),
+        ("Summary",     None,                                                  True),
+        ("Total Grids", str(summary.get('total_grids', n_grids)),              False),
+        ("Risk Min",    f"{min(risk_vals):.4f}",                               False),
+        ("Risk Max",    f"{max(risk_vals):.4f}",                               False),
+        ("Risk Mean",   f"{total_risk/n_grids:.4f}" if n_grids else "N/A",    False),
+        ("Total Risk",  f"{summary.get('total_risk', total_risk):.4f}",        False),
     ]
     y = 0.97
     for label, value, bold in items:
@@ -561,14 +563,14 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path, grid_dpi=8
 
 def plot_protection_heatmap(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
-    summary = out["summary"]
+    summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("Greens")
 
     summary_items = [
-        ("Best Fitness", f"{summary['best_fitness']:.4f}"),
-        ("Total PB",     f"{summary['total_protection_benefit']:.4f}"),
-        ("Avg PB",       f"{summary['average_protection_benefit']:.4f}"),
+        ("Best Fitness", f"{summary.get('best_fitness', 0):.4f}"),
+        ("Total PB",     f"{summary.get('total_protection_benefit', 0):.4f}"),
+        ("Avg PB",       f"{summary.get('average_protection_benefit', 0):.4f}"),
     ]
 
     def _draw(title, value_key, vmax, path):
@@ -615,7 +617,7 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path, grid_dpi=80, 
 def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     """上下对比：部署前风险（risk_normalized）vs 部署后剩余风险（residual_risk_normalized）"""
     grids = out["grids"]
-    summary = out["summary"]
+    summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
 
     if not grids or "residual_risk_normalized" not in grids[0]:
@@ -673,7 +675,7 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, sav
 
     items = [
         ("Summary",        None,                          True),
-        ("Total Grids",    str(summary['total_grids']),   False),
+        ("Total Grids",    str(summary.get('total_grids', n)),   False),
         ("--- Before ---", None,                          True),
         ("Risk Min",       f"{min(risk_before):.4f}",     False),
         ("Risk Max",       f"{max(risk_before):.4f}",     False),
@@ -684,7 +686,7 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, sav
         ("Risk Mean",      f"{mean_after:.4f}",           False),
         ("--- Delta ---",  None,                          True),
         ("Reduction",      f"{reduction:.1f}%",           False),
-        ("Fitness",        f"{summary['best_fitness']:.4f}", False),
+        ("Fitness",        f"{summary.get('best_fitness', 0):.4f}", False),
     ]
     y = 0.97
     for label, value, bold in items:
@@ -764,13 +766,116 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path, grid_dpi=
     print(f"  saved: {save_path}")
 
 
+def _species_stats_text(species_map, all_species, total_grids):
+    lines = []
+    for sp in all_species:
+        vals = [sd[sp] for sd in species_map.values() if sd.get(sp, 0) > 0]
+        if not vals:
+            continue
+        cnt = len(vals)
+        pct = 100 * cnt / total_grids
+        lo, hi = min(vals), max(vals)
+        avg = sum(vals) / cnt
+        lines.append(f"{sp}: {cnt} grids ({pct:.1f}%), density [{lo:.2f}, {hi:.2f}], mean={avg:.2f}")
+    overlap = sum(1 for sd in species_map.values()
+                  if sum(1 for v in sd.values() if v > 0) > 1)
+    if overlap > 0:
+        lines.append(f"Multi-species hotspot grids: {overlap}")
+    return "\n".join(lines)
+
+
+def _draw_hex_heatmap(ax, grids, hex_size, species, species_map, cmap, norm):
+    from matplotlib.patches import Polygon
+    from matplotlib.collections import PatchCollection
+    patches = []
+    colors = []
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        corners = hex_corners(cx, cy, hex_size * 0.97)
+        patches.append(Polygon(corners, closed=True))
+        sd = species_map.get(g["grid_id"], {})
+        d = sd.get(species, 0)
+        colors.append(cmap(norm(d)))
+    pc = PatchCollection(patches, facecolors=colors, edgecolors="black", linewidths=0.3)
+    ax.add_collection(pc)
+    ax.set_aspect("equal")
+    ax.autoscale_view()
+    ax.axis("off")
+
+
+def _draw_composite(ax, grids, hex_size, all_species, species_map):
+    from matplotlib.patches import Polygon
+    from matplotlib.collections import PatchCollection
+    import matplotlib.colors as mcolors
+
+    terrain_patches = []
+    terrain_colors = []
+    species_patches = {sp: [] for sp in all_species}
+    multi_species_grids = []
+
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        corners = hex_corners(cx, cy, hex_size * 0.97)
+        sd = species_map.get(g["grid_id"], {})
+        active = [(sp, sd[sp]) for sp in all_species if sd.get(sp, 0) > 0]
+
+        if not active:
+            terrain_patches.append(Polygon(corners, closed=True))
+            terrain_colors.append(TERRAIN_COLORS.get(g.get("terrain_type", ""), "#dddddd"))
+        elif len(active) == 1:
+            sp, d = active[0]
+            species_patches[sp].append((Polygon(corners, closed=True), d))
+        else:
+            multi_species_grids.append((cx, cy, active, corners))
+
+    if terrain_patches:
+        pc = PatchCollection(terrain_patches, facecolors=terrain_colors,
+                             edgecolors="black", linewidths=0.3, alpha=0.5)
+        ax.add_collection(pc)
+
+    for sp in all_species:
+        if not species_patches[sp]:
+            continue
+        patches, densities = zip(*species_patches[sp])
+        fill_color = SPECIES_STYLE.get(sp, {}).get("fill_color", "#333")
+        base_rgb = mcolors.to_rgb(fill_color)
+        face_colors = [(*base_rgb, 0.3 + 0.6 * d) for d in densities]
+        pc = PatchCollection(patches, facecolors=face_colors,
+                             edgecolors="black", linewidths=0.3)
+        ax.add_collection(pc)
+
+    for cx, cy, active, corners in multi_species_grids:
+        border_x = [c[0] for c in corners] + [corners[0][0]]
+        border_y = [c[1] for c in corners] + [corners[0][1]]
+        ax.plot(border_x, border_y, color="black", linewidth=0.3, zorder=4)
+        total_d = sum(d for _, d in active)
+        angle_start = 90
+        r = hex_size * 0.85
+        for sp, d in active:
+            fill_color = SPECIES_STYLE.get(sp, {}).get("fill_color", "#333")
+            sweep = 360 * d / total_d
+            theta1 = math.radians(angle_start)
+            theta2 = math.radians(angle_start + sweep)
+            n_pts = max(3, int(sweep / 15) + 1)
+            angles = [theta1 + (theta2 - theta1) * i / n_pts for i in range(n_pts + 1)]
+            pts = [(cx, cy)] + [(cx + r * math.cos(a), cy + r * math.sin(a)) for a in angles]
+            ax.fill(*zip(*pts), facecolor=fill_color, edgecolor="none", alpha=0.8, zorder=3)
+            angle_start += sweep
+
+    ax.set_aspect("equal")
+    ax.autoscale_view()
+    ax.axis("off")
+
+
 def plot_species_map(out, species_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
     if not species_map:
-        print("  [skip] species_map.png — 无物种数据（请提供 --input 参数）")
+        print("  [skip] species_map.png — no species data")
         return
 
     all_species = sorted({sp for sd in species_map.values() for sp in sd})
+    stats_text = _species_stats_text(species_map, all_species, len(grids))
+
     fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
     for g in grids:
@@ -804,13 +909,127 @@ def plot_species_map(out, species_map, hex_size, boundary_xy, save_path, grid_dp
                    color="w",
                    markerfacecolor=SPECIES_STYLE.get(sp, {}).get("color", "#333"),
                    markeredgecolor="black", markersize=9,
-                   label=f"{sp} (size ∝ density)")
+                   label=f"{sp} (size ~ density)")
         for sp in all_species
     ]
 
     y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=0.97)
     legend_in_ax(ax_leg, species_handles, "Species Density", y_start=y)
 
+    fig.text(0.02, 0.01, stats_text, fontsize=9, fontfamily="monospace",
+             verticalalignment="bottom",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="gray", alpha=0.9))
+
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved: {save_path}")
+
+
+def _compute_panel_figsize(grids, hex_size, grid_dpi, save_dpi):
+    xs = [grid_center(g["q"], g["r"], hex_size)[0] for g in grids]
+    ys = [grid_center(g["q"], g["r"], hex_size)[1] for g in grids]
+    margin = hex_size * 2
+    data_width = max(xs) - min(xs) + hex_size * 2 + margin * 2
+    data_height = max(ys) - min(ys) + hex_size * 2 + margin * 2
+    hex_pixel_span = hex_size * math.sqrt(3)
+    if hex_pixel_span == 0:
+        hex_pixel_span = 1.0
+    scale = grid_dpi / hex_pixel_span
+    map_pixel_w = data_width * scale
+    map_pixel_h = data_height * scale
+    cbar_pixel_w = grid_dpi * 0.6
+    single_pixel_w = map_pixel_w + cbar_pixel_w
+    single_pixel_h = max(map_pixel_h, grid_dpi * 4)
+    single_fig_w = single_pixel_w / save_dpi
+    single_fig_h = single_pixel_h / save_dpi
+    return single_fig_w, single_fig_h
+
+
+def plot_species_panels(out, species_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
+    import matplotlib.colors as mcolors
+    from matplotlib.cm import ScalarMappable
+
+    grids = out["grids"]
+    if not species_map:
+        return
+
+    all_species = sorted({sp for sd in species_map.values() for sp in sd})
+    stats_text = _species_stats_text(species_map, all_species, len(grids))
+    n_species = len(all_species)
+    n_panels = n_species + 1
+
+    if n_panels <= 2:
+        nrows, ncols = 1, n_panels
+    elif n_panels <= 4:
+        nrows, ncols = 2, 2
+    else:
+        nrows = (n_panels + 1) // 2
+        ncols = 2
+
+    single_w, single_h = _compute_panel_figsize(grids, hex_size, grid_dpi, save_dpi)
+    gap = 0.3
+    fig_w = single_w * ncols + gap * (ncols - 1)
+    fig_h = single_h * nrows + gap * (nrows - 1) + 0.8
+
+    panel_w = single_w / fig_w
+    panel_h = single_h / fig_h
+    gap_frac_w = gap / fig_w
+    gap_frac_h = gap / fig_h
+    title_h = 0.04
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+
+    for idx, sp in enumerate(all_species):
+        row = idx // ncols
+        col = idx % ncols
+        left = col * (panel_w + gap_frac_w)
+        bottom = (nrows - 1 - row) * (panel_h + gap_frac_h) + 0.06
+
+        ax = fig.add_axes([left, bottom, panel_w * 0.88, panel_h - title_h])
+        fill_color = SPECIES_STYLE.get(sp, {}).get("fill_color", "#333333")
+        cmap = mcolors.LinearSegmentedColormap.from_list(f"{sp}_cmap", ["#f0f0f0", fill_color])
+        norm = plt.Normalize(0, 1)
+        _draw_hex_heatmap(ax, grids, hex_size, sp, species_map, cmap, norm)
+
+        cbar_left = left + panel_w * 0.88 + 0.005
+        cbar_bottom = bottom + panel_h * 0.15
+        cbar_h = panel_h * 0.7 - title_h
+        ax_cbar = fig.add_axes([cbar_left, cbar_bottom, panel_w * 0.04, cbar_h])
+        sm = ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, cax=ax_cbar)
+        cbar.set_label("Density", fontsize=8)
+        cbar.ax.tick_params(labelsize=7)
+
+        fig.text(left + panel_w * 0.44, bottom + panel_h - title_h * 0.3,
+                 f"{sp.capitalize()} Density", fontsize=11, fontweight="bold",
+                 ha="center", va="bottom")
+
+    comp_idx = n_species
+    comp_row = comp_idx // ncols
+    comp_col = comp_idx % ncols
+    comp_left = comp_col * (panel_w + gap_frac_w)
+    comp_bottom = (nrows - 1 - comp_row) * (panel_h + gap_frac_h) + 0.06
+
+    ax_comp = fig.add_axes([comp_left, comp_bottom, panel_w, panel_h - title_h])
+    _draw_composite(ax_comp, grids, hex_size, all_species, species_map)
+    fig.text(comp_left + panel_w * 0.5, comp_bottom + panel_h - title_h * 0.3,
+             "Composite Overview", fontsize=11, fontweight="bold", ha="center", va="bottom")
+
+    legend_items = []
+    for sp in all_species:
+        fill_color = SPECIES_STYLE.get(sp, {}).get("fill_color", "#333")
+        legend_items.append(mpatches.Patch(facecolor=fill_color, edgecolor="black",
+                                           linewidth=0.5, alpha=0.7, label=sp))
+    terrain_items = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, alpha=0.5, label=t)
+                     for t, c in TERRAIN_COLORS.items()]
+    ax_comp.legend(handles=terrain_items + legend_items, loc="upper right", fontsize=7, framealpha=0.8)
+
+    fig.text(0.02, 0.01, stats_text, fontsize=9, fontfamily="monospace",
+             verticalalignment="bottom",
+             bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="gray", alpha=0.9))
+
+    fig.suptitle("Species Density Panels", fontsize=14, fontweight="bold", y=0.99)
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
@@ -913,7 +1132,7 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
 def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     """保护收益热力图与部署资源对比图（上：Protection Heatmap，下：Deployment Map）"""
     grids = out["grids"]
-    summary = out["summary"]
+    summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     edge_ids = _edge_grid_ids(grids, boundary_xy)
 
@@ -972,9 +1191,9 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     # ================= 右侧图例
     summary_items = [
         ("Summary",        None,                          True),
-        ("Best Fitness",   f"{summary['best_fitness']:.4f}", False),
-        ("Total PB",       f"{summary['total_protection_benefit']:.4f}", False),
-        ("Avg PB",         f"{summary['average_protection_benefit']:.4f}", False),
+        ("Best Fitness",   f"{summary.get('best_fitness', 0):.4f}", False),
+        ("Total PB",       f"{summary.get('total_protection_benefit', 0):.4f}", False),
+        ("Avg PB",         f"{summary.get('average_protection_benefit', 0):.4f}", False),
         ("--- Resources ---", None,                      True),
     ]
     
@@ -1111,6 +1330,9 @@ def main():
     plot_species_map(out, species_map, hex_size, boundary_xy,
                      save_path=os.path.join(args.out_dir, f"{pre}species_map.png"),
                      grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+    plot_species_panels(out, species_map, hex_size, boundary_xy,
+                        save_path=os.path.join(args.out_dir, f"{pre}species_panels.png"),
+                        grid_dpi=args.grid_dpi, save_dpi=args.dpi)
     
     plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy,
                                       save_path=os.path.join(args.out_dir, f"{pre}species_deployment_comparison.png"),
