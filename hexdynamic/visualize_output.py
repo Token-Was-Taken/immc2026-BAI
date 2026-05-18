@@ -71,6 +71,15 @@ def load_data(output_path, input_path=None):
         with open(input_path, "r", encoding="utf-8") as f:
             inp = json.load(f)
 
+    # 自动检测：如果 output_path 中没有 risk_normalized，但 input_path 中有，说明参数反了，交换
+    if inp is not None:
+        out_has_risk = any("risk_normalized" in g for g in out.get("grids", [])[:10])
+        inp_has_risk = any("risk_normalized" in g for g in inp.get("grids", [])[:10])
+        if not out_has_risk and inp_has_risk:
+            print(f"  [auto-fix] 检测到参数顺序颠倒：交换 output/input ({output_path} <-> {input_path})")
+            out, inp = inp, out
+            output_path, input_path = input_path, output_path
+
     hex_size = 1.0
     for g in out["grids"]:
         if g.get("hex_size"):
@@ -88,6 +97,15 @@ def load_data(output_path, input_path=None):
     boundary_xy = None
     if inp and "map_config" in inp:
         bl = inp["map_config"].get("boundary_locations")
+        if bl:
+            boundary_xy = []
+            for item in bl:
+                if isinstance(item, dict):
+                    boundary_xy.append((item['x'], item['y']))
+                else:
+                    boundary_xy.append(tuple(item))
+    elif out and "map_config" in out:
+        bl = out["map_config"].get("boundary_locations")
         if bl:
             boundary_xy = []
             for item in bl:
@@ -517,6 +535,9 @@ def _draw_resources(ax, grids, out, hex_size, edge_ids):
 
 def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
+    if not grids or "risk_normalized" not in grids[0]:
+        print(f"  [skip] {os.path.basename(save_path)} — 输出数据缺少 risk_normalized 字段")
+        return
     summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("YlOrRd")
@@ -563,6 +584,9 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path, grid_dpi=8
 
 def plot_protection_heatmap(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
+    if not grids or "protection_benefit_normalized" not in grids[0]:
+        print(f"  [skip] {os.path.basename(save_path)} — 输出数据缺少 protection_benefit_normalized 字段")
+        return
     summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("Greens")
@@ -622,6 +646,9 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, sav
 
     if not grids or "residual_risk_normalized" not in grids[0]:
         print("  [skip] risk_comparison.png — 输出数据缺少 residual_risk_normalized 字段")
+        return
+    if "risk_normalized" not in grids[0]:
+        print("  [skip] risk_comparison.png — 输出数据缺少 risk_normalized 字段")
         return
 
     cmap = matplotlib.colormaps.get_cmap("YlOrRd")
@@ -733,6 +760,9 @@ def plot_terrain_map(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dp
 
 def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     grids = out["grids"]
+    if not grids or "deployment" not in grids[0]:
+        print(f"  [skip] {os.path.basename(save_path)} — 输出数据缺少 deployment 字段")
+        return
     edge_ids = _edge_grid_ids(grids, boundary_xy)
     fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
@@ -1038,6 +1068,9 @@ def plot_species_panels(out, species_map, hex_size, boundary_xy, save_path, grid
 def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     """物种密度与部署资源对比图（上：物种密度，下：部署资源）"""
     grids = out["grids"]
+    if not grids or "deployment" not in grids[0]:
+        print(f"  [skip] {os.path.basename(save_path)} — 输出数据缺少 deployment 字段")
+        return
 
     figsize_single, _ = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar=False)
     fig_w = figsize_single[0]
@@ -1132,6 +1165,9 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
 def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
     """保护收益热力图与部署资源对比图（上：Protection Heatmap，下：Deployment Map）"""
     grids = out["grids"]
+    if not grids or "protection_benefit_normalized" not in grids[0] or "deployment" not in grids[0]:
+        print(f"  [skip] {os.path.basename(save_path)} — 输出数据缺少保护收益/部署字段")
+        return
     summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     edge_ids = _edge_grid_ids(grids, boundary_xy)
