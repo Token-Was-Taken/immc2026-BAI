@@ -527,7 +527,7 @@ def main(argv=None):
 
     t_start = time.monotonic()
     results = run_monte_carlo(base_config, args.num_trials, args.output_dir, args.seed,
-                              args.workers, vectorized=args.vectorized, max_iterations=args.max_iterations)
+                              args.workers, vectorized=args.vectorized, max_iterations=args.max_iterations, warm_start_path=args.warm_start)
     elapsed = time.monotonic() - t_start
 
     meta = {
