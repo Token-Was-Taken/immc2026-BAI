@@ -61,6 +61,20 @@ def parse_args(argv=None):
         help="Skip chart generation; write summary JSON only.",
     )
     parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        metavar="N",
+        help="DSSA max iterations (default: use input JSON config, fallback 200).",
+    )
+    parser.add_argument(
+        "--warm-start",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Warm-start solution path (provide an output JSON as initial deployment).",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=os.cpu_count(),
@@ -148,7 +162,7 @@ def compute_efficiency(record: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, output_dir: str,
-              vectorized: bool = False) -> dict:
+              vectorized: bool = False, max_iterations: int = None, warm_start_path: str = None) -> dict:
     """Execute one Monte Carlo trial.
 
     Deep-copies base_config, overrides the four constraint fields, writes
@@ -197,7 +211,7 @@ def run_trial(base_config: dict, constraints_sample: dict, trial_idx: int, outpu
             json.dump(trial_config, fh)
 
         # Run the pipeline
-        run_pipeline(input_path, output_path, vectorized=vectorized)
+        run_pipeline(input_path, output_path, vectorized=vectorized, max_iterations=max_iterations, warm_start_path=warm_start_path)
 
         # Read output and extract metrics
         with open(output_path, "r", encoding="utf-8") as fh:
@@ -226,12 +240,12 @@ def _parallel_worker(args_tuple):
     to run_trial. Must be defined at module level so it can be pickled on
     Windows (spawn start method).
     """
-    base_config, constraints, trial_idx, output_dir, vectorized = args_tuple
-    return run_trial(base_config, constraints, trial_idx, output_dir, vectorized=vectorized)
+    base_config, constraints, trial_idx, output_dir, vectorized, max_iterations, warm_start_path = args_tuple
+    return run_trial(base_config, constraints, trial_idx, output_dir, vectorized=vectorized, max_iterations=max_iterations, warm_start_path=warm_start_path)
 
 
 def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed,
-                    workers: int = 1, vectorized: bool = False) -> list:
+                    workers: int = 1, vectorized: bool = False, max_iterations: int = None, warm_start_path: str = None) -> list:
     """Orchestrate N Monte Carlo trials and return a list of trial records.
 
     Pre-generates all N Constraint_Sample dicts in the main process before
@@ -266,7 +280,7 @@ def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed,
         # Sequential fallback — no subprocess overhead, useful for debugging/testing.
         for i in range(num_trials):
             try:
-                record = run_trial(base_config, all_constraints[i], i, output_dir, vectorized=vectorized)
+                record = run_trial(base_config, all_constraints[i], i, output_dir, vectorized=vectorized, max_iterations=max_iterations, warm_start_path=warm_start_path)
             except Exception as exc:  # noqa: BLE001
                 print(f"[Trial {i + 1}/{num_trials}] FAILED: {exc}")
                 record = {
@@ -284,7 +298,7 @@ def run_monte_carlo(base_config: dict, num_trials: int, output_dir: str, seed,
     else:
         # Parallel execution via ProcessPoolExecutor.
         args_list = [
-            (base_config, all_constraints[i], i, output_dir, vectorized)
+            (base_config, all_constraints[i], i, output_dir, vectorized, max_iterations, warm_start_path)
             for i in range(num_trials)
         ]
 
@@ -513,7 +527,7 @@ def main(argv=None):
 
     t_start = time.monotonic()
     results = run_monte_carlo(base_config, args.num_trials, args.output_dir, args.seed,
-                              args.workers, vectorized=args.vectorized)
+                              args.workers, vectorized=args.vectorized, max_iterations=args.max_iterations)
     elapsed = time.monotonic() - t_start
 
     meta = {

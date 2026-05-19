@@ -59,6 +59,8 @@ def auto_grid_dpi(grids, max_grid_dpi=80):
 def process_single(input_path: str, output_dir: str, prefix: str,
                    vectorized: bool, allow_partial: bool,
                    freeze_resources: str | None,
+                   max_iterations: int = None,
+                   warm_start_path: str = None,
                    grid_dpi: int = None, save_dpi: int = 150) -> Dict:
     from protection_pipeline import run_pipeline
     from visualize_output import load_data, plot_risk_heatmap, plot_risk_comparison, \
@@ -82,6 +84,8 @@ def process_single(input_path: str, output_dir: str, prefix: str,
         vectorized=vectorized,
         allow_partial_deployment=allow_partial,
         freeze_resources=freeze_resources,
+        max_iterations=max_iterations,
+        warm_start_path=warm_start_path,
     )
 
     with open(output_json, "r", encoding="utf-8") as f:
@@ -194,6 +198,10 @@ Output structure:
                         help="Allow optimizer to decide resource deployment by marginal benefit")
     parser.add_argument("--freeze-resources", type=str, default=None,
                         help="Comma-separated list of frozen resources (e.g., 'patrol,camera')")
+    parser.add_argument("--max-iterations", type=int, default=None,
+                        help="DSSA max iterations (default: use input JSON config, fallback 200)")
+    parser.add_argument("--warm-start", type=str, default=None, metavar="PATH",
+                        help="Warm-start solution path (provide an output JSON as initial deployment)")
     parser.add_argument("--no-visualize", action="store_true", default=False,
                         help="Skip visualization, only run optimization")
     parser.add_argument("--grid_dpi", type=int, default=None,
@@ -241,6 +249,8 @@ Output structure:
                 vectorized=args.vectorized,
                 allow_partial=args.allow_partial_deployment,
                 freeze_resources=args.freeze_resources,
+                max_iterations=args.max_iterations,
+                warm_start_path=args.warm_start,
                 grid_dpi=args.grid_dpi,
                 save_dpi=args.dpi,
             )

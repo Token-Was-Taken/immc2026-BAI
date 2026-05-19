@@ -92,6 +92,10 @@ def parse_args():
                    help="允许优化器按边际收益决定是否部署资源（默认强制全量部署）")
     p.add_argument("--freeze-resources", type=str, default=None,
                    help="冻结资源列表，逗号分隔，如 'patrol,camera,drone'")
+    p.add_argument("--max-iterations", type=int, default=None,
+                   help="DSSA 最大迭代次数（默认：使用 input JSON 配置，若未配置则为 200）")
+    p.add_argument("--warm-start", type=str, default=None, metavar="PATH",
+                   help="热启动方案路径（提供已有的 output JSON 作为初始部署方案，加速收敛）")
 
     # 可视化选项
     p.add_argument("--no-visualize", action="store_true", default=False,
@@ -147,6 +151,8 @@ def main():
         allow_partial_deployment=args.allow_partial_deployment,
         freeze_resources=args.freeze_resources,
         out_dir=args.out_dir,
+        max_iterations=args.max_iterations,
+        warm_start_path=args.warm_start,
     )
 
     # Step 2: 可视化

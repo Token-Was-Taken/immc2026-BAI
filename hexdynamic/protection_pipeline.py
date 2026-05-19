@@ -268,7 +268,7 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
     return loader
 
 
-def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None, warm_start_path: str = None):
+def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None, warm_start_path: str = None, max_iterations: int = None):
     print(f"[1/4] Read input: {input_path}")
     data = load_input(input_path)
 
@@ -317,7 +317,7 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
     if dssa_config is None:
         dssa_config = DSSAConfig(
             population_size=dc.get('population_size', 50),
-            max_iterations=dc.get('max_iterations', 100),
+            max_iterations=max_iterations if max_iterations is not None else dc.get('max_iterations', 200),
             producer_ratio=dc.get('producer_ratio', 0.2),
             scout_ratio=dc.get('scout_ratio', 0.2),
             ST=dc.get('ST', 0.8),
@@ -341,6 +341,8 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         dssa_config.high_risk_percentage = dc.get('high_risk_percentage', 0.3)
     if dssa_config.high_risk_perturbation_priority is None:
         dssa_config.high_risk_perturbation_priority = dc.get('high_risk_perturbation_priority', 0.7)
+    if max_iterations is not None:
+        dssa_config.max_iterations = max_iterations
 
     # 部署模式优先级：CLI --allow-partial-deployment > JSON dssa_config.force_full_deployment > 默认 True
     if allow_partial_deployment:

@@ -114,7 +114,7 @@ class _SerializationBuffer:
 @dataclass
 class DSSAConfig:
     population_size: int = 50
-    max_iterations: int = 100
+    max_iterations: int = 200
     producer_ratio: float = 0.2
     scout_ratio: float = 0.3
     ST: float = 0.8

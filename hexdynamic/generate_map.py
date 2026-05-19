@@ -43,7 +43,7 @@ DEFAULTS = {
     "wf": 0.2,
     # DSSA
     "population_size": 50,
-    "max_iterations": 1,
+    "max_iterations": 200,
     "producer_ratio": 0.2,
     "scout_ratio": 0.2,
     "ST": 0.8,
@@ -169,36 +169,167 @@ def assign_terrain(m: int, n: int, road_cells: set) -> Dict[Tuple[int, int], str
 # 物种密度生成
 # ---------------------------------------------------------------------------
 
-def generate_species_densities(terrain: str) -> Dict[str, float]:
+def assign_clustered_species_densities(grids_list: List[dict], m: int, n: int):
     """
-    按规则生成物种密度：
-    - rhino / elephant 只在 SparseGrass 有密度，其他地形为 0
-    - bird 集中在 SaltMarsh，其他地形极低
+    生态学驱动的物种密度分配：模拟野生动物保护区的真实分布模式。
+    - 犀牛：稀疏草地，靠近水源，2-4个族群
+    - 大象：稀疏草地+密林边缘，靠近水源，活动范围更大，2-3个族群
+    - 鸟类：盐沼+水源附近，3-6个小群
+    密度由水源距离和族群中心距离双重衰减决定。
     """
-    if terrain == "SparseGrass":
-        return {
-            "rhino":    round(random.uniform(0.4, 0.9), 2),
-            "elephant": round(random.uniform(0.3, 0.8), 2),
-            "bird":     round(random.uniform(0.0, 0.15), 2),
-        }
-    elif terrain == "SaltMarsh":
-        return {
-            "rhino":    0.0,
-            "elephant": 0.0,
-            "bird":     round(random.uniform(0.6, 1.0), 2),
-        }
-    elif terrain == "WaterHole":
-        return {
-            "rhino":    0.0,
-            "elephant": 0.0,
-            "bird":     round(random.uniform(0.1, 0.3), 2),
-        }
-    else:  # DenseGrass, Road
-        return {
-            "rhino":    0.0,
-            "elephant": 0.0,
-            "bird":     round(random.uniform(0.0, 0.1), 2),
-        }
+    for g in grids_list:
+        g["species_densities"] = {"rhino": 0.0, "elephant": 0.0, "bird": 0.0}
+
+    total = len(grids_list)
+    if total == 0:
+        return
+
+    idx_map = {}
+    for i, g in enumerate(grids_list):
+        key = (g["x"], g["y"])
+        idx_map[key] = i
+
+    neighbors_map = {}
+    for i, g in enumerate(grids_list):
+        x, y = g["x"], g["y"]
+        neighbors_map[i] = []
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nx_key = (x + dx, y + dy)
+            if nx_key in idx_map:
+                neighbors_map[i].append(idx_map[nx_key])
+
+    water_indices = [i for i in range(total) if grids_list[i]["terrain_type"] == "WaterHole"]
+
+    min_dist_to_water = {}
+    for i in range(total):
+        if not water_indices:
+            min_dist_to_water[i] = 999
+            continue
+        gx, gy = grids_list[i]["x"], grids_list[i]["y"]
+        min_dist_to_water[i] = min(
+            ((grids_list[w]["x"] - gx) ** 2 + (grids_list[w]["y"] - gy) ** 2) ** 0.5
+            for w in water_indices
+        )
+
+    assigned = set()
+
+    def bfs_expand(seeds, max_count, is_allowed):
+        result = []
+        visited = set()
+        queue = list(seeds)
+        for s in seeds:
+            if is_allowed(s):
+                visited.add(s)
+        queue = [s for s in seeds if is_allowed(s)]
+        while queue and len(result) < max_count:
+            idx = queue.pop(0)
+            if idx in assigned:
+                continue
+            result.append(idx)
+            for nb in neighbors_map.get(idx, []):
+                if nb not in visited and nb not in assigned and is_allowed(nb):
+                    visited.add(nb)
+                    queue.append(nb)
+        return result
+
+    species_profiles = {
+        "rhino": {
+            "habitat_terrains": {"SparseGrass"},
+            "water_decay": 8,
+            "herd_radius": 6,
+            "num_herds": (2, 4),
+            "density_range": (0.4, 1.0),
+            "candidate_ratio": 5,
+        },
+        "elephant": {
+            "habitat_terrains": {"SparseGrass", "DenseGrass"},
+            "water_decay": 12,
+            "herd_radius": 8,
+            "num_herds": (2, 3),
+            "density_range": (0.3, 0.9),
+            "candidate_ratio": 5,
+        },
+    }
+
+    for species, profile in species_profiles.items():
+        dmin, dmax = profile["density_range"]
+        is_allowed = lambda idx, ht=profile["habitat_terrains"]: (
+            grids_list[idx]["terrain_type"] in ht and grids_list[idx]["terrain_type"] != "Road"
+        )
+
+        all_candidates = [i for i in range(total) if is_allowed(i)]
+        if not all_candidates:
+            continue
+
+        scored = [(i, math.exp(-min_dist_to_water.get(i, 999) / profile["water_decay"])) for i in all_candidates]
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        num_herds = random.randint(*profile["num_herds"])
+        total_max = max(1, total * profile["candidate_ratio"] // 100)
+        herd_max = max(3, total_max // num_herds)
+
+        min_seed_dist = max(5, int(math.sqrt(total) / 4))
+        seed_indices = []
+        for idx, _ in scored:
+            if len(seed_indices) >= num_herds:
+                break
+            gx, gy = grids_list[idx]["x"], grids_list[idx]["y"]
+            too_close = any(
+                ((grids_list[si]["x"] - gx) ** 2 + (grids_list[si]["y"] - gy) ** 2) ** 0.5 < min_seed_dist
+                for si in seed_indices
+            )
+            if not too_close:
+                seed_indices.append(idx)
+
+        for seed_idx in seed_indices:
+            expanded = bfs_expand([seed_idx], herd_max, is_allowed)
+            sx, sy = grids_list[seed_idx]["x"], grids_list[seed_idx]["y"]
+
+            for idx in expanded:
+                g = grids_list[idx]
+                d_center = ((g["x"] - sx) ** 2 + (g["y"] - sy) ** 2) ** 0.5
+                dw = min_dist_to_water.get(idx, 999)
+
+                herd_factor = math.exp(-d_center / profile["herd_radius"])
+                water_factor = math.exp(-dw / profile["water_decay"])
+                combined = herd_factor * (0.4 + 0.6 * water_factor)
+
+                val = dmin + (dmax - dmin) * combined
+                g["species_densities"][species] = round(max(dmin, min(dmax, val)), 2)
+                assigned.add(idx)
+
+    bird_profile = {
+        "habitat_terrains": {"SaltMarsh", "WaterHole"},
+        "herd_radius": 5,
+        "num_herds": (3, 6),
+        "density_range": (0.5, 1.0),
+    }
+    dmin, dmax = bird_profile["density_range"]
+    is_bird_allowed = lambda idx: grids_list[idx]["terrain_type"] != "Road"
+
+    saltmarsh_indices = [i for i in range(total) if grids_list[i]["terrain_type"] == "SaltMarsh"]
+    num_bird_herds = random.randint(*bird_profile["num_herds"])
+    bird_total_max = max(1, total * 5 // 100)
+    bird_herd_max = max(3, bird_total_max // num_bird_herds)
+
+    random.shuffle(saltmarsh_indices)
+    bird_seeds = saltmarsh_indices[:num_bird_herds]
+
+    for seed_idx in bird_seeds:
+        expanded = bfs_expand([seed_idx], bird_herd_max, is_bird_allowed)
+        sx, sy = grids_list[seed_idx]["x"], grids_list[seed_idx]["y"]
+
+        for idx in expanded:
+            g = grids_list[idx]
+            d_center = ((g["x"] - sx) ** 2 + (g["y"] - sy) ** 2) ** 0.5
+
+            herd_factor = math.exp(-d_center / bird_profile["herd_radius"])
+            tt = g["terrain_type"]
+            habitat_bonus = 1.0 if tt in bird_profile["habitat_terrains"] else 0.4
+
+            val = dmin + (dmax - dmin) * herd_factor * habitat_bonus
+            g["species_densities"]["bird"] = round(max(dmin, min(dmax, val)), 2)
+            assigned.add(idx)
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +384,7 @@ def generate(m: int, n: int, args) -> dict:
                 "fire_risk": fire_risk,
                 "terrain_complexity": terrain_complexity,
                 "vegetation_type": TERRAIN_TO_VEG[terrain],
-                "species_densities": generate_species_densities(terrain),
+                "species_densities": {"rhino": 0.0, "elephant": 0.0, "bird": 0.0},
             })
             grid_id += 1
 

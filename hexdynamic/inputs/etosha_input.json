@@ -2782,10 +2782,10 @@
     },
     "temporal_weights": {
       "daytime_factor": 1,
-      "nighttime_factor": 1.3,
+      "nighttime_factor": 1.2,
       "gamma": 0.3,
       "dry_season_factor": 1,
-      "rainy_season_factor": 1.2
+      "rainy_season_factor": 1.4
     }
   },
   "species_config": {

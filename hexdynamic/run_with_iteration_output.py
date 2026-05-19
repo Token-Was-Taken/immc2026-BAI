@@ -26,7 +26,7 @@ def parse_args():
     )
     parser.add_argument('input_json', help="Input JSON file")
     parser.add_argument('-o', '--output', default='./output_results', help="Output directory")
-    parser.add_argument('--iterations', type=int, default=50, help="Number of DSSA iterations")
+    parser.add_argument('--iterations', type=int, default=None, help="Number of DSSA iterations (default: use input JSON config, fallback 200)")
     parser.add_argument('--vectorized', action='store_true', help="Use vectorized coverage model (recommended for grid count > 1000)")
     parser.add_argument('--visualize', action='store_true', help="Generate visualizations")
     parser.add_argument('--workers', type=int, default=4, help="Number of parallel workers for visualization (default: 4)")
@@ -48,7 +48,7 @@ def prepare_input_with_config(input_path: str, cli_iterations: int = None, cli_o
     dssa_config = data.get('dssa_config', {})
     
     # Determine final values: CLI > input.json > defaults
-    final_iterations = cli_iterations if cli_iterations is not None else dssa_config.get('max_iterations', 50)
+    final_iterations = cli_iterations if cli_iterations is not None else dssa_config.get('max_iterations', 200)
     final_output_dir = cli_output_dir if cli_output_dir else dssa_config.get('output_dir', '')
     config_vectorized = dssa_config.get('vectorized', False)
     
@@ -163,7 +163,7 @@ def main():
     output_dir = os.path.abspath(args.output)
     
     # CLI iterations=None means "use from input.json", which prepare_input_with_config handles
-    cli_iterations = args.iterations if args.iterations != 50 else None
+    cli_iterations = args.iterations
     
     # Only set iteration output dir if visualize is requested  
     iteration_output_dir = os.path.abspath(os.path.join(output_dir, 'iterations')) if args.visualize else ''
