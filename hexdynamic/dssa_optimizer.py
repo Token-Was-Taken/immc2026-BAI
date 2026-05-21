@@ -1,3 +1,4 @@
+import gc
 import numpy as np
 from typing import Dict, List, Tuple, Callable, Optional, Any
 from dataclasses import dataclass, asdict
@@ -172,8 +173,8 @@ class DSSAOptimizer:
         self.grid_ids = self.grid_model.get_all_grid_ids()
         self.fencing_edges = self.grid_model.get_fencing_edges()
         self.fixed_fences = fixed_fences or {}
-        self.force_full_deployment = force_full_deployment  # 新增：是否强制部署所有资源
-        self.frozen_resources = frozen_resources or []  # 新增：冻结的资源列表
+        self.force_full_deployment = force_full_deployment
+        self.frozen_resources = frozen_resources or []
 
         self.population = []
         self.fitness_history = []
@@ -424,7 +425,10 @@ class DSSAOptimizer:
         max_cam = self.constraints.get('max_cameras_per_grid', 1)
         target_cam = self.constraints['total_cameras']
         for gid in list(repaired.cameras.keys()):
-            repaired.cameras[gid] = min(repaired.cameras[gid], max_cam)
+            if self.coverage_model.deployment_matrix['camera'].get(gid, 0) == 0:
+                del repaired.cameras[gid]
+            else:
+                repaired.cameras[gid] = min(repaired.cameras[gid], max_cam)
         deployed_cam = sum(repaired.cameras.values())
         if deployed_cam > target_cam:
             sorted_gids = sorted(repaired.cameras.keys(), key=lambda g: repaired.cameras[g], reverse=True)
@@ -436,22 +440,14 @@ class DSSAOptimizer:
                 deployed_cam -= excess
                 if repaired.cameras[gid] <= 0:
                     del repaired.cameras[gid]
-        elif deployed_cam < target_cam:
-            grid_ids_ordered = self._get_prioritized_grid_order()
-            for gid in grid_ids_ordered:
-                if deployed_cam >= target_cam:
-                    break
-                if self.coverage_model.deployment_matrix['camera'].get(gid, 0) == 1:
-                    current = repaired.cameras.get(gid, 0)
-                    can_add = min(max_cam - current, target_cam - deployed_cam)
-                    if can_add > 0:
-                        repaired.cameras[gid] = current + can_add
-                        deployed_cam += can_add
 
         max_drone = self.constraints.get('max_drones_per_grid', 1)
         target_drone = self.constraints['total_drones']
         for gid in list(repaired.drones.keys()):
-            repaired.drones[gid] = min(repaired.drones[gid], max_drone)
+            if self.coverage_model.deployment_matrix['drone'].get(gid, 0) == 0:
+                del repaired.drones[gid]
+            else:
+                repaired.drones[gid] = min(repaired.drones[gid], max_drone)
         deployed_drone = sum(repaired.drones.values())
         if deployed_drone > target_drone:
             sorted_gids = sorted(repaired.drones.keys(), key=lambda g: repaired.drones[g], reverse=True)
@@ -463,22 +459,15 @@ class DSSAOptimizer:
                 deployed_drone -= excess
                 if repaired.drones[gid] <= 0:
                     del repaired.drones[gid]
-        elif deployed_drone < target_drone:
-            grid_ids_ordered = self._get_prioritized_grid_order()
-            for gid in grid_ids_ordered:
-                if deployed_drone >= target_drone:
-                    break
-                if self.coverage_model.deployment_matrix['drone'].get(gid, 0) == 1:
-                    current = repaired.drones.get(gid, 0)
-                    can_add = min(max_drone - current, target_drone - deployed_drone)
-                    if can_add > 0:
-                        repaired.drones[gid] = current + can_add
-                        deployed_drone += can_add
 
         max_camp = self.constraints.get('max_camps_per_grid', 1)
         target_camp = self.constraints['total_camps']
         for gid in list(repaired.camps.keys()):
-            repaired.camps[gid] = min(repaired.camps[gid], max_camp)
+            if self.coverage_model.deployment_matrix['camp'].get(gid, 0) == 0:
+                del repaired.camps[gid]
+                repaired.rangers.pop(gid, None)
+            else:
+                repaired.camps[gid] = min(repaired.camps[gid], max_camp)
         deployed_camp = sum(repaired.camps.values())
         if deployed_camp > target_camp:
             sorted_gids = sorted(repaired.camps.keys(), key=lambda g: repaired.camps[g], reverse=True)
@@ -490,19 +479,13 @@ class DSSAOptimizer:
                 deployed_camp -= excess
                 if repaired.camps[gid] <= 0:
                     del repaired.camps[gid]
-        elif deployed_camp < target_camp:
-            grid_ids_ordered = self._get_prioritized_grid_order()
-            for gid in grid_ids_ordered:
-                if deployed_camp >= target_camp:
-                    break
-                if self.coverage_model.deployment_matrix['camp'].get(gid, 0) == 1:
-                    current = repaired.camps.get(gid, 0)
-                    can_add = min(max_camp - current, target_camp - deployed_camp)
-                    if can_add > 0:
-                        repaired.camps[gid] = current + can_add
-                        deployed_camp += can_add
 
         target_ranger = self.constraints['total_patrol']
+        for gid in list(repaired.rangers.keys()):
+            if gid in repaired.camps:
+                del repaired.rangers[gid]
+            elif self.coverage_model.deployment_matrix['patrol'].get(gid, 0) == 0:
+                del repaired.rangers[gid]
         deployed_ranger = sum(repaired.rangers.values())
         if deployed_ranger > target_ranger:
             sorted_gids = sorted(repaired.rangers.keys(), key=lambda g: repaired.rangers[g], reverse=True)
@@ -514,16 +497,17 @@ class DSSAOptimizer:
                 deployed_ranger -= excess
                 if repaired.rangers[gid] <= 0:
                     del repaired.rangers[gid]
-        elif deployed_ranger < target_ranger:
-            grid_ids_ordered = self._get_prioritized_grid_order()
-            for gid in grid_ids_ordered:
-                if deployed_ranger >= target_ranger:
-                    break
-                if gid not in repaired.camps and self.coverage_model.deployment_matrix['patrol'].get(gid, 0) == 1:
-                    repaired.rangers[gid] = repaired.rangers.get(gid, 0) + 1
-                    deployed_ranger += 1
 
         target_fence = int(self.constraints['total_fence_length'])
+        for k in list(repaired.fences.keys()):
+            gid1, gid2 = k
+            if isinstance(gid2, int) and gid2 in range(6):
+                if self.coverage_model.deployment_matrix['fence'].get(gid1, 0) == 0:
+                    del repaired.fences[k]
+            else:
+                if (self.coverage_model.deployment_matrix['fence'].get(gid1, 0) == 0 or
+                        self.coverage_model.deployment_matrix['fence'].get(gid2, 0) == 0):
+                    del repaired.fences[k]
         deployed_fence = sum(1 for v in repaired.fences.values() if v > 0)
         if deployed_fence > target_fence:
             fence_items = [(k, v) for k, v in repaired.fences.items() if v > 0]
@@ -531,12 +515,27 @@ class DSSAOptimizer:
             for i in range(deployed_fence - target_fence):
                 if i < len(fence_items):
                     del repaired.fences[fence_items[i][0]]
-        elif deployed_fence < target_fence:
-            new_fences = self._initialize_fences()
-            for k, v in new_fences.items():
-                if k not in repaired.fences and deployed_fence < target_fence:
-                    repaired.fences[k] = v
-                    deployed_fence += 1
+
+        rep_cam = sum(repaired.cameras.values())
+        rep_drone = sum(repaired.drones.values())
+        rep_camp = sum(repaired.camps.values())
+        rep_ranger = sum(repaired.rangers.values())
+        rep_fence = sum(1 for v in repaired.fences.values() if v > 0)
+        orig_cam = sum(warm_solution.cameras.values())
+        orig_drone = sum(warm_solution.drones.values())
+        orig_camp = sum(warm_solution.camps.values())
+        orig_ranger = sum(warm_solution.rangers.values())
+        orig_fence = sum(1 for v in warm_solution.fences.values() if v > 0)
+        changed = (rep_cam != orig_cam or rep_drone != orig_drone or
+                   rep_camp != orig_camp or rep_ranger != orig_ranger or
+                   rep_fence != orig_fence)
+        if changed:
+            print(f"      [WARM-START] 修复后资源变化:"
+                  f" cam {orig_cam}->{rep_cam}"
+                  f" drone {orig_drone}->{rep_drone}"
+                  f" camp {orig_camp}->{rep_camp}"
+                  f" ranger {orig_ranger}->{rep_ranger}"
+                  f" fence {orig_fence}->{rep_fence}")
 
         return repaired
 
@@ -765,7 +764,7 @@ class DSSAOptimizer:
             fence_count = int(round(vector[idx]))
             idx += 1
 
-            # 围栏部署：根据向量值选择部署哪些边界边
+# 围栏部署：根据向量值选择部署哪些边界边
             if self.coverage_model.deployment_matrix['fence'].get(grid_id, 0) > 0 and fence_count > 0:
                 boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id)
                 # 只部署 fence_count 条边界边
@@ -1071,8 +1070,15 @@ class DSSAOptimizer:
 
         self.initialize_population()
         
-        # 保存初始解决方案（用于冻结资源）
         self.initial_solution = self._initialize_solution()
+
+        if self.warm_start_solution is not None:
+            self.best_solution = self.population[0]
+            is_valid, violations = self.coverage_model.validate_solution(self.population[0], self.constraints)
+            if not is_valid:
+                print(f"      [WARM-START] 警告: baseline 方案无效! violations={violations[:5]}")
+            self.best_fitness = self.evaluate_fitness(self.population[0])
+            print(f"      [WARM-START] 用 baseline 部署初始化 best_solution: fitness={self.best_fitness:.6f}")
 
         fitnesses = self._evaluate_fitness_parallel(self.population)
         for solution, fitness in zip(self.population, fitnesses):
@@ -1081,6 +1087,11 @@ class DSSAOptimizer:
                 self.best_solution = solution
 
         self.fitness_history = [self.best_fitness]
+
+        if self.warm_start_solution is not None:
+            ws_eval = self.evaluate_fitness(self.population[0])
+            print(f"      [WARM-START] 种群评估后: best_fitness={self.best_fitness:.6f}"
+                  f" (热启动个体#0={ws_eval:.6f})")
 
         total_start = time.time()
         iter_times = []
@@ -1114,7 +1125,12 @@ class DSSAOptimizer:
                 self.stagnation_count += 1
             self.prev_best_fitness = self.best_fitness
 
-            if self.output_dir:
+            # Clear fitness cache when it gets too large to prevent slowdown from hash collisions
+            if len(self._fitness_cache) >= self._fitness_cache_max_size * 0.9:
+                self._fitness_cache.clear()
+
+            # Batch JSON output: write every 10 iterations instead of every iteration
+            if self.output_dir and iteration % 10 == 0:
                 producers = self.population[:num_producers]
                 followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
                 scouts = self.population[self.config.population_size - num_scouts:]
@@ -1131,6 +1147,9 @@ class DSSAOptimizer:
                 callback(iteration, self.best_fitness, self.best_solution)
 
             avg_iter = sum(iter_times) / len(iter_times)
+
+            if iteration > 0 and iteration % 20 == 0:
+                gc.collect()
             
             # 打印迭代信息
             escape_total = escape_producers + escape_followers
@@ -1466,7 +1485,7 @@ class DSSAOptimizer:
             camps=camps,
             drones=drones,
             rangers=rangers,
-            fences=dict(solution.fences)
+            fences=solution.fences
         )
 
     def _discrete_migrate(self, solution: DeploymentSolution) -> DeploymentSolution:
@@ -1529,7 +1548,7 @@ class DSSAOptimizer:
             camps=camps,
             drones=drones,
             rangers=rangers,
-            fences=dict(solution.fences)
+            fences=solution.fences
         )
 
     def _discrete_reshuffle(self, solution: DeploymentSolution) -> DeploymentSolution:
@@ -1583,7 +1602,7 @@ class DSSAOptimizer:
             camps=res_map['camp'],
             drones=res_map['drone'],
             rangers=res_map['ranger'],
-            fences=dict(solution.fences)
+            fences=solution.fences
         )
 
     def _discrete_perturb(self, solution: DeploymentSolution) -> DeploymentSolution:

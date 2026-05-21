@@ -375,6 +375,34 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         try:
             warm_start_solution = load_warm_start_solution(warm_start_path)
             print(f"      [WARM-START] 从 {warm_start_path} 加载热启动解")
+            with open(warm_start_path, 'r', encoding='utf-8') as f:
+                ws_data = json.load(f)
+            ws_orig_fitness = ws_data.get('summary', {}).get('best_fitness', None)
+            ws_cam = sum(warm_start_solution.cameras.values())
+            ws_drone = sum(warm_start_solution.drones.values())
+            ws_camp = sum(warm_start_solution.camps.values())
+            ws_ranger = sum(warm_start_solution.rangers.values())
+            ws_fence = sum(1 for v in warm_start_solution.fences.values() if v > 0)
+            print(f"      [WARM-START] 资源: cam={ws_cam}/{constraints['total_cameras']}"
+                  f" drone={ws_drone}/{constraints['total_drones']}"
+                  f" camp={ws_camp}/{constraints['total_camps']}"
+                  f" ranger={ws_ranger}/{constraints['total_patrol']}"
+                  f" fence={ws_fence}/{int(constraints['total_fence_length'])}")
+            ws_current_fitness = coverage_model.calculate_total_benefit(warm_start_solution)
+            ws_current_benefit = sum(coverage_model.calculate_protection_benefit(warm_start_solution).values())
+            ws_current_total_risk = coverage_model._total_risk if hasattr(coverage_model, '_total_risk') else 0
+            ws_stored_benefit = ws_data.get('summary', {}).get('total_protection_benefit', None)
+            ws_stored_total_risk = ws_data.get('summary', {}).get('total_risk', None)
+            ws_regular_fitness = ws_current_benefit / ws_current_total_risk if ws_current_total_risk > 0 else 0
+            ws_time_fitness = coverage_model.calculate_time_aware_total_benefit(warm_start_solution)
+            using_time_aware = dssa_config.use_time_aware_fitness
+            ws_model_fitness = ws_time_fitness if using_time_aware else ws_current_fitness
+            print(f"      [WARM-START] 原始 best_fitness={ws_orig_fitness}  "
+                  f"当前模型({['普通','时间感知'][using_time_aware]})={ws_model_fitness:.6f}"
+                  f"{'  *** 差异 ***' if ws_orig_fitness and abs(ws_orig_fitness - ws_model_fitness) > 1e-6 else ''}")
+            print(f"      [WARM-START]   stored benefit={ws_stored_benefit} risk={ws_stored_total_risk}"
+                  f"  |  current benefit={ws_current_benefit:.6f} risk={ws_current_total_risk:.6f}"
+                  f"  ratio={ws_regular_fitness:.6f}  时间感知={ws_time_fitness:.6f}")
         except (IOError, OSError, json.JSONDecodeError, KeyError, ValueError) as e:
             print(f"      [WARM-START] 加载热启动解失败: {e}，将使用冷启动")
 

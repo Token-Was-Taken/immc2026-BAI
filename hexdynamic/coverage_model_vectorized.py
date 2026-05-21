@@ -13,6 +13,7 @@ CoverageModel 的向量化实现，用 NumPy 矩阵运算替代 Python 循环。
 """
 
 import numpy as np
+import threading
 from typing import Dict, List, Tuple
 
 from grid_model import HexGridModel
@@ -95,17 +96,29 @@ class VectorizedCoverageModel(CoverageModel):
             [grid_model.get_grid_temporal_factor(gid) for gid in self.grid_ids], dtype=np.float64
         )
 
+        self._tl = threading.local()
+
     def _compute_dists_to(self, target_indices: np.ndarray) -> np.ndarray:
         if self._use_precomputed:
             return self._dist[:, target_indices]
 
         K = len(target_indices)
         N = len(self._qs)
+
+        tl = self._tl
+        if not hasattr(tl, 'buffers'):
+            tl.buffers = {}
+        cache_key = K
+        if cache_key in tl.buffers:
+            out = tl.buffers[cache_key]
+        else:
+            out = np.empty((N, K), dtype=np.float32)
+            tl.buffers[cache_key] = out
+
         t_qs = self._qs[target_indices]
         t_rs = self._rs[target_indices]
         t_qr = self._qr[target_indices]
 
-        out = np.empty((N, K), dtype=np.float32)
         chunk = 2048
         for start in range(0, N, chunk):
             end = min(start + chunk, N)
@@ -250,6 +263,24 @@ class VectorizedCoverageModel(CoverageModel):
             total /= self._total_risk
 
         return total
+
+    def calculate_protection_benefit(self, solution: DeploymentSolution) -> Dict[int, float]:
+        pc, dc, cc, fp = self._calculate_coverage_arrays(solution)
+
+        E = (self.params.wp * pc + self.params.wd * dc +
+             self.params.wc * cc + self.params.wf * fp)
+
+        denom_pd = 1.0 + pc + dc
+        synergy_pd = self.params.alpha_pd * (pc * dc) / denom_pd
+
+        denom_pc = 1.0 + pc + cc
+        synergy_pc = self.params.alpha_pc * (pc * cc) / denom_pc
+
+        E = E + synergy_pd + synergy_pc
+
+        benefit = self._risk_vec * (1.0 - np.exp(-E))
+
+        return {gid: float(benefit[i]) for i, gid in enumerate(self.grid_ids)}
 
     def calculate_time_aware_total_benefit(self, solution: DeploymentSolution) -> float:
         pc, dc, cc, fp = self._calculate_coverage_arrays(solution)

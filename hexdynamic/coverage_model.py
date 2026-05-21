@@ -228,14 +228,18 @@ class CoverageModel:
         if total_rangers > constraints['total_patrol']:
             violations.append(f"Patrol limit exceeded: {total_rangers} > {constraints['total_patrol']}")
 
-        for grid_id in self.grid_ids:
+        deployed = set()
+        deployed.update(gid for gid, v in solution.cameras.items() if v > 0)
+        deployed.update(gid for gid, v in solution.camps.items() if v > 0)
+        deployed.update(gid for gid, v in solution.drones.items() if v > 0)
+        deployed.update(gid for gid, v in solution.rangers.items() if v > 0)
+
+        for grid_id in deployed:
             has_camp = solution.camps.get(grid_id, 0) > 0
             has_ranger = solution.rangers.get(grid_id, 0) > 0
             if has_camp and has_ranger:
                 violations.append(f"Patrol and camp cannot share the same grid: {grid_id}")
 
-        # Check single resource type per grid
-        for grid_id in self.grid_ids:
             count = sum([
                 solution.camps.get(grid_id, 0) > 0,
                 solution.rangers.get(grid_id, 0) > 0,
@@ -245,7 +249,6 @@ class CoverageModel:
             if count > 1:
                 violations.append(f"Multiple resource types on same grid: {grid_id}")
 
-        for grid_id in self.grid_ids:
             cam_count = solution.cameras.get(grid_id, 0)
             max_cam = constraints.get('max_cameras_per_grid', 1)
             if cam_count > self.deployment_matrix['camera'][grid_id] * max_cam:
