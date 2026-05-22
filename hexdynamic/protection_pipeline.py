@@ -331,6 +331,7 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             use_marginal_contribution_repair=dc.get('use_marginal_contribution_repair', False),
             skip_conflict_resolution=dc.get('skip_conflict_resolution', False),
             fitness_workers=dc.get('fitness_workers', 16),
+            output_interval=dc.get('output_interval', 1),
         )
     if dssa_config.output_dir is None:
         dssa_config.output_dir = output_dir

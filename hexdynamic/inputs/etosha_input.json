@@ -2830,10 +2830,10 @@
     "use_risk_priority": true,
     "high_risk_percentage": 0.1,
     "population_size": 200,
-    "max_iterations": 400,
+    "max_iterations": 1000,
     "producer_ratio": 0.2,
     "scout_ratio": 0.2,
-    "ST": 0.8,
+    "ST": 0.75,
     "R2": 0.5
   },
   "grids": [

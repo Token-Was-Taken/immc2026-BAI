@@ -91,3 +91,6 @@ find_deployment_tmp/output_patrol_10.json
 find_deployment_tmp/output_patrol_20.json
 find_deployment_tmp/output_patrol_40.json
 hexdynamic/video.mp4
+
+# 临时目录
+tmp/

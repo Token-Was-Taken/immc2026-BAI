@@ -1,4 +1,5 @@
 import gc
+import multiprocessing
 import numpy as np
 from typing import Dict, List, Tuple, Callable, Optional, Any
 from dataclasses import dataclass, asdict
@@ -19,6 +20,63 @@ def _snapshot_solution(solution: DeploymentSolution) -> DeploymentSolution:
         rangers=dict(solution.rangers),
         fences=dict(solution.fences)
     )
+
+
+# ── Process-pool worker state (module-level, set by initializer per worker) ──
+_worker_coverage_model = None
+_worker_constraints = None
+_worker_use_time_aware_fitness = False
+_worker_fitness_cache = {}
+_worker_fitness_cache_max_size = 10000
+
+
+def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cache_max_size):
+    """Initialize worker process globals before accepting tasks."""
+    global _worker_coverage_model, _worker_constraints
+    global _worker_use_time_aware_fitness, _worker_fitness_cache, _worker_fitness_cache_max_size
+    _worker_coverage_model = coverage_model
+    _worker_constraints = constraints
+    _worker_use_time_aware_fitness = use_time_aware_fitness
+    _worker_fitness_cache = {}
+    _worker_fitness_cache_max_size = cache_max_size
+
+
+def _worker_make_cache_key(solution):
+    """Generate a hash key for fitness cache (used in worker processes)."""
+    if solution._cache_key is not None:
+        return solution._cache_key
+    key = hash((
+        tuple(sorted(solution.cameras.items())),
+        tuple(sorted(solution.camps.items())),
+        tuple(sorted(solution.drones.items())),
+        tuple(sorted(solution.rangers.items())),
+        tuple(sorted(solution.fences.items())),
+    ))
+    solution._cache_key = key
+    return key
+
+
+def _worker_evaluate_fitness(solution):
+    """Evaluate fitness of a single solution inside a worker process."""
+    global _worker_coverage_model, _worker_constraints
+    global _worker_use_time_aware_fitness, _worker_fitness_cache, _worker_fitness_cache_max_size
+
+    cache_key = _worker_make_cache_key(solution)
+    if cache_key in _worker_fitness_cache:
+        return _worker_fitness_cache[cache_key]
+
+    is_valid, violations = _worker_coverage_model.validate_solution(solution, _worker_constraints)
+    if not is_valid:
+        fitness = -len(violations) * 1000
+    elif _worker_use_time_aware_fitness:
+        fitness = _worker_coverage_model.calculate_time_aware_total_benefit(solution)
+    else:
+        fitness = _worker_coverage_model.calculate_total_benefit(solution)
+
+    if len(_worker_fitness_cache) < _worker_fitness_cache_max_size:
+        _worker_fitness_cache[cache_key] = fitness
+
+    return fitness
 
 
 class _SerializationBuffer:
@@ -156,7 +214,8 @@ class DSSAConfig:
 
     # --- 性能配置 ---
     fitness_cache_max_size: int = 10000  # 适应度缓存最大条目数
-    fitness_workers: int = 16  # 并行适应度评估线程数
+    fitness_workers: int = 16  # 并行适应度评估进程数
+    output_interval: int = 1  # 批量输出间隔：每 N 轮迭代输出一次（1=每轮都输出）
 
 
 class DSSAOptimizer:
@@ -192,6 +251,7 @@ class DSSAOptimizer:
         self._async_threads = []
         self._json_queue = queue.Queue()
         self._json_worker_started = False
+        self._output_buffer: List[dict] = []  # batch output: accumulates iteration data
 
         # 保存构建输出 JSON 所需的参数
         self.input_grids = input_grids
@@ -206,10 +266,19 @@ class DSSAOptimizer:
         if self.config.use_risk_priority:
             self._initialize_risk_groups()
 
-        # Thread pool for parallel fitness evaluation
-        self._fitness_executor = concurrent.futures.ThreadPoolExecutor(
+        # Process pool for parallel fitness evaluation (avoids GIL contention)
+        # Limit BLAS threads per worker to avoid memory explosion from
+        # many processes each spawning their own thread pools (OpenBLAS error).
+        os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+        os.environ.setdefault('MKL_NUM_THREADS', '1')
+        os.environ.setdefault('OMP_NUM_THREADS', '1')
+        os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+        self._fitness_executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=min(self.config.fitness_workers, self.config.population_size),
-            thread_name_prefix='fitness'
+            initializer=_worker_initializer,
+            initargs=(self.coverage_model, self.constraints,
+                      self.config.use_time_aware_fitness,
+                      self.config.fitness_cache_max_size),
         )
 
         self._fitness_cache = {}
@@ -615,8 +684,8 @@ class DSSAOptimizer:
         return solution
 
     def _evaluate_fitness_parallel(self, solutions: List[DeploymentSolution]) -> List[float]:
-        """Evaluate fitness for multiple solutions in parallel using thread pool."""
-        futures = [self._fitness_executor.submit(self.evaluate_fitness, sol)
+        """Evaluate fitness for multiple solutions in parallel using process pool."""
+        futures = [self._fitness_executor.submit(_worker_evaluate_fitness, sol)
                    for sol in solutions]
         return [f.result() for f in futures]
 
@@ -1130,12 +1199,21 @@ class DSSAOptimizer:
             if len(self._fitness_cache) >= self._fitness_cache_max_size * 0.9:
                 self._fitness_cache.clear()
 
-            # JSON output: write every iteration (async, non-blocking)
+            # JSON output: buffer iteration data, flush every output_interval iterations
             if self.output_dir:
                 producers = self.population[:num_producers]
                 followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
                 scouts = self.population[self.config.population_size - num_scouts:]
-                self._async_output_iteration_results(iteration, producers, followers, scouts)
+                self._output_buffer.append({
+                    'iteration': iteration,
+                    'producers': list(producers),
+                    'followers': list(followers),
+                    'scouts': list(scouts),
+                })
+                interval = max(1, self.config.output_interval)
+                is_last = (iteration == self.config.max_iterations - 1)
+                if len(self._output_buffer) >= interval or is_last:
+                    self._async_flush_output_buffer()
 
             pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
             total_benefit = sum(pb_per_grid.values())
@@ -1189,6 +1267,9 @@ class DSSAOptimizer:
               f"  Total Benefit = {final_total_benefit:.6f}"
               f"  Total = {total_elapsed:.2f}s"
               f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
+
+        if self._output_buffer:
+            self._async_flush_output_buffer()
 
         if self._json_worker_started:
             self._json_queue.put(None)
@@ -1294,36 +1375,63 @@ class DSSAOptimizer:
                     self._json_worker_started = True
 
     def _json_worker_loop(self):
-        buf = _SerializationBuffer()
         while True:
             task = self._json_queue.get()
             if task is None:
                 self._json_queue.task_done()
                 return
             try:
-                iter_dir = task['iter_dir']
-                os.makedirs(iter_dir, exist_ok=True)
-
-                self._write_solutions_json(
-                    os.path.join(iter_dir, "producers.json"),
-                    task['producers'], buf)
-                self._write_solutions_json(
-                    os.path.join(iter_dir, "followers.json"),
-                    task['followers'], buf)
-                self._write_solutions_json(
-                    os.path.join(iter_dir, "scouts.json"),
-                    task['scouts'], buf)
-
-                if task['producers']:
-                    buf.fill_from(task['producers'][0])
-                    with open(os.path.join(iter_dir, "best.json"), 'w', encoding='utf-8') as f:
-                        json.dump(buf.output, f, ensure_ascii=False)
-                    buf.clear()
+                if 'batch' in task:
+                    self._write_batch_iterations(task['batch'])
+                else:
+                    self._write_single_iteration(task)
             except Exception as e:
                 print(f"[WARN] JSON worker error: {e}")
             self._json_queue.task_done()
 
-    def _write_solutions_json(self, path: str, solutions: list, buf: _SerializationBuffer):
+    def _write_single_iteration(self, task: dict):
+        """Write 4 JSON files for one iteration in parallel."""
+        iter_dir = task['iter_dir']
+        os.makedirs(iter_dir, exist_ok=True)
+        self._write_four_files(iter_dir, task['producers'], task['followers'], task['scouts'])
+
+    def _write_batch_iterations(self, batch: list):
+        """Write all iterations in the batch — all iterations and 4 files per iteration in parallel."""
+        max_workers = min(len(batch) * 4, 32)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = []
+            for item in batch:
+                iter_dir = os.path.join(self.output_dir, f"iteration_{item['iteration']:04d}")
+                os.makedirs(iter_dir, exist_ok=True)
+                futures.append(ex.submit(self._write_solutions_json,
+                               os.path.join(iter_dir, "producers.json"), item['producers']))
+                futures.append(ex.submit(self._write_solutions_json,
+                               os.path.join(iter_dir, "followers.json"), item['followers']))
+                futures.append(ex.submit(self._write_solutions_json,
+                               os.path.join(iter_dir, "scouts.json"), item['scouts']))
+                futures.append(ex.submit(self._write_best_json,
+                               os.path.join(iter_dir, "best.json"), item['producers']))
+            for f in futures:
+                f.result()
+
+    def _write_four_files(self, iter_dir: str, producers: list, followers: list, scouts: list):
+        """Write producers.json, followers.json, scouts.json, best.json in parallel."""
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            futures = [
+                ex.submit(self._write_solutions_json,
+                          os.path.join(iter_dir, "producers.json"), producers),
+                ex.submit(self._write_solutions_json,
+                          os.path.join(iter_dir, "followers.json"), followers),
+                ex.submit(self._write_solutions_json,
+                          os.path.join(iter_dir, "scouts.json"), scouts),
+                ex.submit(self._write_best_json,
+                          os.path.join(iter_dir, "best.json"), producers),
+            ]
+            for f in futures:
+                f.result()
+
+    def _write_solutions_json(self, path: str, solutions: list):
+        buf = _SerializationBuffer()
         with open(path, 'w', encoding='utf-8') as f:
             f.write('[')
             for i, s in enumerate(solutions):
@@ -1333,6 +1441,23 @@ class DSSAOptimizer:
                 json.dump(buf.output, f, ensure_ascii=False)
                 buf.clear()
             f.write(']')
+
+    def _write_best_json(self, path: str, producers: list):
+        if not producers:
+            return
+        buf = _SerializationBuffer()
+        buf.fill_from(producers[0])
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(buf.output, f, ensure_ascii=False)
+
+    def _async_flush_output_buffer(self):
+        """Flush all buffered iterations as a batch to the async I/O worker."""
+        if not self._output_buffer:
+            return
+        self._ensure_json_worker()
+        batch = list(self._output_buffer)
+        self._output_buffer.clear()
+        self._json_queue.put({'batch': batch})
 
     def _async_output_iteration_results(self, iteration: int, producers: List[DeploymentSolution],
                                      followers: List[DeploymentSolution], scouts: List[DeploymentSolution]):

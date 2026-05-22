@@ -98,6 +98,17 @@ class VectorizedCoverageModel(CoverageModel):
 
         self._tl = threading.local()
 
+    def __getstate__(self):
+        """Strip unpicklable _tl (threading.local) before serialization."""
+        state = self.__dict__.copy()
+        state.pop('_tl', None)
+        return state
+
+    def __setstate__(self, state):
+        """Reinitialize _tl after deserialization (fresh per-process)."""
+        self.__dict__.update(state)
+        self._tl = threading.local()
+
     def _compute_dists_to(self, target_indices: np.ndarray) -> np.ndarray:
         if self._use_precomputed:
             return self._dist[:, target_indices]

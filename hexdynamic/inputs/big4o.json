@@ -7337,7 +7337,9 @@
     "use_risk_priority": true,
     "high_risk_percentage": 0.1,
     "force_full_deployment": true,
-    "high_risk_perturbation_priority": 0.7
+    "high_risk_perturbation_priority": 0.7,
+    "fitness_workers": 24,
+    "output_interval": 10
   },
   "grids": [
     {
