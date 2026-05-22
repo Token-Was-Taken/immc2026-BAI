@@ -410,7 +410,8 @@ class DSSAOptimizer:
                 if i == 0:
                     self.population[i] = repaired
                 else:
-                    perturbed = self._perturb_solution(repaired, strength=0.3)
+                    strength = 0.5 + 0.2 * (i / injected_count)
+                    perturbed = self._perturb_solution(repaired, strength=strength)
                     self.population[i] = perturbed
         print(f"      [WARM-START] 注入 {injected_count} 个热启动个体到种群")
 
@@ -1129,8 +1130,8 @@ class DSSAOptimizer:
             if len(self._fitness_cache) >= self._fitness_cache_max_size * 0.9:
                 self._fitness_cache.clear()
 
-            # Batch JSON output: write every 10 iterations instead of every iteration
-            if self.output_dir and iteration % 10 == 0:
+            # JSON output: write every iteration (async, non-blocking)
+            if self.output_dir:
                 producers = self.population[:num_producers]
                 followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
                 scouts = self.population[self.config.population_size - num_scouts:]
@@ -1286,9 +1287,11 @@ class DSSAOptimizer:
 
     def _ensure_json_worker(self):
         if not self._json_worker_started:
-            t = threading.Thread(target=self._json_worker_loop, daemon=True, name='json-worker')
-            t.start()
-            self._json_worker_started = True
+            with self._output_lock:
+                if not self._json_worker_started:
+                    t = threading.Thread(target=self._json_worker_loop, daemon=True, name='json-worker')
+                    t.start()
+                    self._json_worker_started = True
 
     def _json_worker_loop(self):
         buf = _SerializationBuffer()
@@ -1296,7 +1299,7 @@ class DSSAOptimizer:
             task = self._json_queue.get()
             if task is None:
                 self._json_queue.task_done()
-                break
+                return
             try:
                 iter_dir = task['iter_dir']
                 os.makedirs(iter_dir, exist_ok=True)
@@ -1318,8 +1321,7 @@ class DSSAOptimizer:
                     buf.clear()
             except Exception as e:
                 print(f"[WARN] JSON worker error: {e}")
-            finally:
-                self._json_queue.task_done()
+            self._json_queue.task_done()
 
     def _write_solutions_json(self, path: str, solutions: list, buf: _SerializationBuffer):
         with open(path, 'w', encoding='utf-8') as f:
