@@ -19,6 +19,7 @@ from typing import Dict, List, Tuple
 from grid_model import HexGridModel
 from data_loader import CoverageParameters
 from coverage_model import CoverageModel, DeploymentSolution
+from gpu_ops import gpu_available, hex_distances as gpu_hex_distances
 
 
 class VectorizedCoverageModel(CoverageModel):
@@ -35,8 +36,11 @@ class VectorizedCoverageModel(CoverageModel):
     def __init__(self, grid_model: HexGridModel, coverage_params: CoverageParameters,
                  deployment_matrix: Dict[str, Dict[int, int]],
                  visibility_params: Dict[int, Dict[str, float]],
-                 coverage_effectiveness: Dict[int, Dict[str, float]] = None):
+                 coverage_effectiveness: Dict[int, Dict[str, float]] = None,
+                 use_gpu: bool = True):
         super().__init__(grid_model, coverage_params, deployment_matrix, visibility_params, coverage_effectiveness)
+
+        self._use_gpu = use_gpu and gpu_available()
 
         self._id_to_idx: Dict[int, int] = {gid: i for i, gid in enumerate(self.grid_ids)}
         N = len(self.grid_ids)
@@ -110,6 +114,9 @@ class VectorizedCoverageModel(CoverageModel):
         self._tl = threading.local()
 
     def _compute_dists_to(self, target_indices: np.ndarray) -> np.ndarray:
+        if self._use_gpu:
+            return gpu_hex_distances(self._qs, self._rs, self._qr, target_indices)
+
         if self._use_precomputed:
             return self._dist[:, target_indices]
 

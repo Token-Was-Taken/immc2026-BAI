@@ -29,6 +29,7 @@ def parse_args():
     parser.add_argument('--iterations', type=int, default=None, help="Number of DSSA iterations (default: use input JSON config, fallback 200)")
     parser.add_argument('--warm-start', type=str, default=None, metavar="PATH", help="Warm-start solution path")
     parser.add_argument('--vectorized', action='store_true', help="Use vectorized coverage model (recommended for grid count > 1000)")
+    parser.add_argument('--no-gpu', action='store_true', default=False, help="Disable GPU acceleration (force CPU)")
     parser.add_argument('--visualize', action='store_true', help="Generate visualizations")
     parser.add_argument('--workers', type=int, default=4, help="Number of parallel workers for visualization (default: 4)")
     parser.add_argument('--best-only', action='store_true', help="Only visualize best solution")
@@ -192,6 +193,7 @@ def main():
             vectorized=final_vectorized,
             max_iterations=cli_iterations,
             warm_start_path=args.warm_start,
+            use_gpu=not args.no_gpu,
         )
     finally:
         os.unlink(modified_input)

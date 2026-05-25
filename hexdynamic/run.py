@@ -96,6 +96,8 @@ def parse_args():
                    help="DSSA 最大迭代次数（默认：使用 input JSON 配置，若未配置则为 200）")
     p.add_argument("--warm-start", type=str, default=None, metavar="PATH",
                    help="热启动方案路径（提供已有的 output JSON 作为初始部署方案，加速收敛）")
+    p.add_argument("--no-gpu", action="store_true", default=False,
+                   help="禁用 GPU 加速（强制使用 CPU）")
 
     # 可视化选项
     p.add_argument("--no-visualize", action="store_true", default=False,
@@ -153,6 +155,7 @@ def main():
         out_dir=args.out_dir,
         max_iterations=args.max_iterations,
         warm_start_path=args.warm_start,
+        use_gpu=not args.no_gpu,
     )
 
     # Step 2: 可视化

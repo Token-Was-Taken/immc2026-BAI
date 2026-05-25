@@ -268,7 +268,7 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
     return loader
 
 
-def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None, warm_start_path: str = None, max_iterations: int = None):
+def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None, warm_start_path: str = None, max_iterations: int = None, use_gpu: bool = True):
     print(f"[1/4] Read input: {input_path}")
     data = load_input(input_path)
 
@@ -281,10 +281,19 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
     if vectorized:
         grid_model = HexGridModel(loader.grids)
         print("      [VECTOR] 使用向量化覆盖模型 (Vectorized Coverage Model)")
+        if use_gpu:
+            print("      [GPU] GPU 加速已启用 (OpenCL)")
     else:
         grid_model = HexGridModel(loader.grids)
     model_class = VectorizedCoverageModel if vectorized else CoverageModel
     coverage_model = model_class(
+        grid_model,
+        loader.coverage_params,
+        loader.deployment_matrix,
+        loader.visibility_params,
+        loader.coverage_effectiveness,
+        use_gpu=use_gpu,
+    ) if vectorized else model_class(
         grid_model,
         loader.coverage_params,
         loader.deployment_matrix,
@@ -692,5 +701,11 @@ Vectorized Mode:
         default=None,
         help="Path to a previous output JSON to use as warm-start solution for the optimizer"
     )
+    parser.add_argument(
+        "--no-gpu",
+        action="store_true",
+        default=False,
+        help="Disable GPU acceleration (force CPU computation)"
+    )
     args = parser.parse_args()
-    run_pipeline(args.input, args.output, vectorized=args.vectorized, allow_partial_deployment=args.allow_partial_deployment, freeze_resources=args.freeze_resources, warm_start_path=args.warm_start)
+    run_pipeline(args.input, args.output, vectorized=args.vectorized, allow_partial_deployment=args.allow_partial_deployment, freeze_resources=args.freeze_resources, warm_start_path=args.warm_start, use_gpu=not args.no_gpu)
