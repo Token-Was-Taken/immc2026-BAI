@@ -28,17 +28,50 @@ _worker_constraints = None
 _worker_use_time_aware_fitness = False
 _worker_fitness_cache = {}
 _worker_fitness_cache_max_size = 10000
+_worker_grid_ids = []
+_worker_force_full_deployment = True
+_worker_use_marginal_contribution_repair = False
+_worker_skip_conflict_resolution = False
+_worker_frozen_resources = []
+_worker_initial_solution = None
+_worker_fixed_fences = {}
+_worker_swap_prob = 0.6
+_worker_migrate_prob = 0.25
+_worker_reshuffle_prob = 0.15
+_worker_scout_partial_reset_ratio = 0.5
+_worker_scout_reset_threshold = 0.95
 
 
-def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cache_max_size):
-    """Initialize worker process globals before accepting tasks."""
+def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cache_max_size,
+                        grid_ids=None, force_full_deployment=True,
+                        use_marginal_contribution_repair=False, skip_conflict_resolution=False,
+                        frozen_resources=None, initial_solution=None, fixed_fences=None,
+                        swap_prob=0.6, migrate_prob=0.25, reshuffle_prob=0.15,
+                        scout_partial_reset_ratio=0.5, scout_reset_threshold=0.95):
     global _worker_coverage_model, _worker_constraints
     global _worker_use_time_aware_fitness, _worker_fitness_cache, _worker_fitness_cache_max_size
+    global _worker_grid_ids, _worker_force_full_deployment
+    global _worker_use_marginal_contribution_repair, _worker_skip_conflict_resolution
+    global _worker_frozen_resources, _worker_initial_solution, _worker_fixed_fences
+    global _worker_swap_prob, _worker_migrate_prob, _worker_reshuffle_prob
+    global _worker_scout_partial_reset_ratio, _worker_scout_reset_threshold
     _worker_coverage_model = coverage_model
     _worker_constraints = constraints
     _worker_use_time_aware_fitness = use_time_aware_fitness
     _worker_fitness_cache = {}
     _worker_fitness_cache_max_size = cache_max_size
+    _worker_grid_ids = grid_ids or []
+    _worker_force_full_deployment = force_full_deployment
+    _worker_use_marginal_contribution_repair = use_marginal_contribution_repair
+    _worker_skip_conflict_resolution = skip_conflict_resolution
+    _worker_frozen_resources = frozen_resources or []
+    _worker_initial_solution = initial_solution
+    _worker_fixed_fences = fixed_fences or {}
+    _worker_swap_prob = swap_prob
+    _worker_migrate_prob = migrate_prob
+    _worker_reshuffle_prob = reshuffle_prob
+    _worker_scout_partial_reset_ratio = scout_partial_reset_ratio
+    _worker_scout_reset_threshold = scout_reset_threshold
 
 
 def _worker_make_cache_key(solution):
@@ -56,10 +89,17 @@ def _worker_make_cache_key(solution):
     return key
 
 
-def _worker_evaluate_fitness(solution):
-    """Evaluate fitness of a single solution inside a worker process."""
+def _worker_evaluate_fitness(sol_data):
     global _worker_coverage_model, _worker_constraints
     global _worker_use_time_aware_fitness, _worker_fitness_cache, _worker_fitness_cache_max_size
+
+    if isinstance(sol_data, dict):
+        solution = DeploymentSolution(
+            cameras=sol_data['cameras'], camps=sol_data['camps'],
+            drones=sol_data['drones'], rangers=sol_data['rangers'],
+            fences=sol_data['fences'])
+    else:
+        solution = sol_data
 
     cache_key = _worker_make_cache_key(solution)
     if cache_key in _worker_fitness_cache:
@@ -77,6 +117,375 @@ def _worker_evaluate_fitness(solution):
         _worker_fitness_cache[cache_key] = fitness
 
     return fitness
+
+
+def _worker_get_deployable_grids(resource_type):
+    return [gid for gid in _worker_grid_ids
+            if _worker_coverage_model.deployment_matrix[resource_type].get(gid, 0) == 1]
+
+
+def _worker_apply_frozen_resources(solution, initial_solution_data=None):
+    if not _worker_frozen_resources:
+        return solution
+    init_sol = _worker_initial_solution
+    if initial_solution_data is not None:
+        init_sol = DeploymentSolution(
+            cameras=initial_solution_data['cameras'], camps=initial_solution_data['camps'],
+            drones=initial_solution_data['drones'], rangers=initial_solution_data['rangers'],
+            fences=initial_solution_data['fences'])
+    if not init_sol:
+        return solution
+    if 'patrol' in _worker_frozen_resources:
+        solution.rangers = dict(init_sol.rangers)
+    if 'camera' in _worker_frozen_resources:
+        solution.cameras = dict(init_sol.cameras)
+    if 'drone' in _worker_frozen_resources:
+        solution.drones = dict(init_sol.drones)
+    if 'camp' in _worker_frozen_resources:
+        solution.camps = dict(init_sol.camps)
+    if 'fence' in _worker_frozen_resources:
+        solution.fences = dict(init_sol.fences)
+    return solution
+
+
+def _worker_repair(solution):
+    return _worker_coverage_model.repair_solution(
+        solution, _worker_constraints, _worker_force_full_deployment,
+        _worker_use_marginal_contribution_repair, _worker_skip_conflict_resolution)
+
+
+def _worker_discrete_swap(solution):
+    cameras = dict(solution.cameras)
+    camps = dict(solution.camps)
+    drones = dict(solution.drones)
+    rangers = dict(solution.rangers)
+    occupied = set()
+    occupied.update(cameras.keys())
+    occupied.update(camps.keys())
+    occupied.update(drones.keys())
+    occupied.update(rangers.keys())
+    if len(occupied) < 2:
+        return solution
+    grid_a, grid_b = random.sample(list(occupied), 2)
+    cam_a = cameras.pop(grid_a, 0)
+    cam_b = cameras.pop(grid_b, 0)
+    if cam_b > 0 and _worker_coverage_model.deployment_matrix['camera'].get(grid_a, 0) == 1:
+        cameras[grid_a] = cam_b
+    if cam_a > 0 and _worker_coverage_model.deployment_matrix['camera'].get(grid_b, 0) == 1:
+        cameras[grid_b] = cam_a
+    drone_a = drones.pop(grid_a, 0)
+    drone_b = drones.pop(grid_b, 0)
+    if drone_b > 0 and _worker_coverage_model.deployment_matrix['drone'].get(grid_a, 0) == 1:
+        drones[grid_a] = drone_b
+    if drone_a > 0 and _worker_coverage_model.deployment_matrix['drone'].get(grid_b, 0) == 1:
+        drones[grid_b] = drone_a
+    camp_a = camps.pop(grid_a, 0)
+    camp_b = camps.pop(grid_b, 0)
+    if camp_b > 0 and _worker_coverage_model.deployment_matrix['camp'].get(grid_a, 0) == 1:
+        camps[grid_a] = camp_b
+    if camp_a > 0 and _worker_coverage_model.deployment_matrix['camp'].get(grid_b, 0) == 1:
+        camps[grid_b] = camp_a
+    ranger_a = rangers.pop(grid_a, 0)
+    ranger_b = rangers.pop(grid_b, 0)
+    if ranger_b > 0 and _worker_coverage_model.deployment_matrix['patrol'].get(grid_a, 0) == 1:
+        rangers[grid_a] = ranger_b
+    if ranger_a > 0 and _worker_coverage_model.deployment_matrix['patrol'].get(grid_b, 0) == 1:
+        rangers[grid_b] = ranger_a
+    for gid in (grid_a, grid_b):
+        types = []
+        if rangers.get(gid, 0) > 0: types.append('ranger')
+        if drones.get(gid, 0) > 0: types.append('drone')
+        if cameras.get(gid, 0) > 0: types.append('camera')
+        if camps.get(gid, 0) > 0: types.append('camp')
+        if len(types) > 1:
+            keep = random.choice(types)
+            if keep != 'ranger': rangers.pop(gid, None)
+            if keep != 'drone': drones.pop(gid, None)
+            if keep != 'camera': cameras.pop(gid, None)
+            if keep != 'camp': camps.pop(gid, None)
+    return DeploymentSolution(cameras=cameras, camps=camps, drones=drones,
+                              rangers=rangers, fences=solution.fences)
+
+
+def _worker_discrete_migrate(solution):
+    cameras = dict(solution.cameras)
+    camps = dict(solution.camps)
+    drones = dict(solution.drones)
+    rangers = dict(solution.rangers)
+    resource_sources = []
+    for gid, cnt in cameras.items():
+        if cnt > 0: resource_sources.append(('camera', gid))
+    for gid, cnt in drones.items():
+        if cnt > 0: resource_sources.append(('drone', gid))
+    for gid, cnt in camps.items():
+        if cnt > 0: resource_sources.append(('camp', gid))
+    for gid, cnt in rangers.items():
+        if cnt > 0: resource_sources.append(('ranger', gid))
+    if not resource_sources:
+        return solution
+    res_type, src_gid = random.choice(resource_sources)
+    res_map = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
+    deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
+    deployable = _worker_get_deployable_grids(deploy_key[res_type])
+    occupied = set(cameras.keys()) | set(drones.keys()) | set(camps.keys()) | set(rangers.keys())
+    targets = [gid for gid in deployable if gid not in occupied]
+    if not targets:
+        return solution
+    dst_gid = random.choice(targets)
+    src_dict = res_map[res_type]
+    max_per_grid = {
+        'camera': _worker_constraints.get('max_cameras_per_grid', 1),
+        'drone': 1, 'camp': 1,
+        'ranger': _worker_constraints.get('max_rangers_per_grid', 1),
+    }
+    count = src_dict.pop(src_gid, 0)
+    src_dict[dst_gid] = min(count, max_per_grid[res_type])
+    return DeploymentSolution(cameras=cameras, camps=camps, drones=drones,
+                              rangers=rangers, fences=solution.fences)
+
+
+def _worker_discrete_reshuffle(solution):
+    res_types = ['camera', 'drone', 'camp', 'ranger']
+    chosen = random.choice(res_types)
+    res_map = {'camera': dict(solution.cameras), 'drone': dict(solution.drones),
+               'camp': dict(solution.camps), 'ranger': dict(solution.rangers)}
+    deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
+    total_key = {'camera': 'total_cameras', 'drone': 'total_drones',
+                 'camp': 'total_camps', 'ranger': 'total_patrol'}
+    max_key = {'camera': 'max_cameras_per_grid', 'drone': 'max_drones_per_grid',
+               'camp': 'max_camps_per_grid', 'ranger': 'max_rangers_per_grid'}
+    total = _worker_constraints.get(total_key[chosen], 0)
+    if total == 0:
+        return solution
+    max_per_grid = _worker_constraints.get(max_key[chosen], 1)
+    deployable = _worker_get_deployable_grids(deploy_key[chosen])
+    other_occupied = set()
+    for rt in res_types:
+        if rt != chosen:
+            other_occupied.update(res_map[rt].keys())
+    available = [gid for gid in deployable if gid not in other_occupied]
+    if not available:
+        return solution
+    random.shuffle(available)
+    new_dict = {}
+    deployed = 0
+    for gid in available:
+        if deployed >= total:
+            break
+        count = min(max_per_grid, total - deployed)
+        new_dict[gid] = count
+        deployed += count
+    res_map[chosen] = new_dict
+    return DeploymentSolution(cameras=res_map['camera'], camps=res_map['camp'],
+                              drones=res_map['drone'], rangers=res_map['ranger'],
+                              fences=solution.fences)
+
+
+def _worker_discrete_perturb(solution):
+    r = random.random()
+    if r < _worker_swap_prob:
+        result = _worker_discrete_swap(solution)
+    elif r < _worker_swap_prob + _worker_migrate_prob:
+        result = _worker_discrete_migrate(solution)
+    else:
+        result = _worker_discrete_reshuffle(solution)
+    return _worker_repair(result)
+
+
+def _worker_exploit_toward_best(solution, best_solution):
+    cameras = dict(solution.cameras)
+    camps = dict(solution.camps)
+    drones = dict(solution.drones)
+    rangers = dict(solution.rangers)
+    cross_ratio = random.uniform(0.3, 0.7)
+    best_cam_grids = set(best_solution.cameras.keys())
+    cur_cam_grids = set(cameras.keys())
+    for gid in best_cam_grids | cur_cam_grids:
+        if random.random() < cross_ratio:
+            best_val = best_solution.cameras.get(gid, 0)
+            if best_val > 0 and _worker_coverage_model.deployment_matrix['camera'].get(gid, 0) == 1:
+                cameras[gid] = best_val
+            else:
+                cameras.pop(gid, None)
+    best_drone_grids = set(best_solution.drones.keys())
+    cur_drone_grids = set(drones.keys())
+    for gid in best_drone_grids | cur_drone_grids:
+        if random.random() < cross_ratio:
+            best_val = best_solution.drones.get(gid, 0)
+            if best_val > 0 and _worker_coverage_model.deployment_matrix['drone'].get(gid, 0) == 1:
+                drones[gid] = best_val
+            else:
+                drones.pop(gid, None)
+    best_camp_grids = set(best_solution.camps.keys())
+    cur_camp_grids = set(camps.keys())
+    for gid in best_camp_grids | cur_camp_grids:
+        if random.random() < cross_ratio:
+            best_val = best_solution.camps.get(gid, 0)
+            if best_val > 0 and _worker_coverage_model.deployment_matrix['camp'].get(gid, 0) == 1:
+                camps[gid] = best_val
+            else:
+                camps.pop(gid, None)
+    best_ranger_grids = set(best_solution.rangers.keys())
+    cur_ranger_grids = set(rangers.keys())
+    for gid in best_ranger_grids | cur_ranger_grids:
+        if random.random() < cross_ratio:
+            best_val = best_solution.rangers.get(gid, 0)
+            if best_val > 0 and _worker_coverage_model.deployment_matrix['patrol'].get(gid, 0) == 1:
+                rangers[gid] = best_val
+            else:
+                rangers.pop(gid, None)
+    result = DeploymentSolution(cameras=cameras, camps=camps, drones=drones,
+                                rangers=rangers, fences=dict(solution.fences))
+    return _worker_repair(result)
+
+
+def _worker_follow_producer(solution, producer):
+    cameras = dict(solution.cameras)
+    camps = dict(solution.camps)
+    drones = dict(solution.drones)
+    rangers = dict(solution.rangers)
+    cross_ratio = random.uniform(0.2, 0.5)
+    for gid in set(producer.cameras.keys()) | set(cameras.keys()):
+        if random.random() < cross_ratio:
+            prod_val = producer.cameras.get(gid, 0)
+            if prod_val > 0 and _worker_coverage_model.deployment_matrix['camera'].get(gid, 0) == 1:
+                cameras[gid] = prod_val
+            else:
+                cameras.pop(gid, None)
+    for gid in set(producer.drones.keys()) | set(drones.keys()):
+        if random.random() < cross_ratio:
+            prod_val = producer.drones.get(gid, 0)
+            if prod_val > 0 and _worker_coverage_model.deployment_matrix['drone'].get(gid, 0) == 1:
+                drones[gid] = prod_val
+            else:
+                drones.pop(gid, None)
+    for gid in set(producer.camps.keys()) | set(camps.keys()):
+        if random.random() < cross_ratio:
+            prod_val = producer.camps.get(gid, 0)
+            if prod_val > 0 and _worker_coverage_model.deployment_matrix['camp'].get(gid, 0) == 1:
+                camps[gid] = prod_val
+            else:
+                camps.pop(gid, None)
+    for gid in set(producer.rangers.keys()) | set(rangers.keys()):
+        if random.random() < cross_ratio:
+            prod_val = producer.rangers.get(gid, 0)
+            if prod_val > 0 and _worker_coverage_model.deployment_matrix['patrol'].get(gid, 0) == 1:
+                rangers[gid] = prod_val
+            else:
+                rangers.pop(gid, None)
+    result = DeploymentSolution(cameras=cameras, camps=camps, drones=drones,
+                                rangers=rangers, fences=dict(solution.fences))
+    return _worker_repair(result)
+
+
+def _worker_partial_reset_scout(solution):
+    res_types = ['camera', 'drone', 'camp', 'ranger']
+    n_reset = max(1, int(len(res_types) * _worker_scout_partial_reset_ratio))
+    types_to_reset = random.sample(res_types, n_reset)
+    cameras = dict(solution.cameras)
+    camps = dict(solution.camps)
+    drones = dict(solution.drones)
+    rangers = dict(solution.rangers)
+    res_map = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
+    deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
+    total_key = {'camera': 'total_cameras', 'drone': 'total_drones',
+                 'camp': 'total_camps', 'ranger': 'total_patrol'}
+    max_key = {'camera': 'max_cameras_per_grid', 'drone': 'max_drones_per_grid',
+               'camp': 'max_camps_per_grid', 'ranger': 'max_rangers_per_grid'}
+    for res_type in types_to_reset:
+        total = _worker_constraints.get(total_key[res_type], 0)
+        if total == 0:
+            continue
+        max_per_grid = _worker_constraints.get(max_key[res_type], 1)
+        deployable = _worker_get_deployable_grids(deploy_key[res_type])
+        other_occupied = set()
+        for rt in res_types:
+            if rt != res_type:
+                other_occupied.update(res_map[rt].keys())
+        available = [gid for gid in deployable if gid not in other_occupied]
+        random.shuffle(available)
+        new_dict = {}
+        deployed = 0
+        for gid in available:
+            if deployed >= total:
+                break
+            count = min(max_per_grid, total - deployed)
+            new_dict[gid] = count
+            deployed += count
+        res_map[res_type] = new_dict
+    result = DeploymentSolution(cameras=res_map['camera'], camps=res_map['camp'],
+                                drones=res_map['drone'], rangers=res_map['ranger'],
+                                fences=dict(solution.fences))
+    return _worker_repair(result)
+
+
+def _worker_generate_and_evaluate(task):
+    op = task['op']
+    sol_data = task.get('solution')
+    if sol_data is not None:
+        solution = DeploymentSolution(
+            cameras=sol_data['cameras'], camps=sol_data['camps'],
+            drones=sol_data['drones'], rangers=sol_data['rangers'],
+            fences=sol_data['fences'])
+    else:
+        solution = None
+
+    if op == 'exploit':
+        best_data = task['best_solution']
+        best_sol = DeploymentSolution(
+            cameras=best_data['cameras'], camps=best_data['camps'],
+            drones=best_data['drones'], rangers=best_data['rangers'],
+            fences=best_data['fences'])
+        new_sol = _worker_exploit_toward_best(solution, best_sol)
+    elif op == 'perturb':
+        new_sol = _worker_discrete_perturb(solution)
+    elif op == 'perturb_double':
+        new_sol = _worker_discrete_perturb(solution)
+        new_sol = _worker_discrete_perturb(new_sol)
+    elif op == 'follow':
+        prod_data = task['producer']
+        producer = DeploymentSolution(
+            cameras=prod_data['cameras'], camps=prod_data['camps'],
+            drones=prod_data['drones'], rangers=prod_data['rangers'],
+            fences=prod_data['fences'])
+        new_sol = _worker_follow_producer(solution, producer)
+    elif op == 'scout_partial_reset':
+        new_sol = _worker_partial_reset_scout(solution)
+    else:
+        return None
+
+    new_sol = _worker_apply_frozen_resources(new_sol, task.get('initial_solution'))
+    fitness = _worker_evaluate_fitness(new_sol)
+
+    return {
+        'cameras': dict(new_sol.cameras),
+        'camps': dict(new_sol.camps),
+        'drones': dict(new_sol.drones),
+        'rangers': dict(new_sol.rangers),
+        'fences': dict(new_sol.fences),
+        'fitness': fitness,
+    }
+
+
+def _sol_to_dict(solution):
+    if solution is None:
+        return None
+    return {
+        'cameras': dict(solution.cameras),
+        'camps': dict(solution.camps),
+        'drones': dict(solution.drones),
+        'rangers': dict(solution.rangers),
+        'fences': dict(solution.fences),
+    }
+
+
+def _dict_to_sol(d):
+    if d is None:
+        return None
+    return DeploymentSolution(
+        cameras=d['cameras'], camps=d['camps'],
+        drones=d['drones'], rangers=d['rangers'],
+        fences=d['fences'])
 
 
 class _SerializationBuffer:
@@ -215,7 +624,7 @@ class DSSAConfig:
 
     # --- 性能配置 ---
     fitness_cache_max_size: int = 10000  # 适应度缓存最大条目数
-    fitness_workers: int = 16  # 并行适应度评估进程数
+    fitness_workers: int = os.cpu_count() or 16
     output_interval: int = 1  # 批量输出间隔：每 N 轮迭代输出一次（1=每轮都输出）
 
 
@@ -279,7 +688,15 @@ class DSSAOptimizer:
             initializer=_worker_initializer,
             initargs=(self.coverage_model, self.constraints,
                       self.config.use_time_aware_fitness,
-                      self.config.fitness_cache_max_size),
+                      self.config.fitness_cache_max_size,
+                      self.grid_ids, self.force_full_deployment,
+                      self.config.use_marginal_contribution_repair,
+                      self.config.skip_conflict_resolution,
+                      self.frozen_resources, None, self.fixed_fences,
+                      self.config.swap_prob, self.config.migrate_prob,
+                      self.config.reshuffle_prob,
+                      self.config.scout_partial_reset_ratio,
+                      self.config.scout_reset_threshold),
         )
 
         self._fitness_cache = {}
@@ -685,8 +1102,7 @@ class DSSAOptimizer:
         return solution
 
     def _evaluate_fitness_parallel(self, solutions: List[DeploymentSolution]) -> List[float]:
-        """Evaluate fitness for multiple solutions in parallel using process pool."""
-        futures = [self._fitness_executor.submit(_worker_evaluate_fitness, sol)
+        futures = [self._fitness_executor.submit(_worker_evaluate_fitness, _sol_to_dict(sol))
                    for sol in solutions]
         return [f.result() for f in futures]
 
@@ -855,56 +1271,51 @@ class DSSAOptimizer:
         )
 
     def _update_producers(self, iteration: int, alpha: float):
-        """Update producer positions using discrete swap operations (方案C).
-
-        Producer 0: 向 best_solution 靠拢（离散交换 + 交叉）
-        其他 Producer: 离散交换/迁移/重排操作
-
-        Args:
-            iteration: Current iteration index
-            alpha: Current exploration range bound (legacy, used for fallback)
-        """
         num_producers = int(self.config.population_size * self.config.producer_ratio)
         producers = self.population[:num_producers]
 
         escape_count = 0
+        best_dict = _sol_to_dict(self.best_solution)
+        init_dict = _sol_to_dict(self.initial_solution) if self.frozen_resources else None
 
-        new_solutions = []
-        old_solutions = []
+        tasks = []
         indices = []
 
         for i, solution in enumerate(producers):
             R2 = random.uniform(0, 1)
+            sol_dict = _sol_to_dict(solution)
 
             if R2 < self.config.ST:
                 if i == 0:
-                    new_solution = self._exploit_toward_best(solution)
+                    tasks.append({'op': 'exploit', 'solution': sol_dict,
+                                  'best_solution': best_dict, 'initial_solution': init_dict})
                 else:
-                    new_solution = self._discrete_perturb(solution)
+                    tasks.append({'op': 'perturb', 'solution': sol_dict,
+                                  'initial_solution': init_dict})
             else:
                 escape_count += 1
-                new_solution = self._discrete_perturb(solution)
-                # 额外执行一次离散操作以增强探索
                 if random.random() < 0.5:
-                    new_solution = self._discrete_perturb(new_solution)
-
-            new_solution = self._apply_frozen_resources(new_solution)
-
-            new_solutions.append(new_solution)
-            old_solutions.append(solution)
+                    tasks.append({'op': 'perturb_double', 'solution': sol_dict,
+                                  'initial_solution': init_dict})
+                else:
+                    tasks.append({'op': 'perturb', 'solution': sol_dict,
+                                  'initial_solution': init_dict})
             indices.append(i)
 
-        all_solutions = new_solutions + old_solutions
-        all_fitnesses = self._evaluate_fitness_parallel(all_solutions)
-        new_fitnesses = all_fitnesses[:len(new_solutions)]
-        old_fitnesses = all_fitnesses[len(new_solutions):]
+        futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
+        old_fitnesses = self._evaluate_fitness_parallel(producers)
 
-        for i, new_fit, old_fit in zip(indices, new_fitnesses, old_fitnesses):
+        for i, old_fit, future in zip(indices, old_fitnesses, futures):
+            result = future.result()
+            if result is None:
+                continue
+            new_sol = _dict_to_sol(result)
+            new_fit = result['fitness']
             if new_fit > old_fit:
-                self.population[i] = new_solutions[i]
+                self.population[i] = new_sol
             if new_fit > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = new_fit
-                self.best_solution = new_solutions[i]
+                self.best_solution = new_sol
 
         return escape_count
 
@@ -985,60 +1396,57 @@ class DSSAOptimizer:
         )
 
     def _update_followers(self, alpha: float):
-        """Update follower positions using discrete swap operations (方案C).
-
-        Follower 策略：
-        - follower_explore_ratio 概率：随机离散探索
-        - 1 - follower_explore_ratio 概率：向 best/producer 靠拢（离散交叉）
-
-        Args:
-            alpha: Current exploration range bound (legacy)
-        """
         num_producers = int(self.config.population_size * self.config.producer_ratio)
         num_followers = int(self.config.population_size * (1 - self.config.producer_ratio))
         followers = self.population[num_producers:num_producers + num_followers]
 
         escape_count = 0
+        best_dict = _sol_to_dict(self.best_solution)
+        init_dict = _sol_to_dict(self.initial_solution) if self.frozen_resources else None
 
-        new_solutions = []
-        old_solutions = []
+        tasks = []
         indices = []
 
         for i, solution in enumerate(followers):
             R2 = random.uniform(0, 1)
+            sol_dict = _sol_to_dict(solution)
 
             if R2 < self.config.ST:
                 if random.random() < self.config.follower_explore_ratio:
                     escape_count += 1
-                    new_solution = self._discrete_perturb(solution)
+                    tasks.append({'op': 'perturb', 'solution': sol_dict,
+                                  'initial_solution': init_dict})
                 else:
                     if i > len(followers) / 2:
-                        new_solution = self._exploit_toward_best(solution)
+                        tasks.append({'op': 'exploit', 'solution': sol_dict,
+                                      'best_solution': best_dict,
+                                      'initial_solution': init_dict})
                     else:
                         idx = random.randint(0, num_producers - 1)
-                        producer = self.population[idx]
-                        new_solution = self._follow_producer(solution, producer)
+                        prod_dict = _sol_to_dict(self.population[idx])
+                        tasks.append({'op': 'follow', 'solution': sol_dict,
+                                      'producer': prod_dict,
+                                      'initial_solution': init_dict})
             else:
                 escape_count += 1
-                new_solution = self._discrete_perturb(solution)
-
-            new_solution = self._apply_frozen_resources(new_solution)
-
-            new_solutions.append(new_solution)
-            old_solutions.append(solution)
+                tasks.append({'op': 'perturb', 'solution': sol_dict,
+                              'initial_solution': init_dict})
             indices.append(num_producers + i)
 
-        all_solutions = new_solutions + old_solutions
-        all_fitnesses = self._evaluate_fitness_parallel(all_solutions)
-        new_fitnesses = all_fitnesses[:len(new_solutions)]
-        old_fitnesses = all_fitnesses[len(new_solutions):]
+        futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
+        old_fitnesses = self._evaluate_fitness_parallel(followers)
 
-        for i, new_fit, old_fit in zip(indices, new_fitnesses, old_fitnesses):
+        for idx, old_fit, future in zip(indices, old_fitnesses, futures):
+            result = future.result()
+            if result is None:
+                continue
+            new_sol = _dict_to_sol(result)
+            new_fit = result['fitness']
             if new_fit > old_fit:
-                self.population[i] = new_solutions[i - num_producers]
+                self.population[idx] = new_sol
             if new_fit > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = new_fit
-                self.best_solution = new_solutions[i - num_producers]
+                self.best_solution = new_sol
 
         return escape_count
 
@@ -1105,17 +1513,16 @@ class DSSAOptimizer:
         )
 
     def _update_scouts(self):
-        """Scout 机制（方案C）：降低重置阈值 + 部分重置
-        
-        - scout_reset_threshold: fitness < threshold * best_fitness 时触发重置
-        - 部分重置：只重置部分资源类型，保留好的基因
-        - 完全重置：当 fitness 极差时完全重新初始化
-        """
         num_scouts = int(self.config.population_size * self.config.scout_ratio)
         start_idx = self.config.population_size - num_scouts
 
         scout_solutions = self.population[start_idx:self.config.population_size]
         scout_fitnesses = self._evaluate_fitness_parallel(scout_solutions)
+
+        init_dict = _sol_to_dict(self.initial_solution) if self.frozen_resources else None
+        tasks = []
+        task_indices = []
+        full_reset_indices = []
 
         for i, (solution, fitness) in enumerate(zip(scout_solutions, scout_fitnesses)):
             pop_idx = start_idx + i
@@ -1124,9 +1531,22 @@ class DSSAOptimizer:
                 self.best_solution = solution
             if self.best_fitness > 0 and fitness < self.config.scout_reset_threshold * self.best_fitness:
                 if fitness < 0.5 * self.best_fitness:
-                    self.population[pop_idx] = self._initialize_solution()
+                    full_reset_indices.append(pop_idx)
                 else:
-                    self.population[pop_idx] = self._partial_reset_scout(solution)
+                    tasks.append({'op': 'scout_partial_reset',
+                                  'solution': _sol_to_dict(solution),
+                                  'initial_solution': init_dict})
+                    task_indices.append(pop_idx)
+
+        if tasks:
+            futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
+            for pop_idx, future in zip(task_indices, futures):
+                result = future.result()
+                if result is not None:
+                    self.population[pop_idx] = _dict_to_sol(result)
+
+        for pop_idx in full_reset_indices:
+            self.population[pop_idx] = self._initialize_solution()
 
     def _update_best_solution(self):
         """更新全局最优解：评估所有个体适应度，保留最高者"""
