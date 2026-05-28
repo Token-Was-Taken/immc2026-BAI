@@ -196,6 +196,7 @@ class DSSAConfig:
     # --- Stagnation detection and boost ---
     stagnation_threshold: int = 10   # consecutive non-improving iters before boost
     stagnation_tolerance: float = 1e-6  # minimum improvement to reset counter
+    fitness_update_epsilon: float = 1e-9  # min fitness improvement to update best_solution
     stagnation_boost: float = 1.5    # multiplier applied to alpha during stagnation
 
     # --- Discrete swap exploration (方案C) ---
@@ -901,7 +902,7 @@ class DSSAOptimizer:
         for i, new_fit, old_fit in zip(indices, new_fitnesses, old_fitnesses):
             if new_fit > old_fit:
                 self.population[i] = new_solutions[i]
-            if new_fit > self.best_fitness:
+            if new_fit > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = new_fit
                 self.best_solution = new_solutions[i]
 
@@ -1035,7 +1036,7 @@ class DSSAOptimizer:
         for i, new_fit, old_fit in zip(indices, new_fitnesses, old_fitnesses):
             if new_fit > old_fit:
                 self.population[i] = new_solutions[i - num_producers]
-            if new_fit > self.best_fitness:
+            if new_fit > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = new_fit
                 self.best_solution = new_solutions[i - num_producers]
 
@@ -1118,7 +1119,7 @@ class DSSAOptimizer:
 
         for i, (solution, fitness) in enumerate(zip(scout_solutions, scout_fitnesses)):
             pop_idx = start_idx + i
-            if fitness > self.best_fitness:
+            if fitness > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = fitness
                 self.best_solution = solution
             if self.best_fitness > 0 and fitness < self.config.scout_reset_threshold * self.best_fitness:
@@ -1131,7 +1132,7 @@ class DSSAOptimizer:
         """更新全局最优解：评估所有个体适应度，保留最高者"""
         fitnesses = self._evaluate_fitness_parallel(self.population)
         for solution, fitness in zip(self.population, fitnesses):
-            if fitness > self.best_fitness:
+            if fitness > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = fitness
                 self.best_solution = solution
 
@@ -1148,11 +1149,11 @@ class DSSAOptimizer:
             if not is_valid:
                 print(f"      [WARM-START] 警告: baseline 方案无效! violations={violations[:5]}")
             self.best_fitness = self.evaluate_fitness(self.population[0])
-            print(f"      [WARM-START] 用 baseline 部署初始化 best_solution: fitness={self.best_fitness:.6f}")
+            print(f"      [WARM-START] 用 baseline 部署初始化 best_solution: fitness={self.best_fitness:.10f}")
 
         fitnesses = self._evaluate_fitness_parallel(self.population)
         for solution, fitness in zip(self.population, fitnesses):
-            if fitness > self.best_fitness:
+            if fitness > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = fitness
                 self.best_solution = solution
 
@@ -1160,7 +1161,7 @@ class DSSAOptimizer:
 
         if self.warm_start_solution is not None:
             ws_eval = self.evaluate_fitness(self.population[0])
-            print(f"      [WARM-START] 种群评估后: best_fitness={self.best_fitness:.6f}"
+            print(f"      [WARM-START] 种群评估后: best_fitness={self.best_fitness:.10f}"
                   f" (热启动个体#0={ws_eval:.6f})")
 
         total_start = time.time()
@@ -1204,12 +1205,15 @@ class DSSAOptimizer:
                 producers = self.population[:num_producers]
                 followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
                 scouts = self.population[self.config.population_size - num_scouts:]
+                snap = _snapshot_solution(self.best_solution)
                 self._output_buffer.append({
                     'iteration': iteration,
                     'producers': list(producers),
                     'followers': list(followers),
                     'scouts': list(scouts),
+                    'best_solution': snap,
                 })
+
                 interval = max(1, self.config.output_interval)
                 is_last = (iteration == self.config.max_iterations - 1)
                 if len(self._output_buffer) >= interval or is_last:
@@ -1242,8 +1246,8 @@ class DSSAOptimizer:
             
             if escape_total > 0:
                 print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
-                      f"  fitness={self.best_fitness:.6f}"
-                      f"  benefit={total_benefit:.6f}"
+                      f"  fitness={self.best_fitness:.10f}"
+                      f"  benefit={total_benefit:.10f}"
                       f"  div={diversity:.3f}"
                       f"  α={effective_alpha:.2f}"
                       f"  [ESCAPE={escape_total}]{stagnation_annotation}"
@@ -1251,8 +1255,8 @@ class DSSAOptimizer:
                       f"  avg={avg_iter*1000:.1f}ms")
             else:
                 print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
-                      f"  fitness={self.best_fitness:.6f}"
-                      f"  benefit={total_benefit:.6f}"
+                      f"  fitness={self.best_fitness:.10f}"
+                      f"  benefit={total_benefit:.10f}"
                       f"  div={diversity:.3f}"
                       f"  α={effective_alpha:.2f}{stagnation_annotation}"
                       f"  iter={iter_elapsed*1000:.1f}ms"
@@ -1263,8 +1267,8 @@ class DSSAOptimizer:
         final_total_benefit = sum(pb_per_grid.values())
 
         print(f"\nOptimization completed."
-              f"  Best Fitness = {self.best_fitness:.6f}"
-              f"  Total Benefit = {final_total_benefit:.6f}"
+              f"  Best Fitness = {self.best_fitness:.10f}"
+              f"  Total Benefit = {final_total_benefit:.10f}"
               f"  Total = {total_elapsed:.2f}s"
               f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
 
@@ -1393,7 +1397,8 @@ class DSSAOptimizer:
         """Write 4 JSON files for one iteration in parallel."""
         iter_dir = task['iter_dir']
         os.makedirs(iter_dir, exist_ok=True)
-        self._write_four_files(iter_dir, task['producers'], task['followers'], task['scouts'])
+        self._write_four_files(iter_dir, task['producers'], task['followers'], task['scouts'],
+                               best_solution=task.get('best_solution'))
 
     def _write_batch_iterations(self, batch: list):
         """Write all iterations in the batch — all iterations and 4 files per iteration in parallel."""
@@ -1410,11 +1415,13 @@ class DSSAOptimizer:
                 futures.append(ex.submit(self._write_solutions_json,
                                os.path.join(iter_dir, "scouts.json"), item['scouts']))
                 futures.append(ex.submit(self._write_best_json,
-                               os.path.join(iter_dir, "best.json"), item['producers']))
+                               os.path.join(iter_dir, "best.json"),
+                               item.get('best_solution')))
             for f in futures:
                 f.result()
 
-    def _write_four_files(self, iter_dir: str, producers: list, followers: list, scouts: list):
+    def _write_four_files(self, iter_dir: str, producers: list, followers: list, scouts: list,
+                          best_solution=None):
         """Write producers.json, followers.json, scouts.json, best.json in parallel."""
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
             futures = [
@@ -1425,7 +1432,7 @@ class DSSAOptimizer:
                 ex.submit(self._write_solutions_json,
                           os.path.join(iter_dir, "scouts.json"), scouts),
                 ex.submit(self._write_best_json,
-                          os.path.join(iter_dir, "best.json"), producers),
+                          os.path.join(iter_dir, "best.json"), best_solution),
             ]
             for f in futures:
                 f.result()
@@ -1442,11 +1449,12 @@ class DSSAOptimizer:
                 buf.clear()
             f.write(']')
 
-    def _write_best_json(self, path: str, producers: list):
-        if not producers:
+    def _write_best_json(self, path: str, best_solution=None):
+        sol = best_solution if best_solution is not None else self.best_solution
+        if sol is None:
             return
         buf = _SerializationBuffer()
-        buf.fill_from(producers[0])
+        buf.fill_from(sol)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(buf.output, f, ensure_ascii=False)
 

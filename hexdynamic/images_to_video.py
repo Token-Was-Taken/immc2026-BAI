@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import traceback
@@ -41,6 +42,43 @@ RESOURCE_MARKERS = {
 
 FENCE_COLOR = "#c0392b"
 FENCE_EDGE_LINEWIDTH = 3.0
+
+# ── Worker process globals (set via initializer to avoid per-task serialization) ──
+_worker_grids = None
+_worker_hex_size = None
+_worker_boundary_xy = None
+_worker_terrain_patches = None
+
+
+def _worker_init(precomputed_data: Dict[str, Any]):
+    """Initialize worker process with shared read-only terrain data."""
+    global _worker_grids, _worker_hex_size, _worker_boundary_xy, _worker_terrain_patches
+    _worker_grids = precomputed_data['grids']
+    _worker_hex_size = precomputed_data['hex_size']
+    _worker_boundary_xy = precomputed_data['boundary_xy']
+    _worker_terrain_patches = precomputed_data['terrain_patches']
+
+
+def _get_available_memory_mb() -> Optional[float]:
+    """Return available system RAM in MB, or None if can't determine."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available / (1024 * 1024)
+    except ImportError:
+        return None
+
+
+def _read_deployment(best_json_path: str) -> dict:
+    """Extract deployment dict from best.json for comparison."""
+    with open(best_json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return {
+        'cameras': {int(k): v for k, v in data.get('cameras', {}).items()},
+        'camps': {int(k): v for k, v in data.get('camps', {}).items()},
+        'drones': {int(k): v for k, v in data.get('drones', {}).items()},
+        'rangers': {int(k): v for k, v in data.get('rangers', {}).items()},
+        'fences': {str(k): v for k, v in data.get('fences', {}).items()},
+    }
 
 
 def natural_sort_key(path: str) -> List:
@@ -147,7 +185,8 @@ def _draw_legend(ax_leg):
 
 
 def _render_single_map(args: Tuple) -> Optional[str]:
-    best_json_path, output_png_path, iteration, precomputed_data = args
+    """Render a single deployment map (runs in worker process, uses shared globals)."""
+    best_json_path, output_png_path, iteration = args
 
     try:
         import gc
@@ -160,14 +199,15 @@ def _render_single_map(args: Tuple) -> Optional[str]:
             best_data = json.load(f)
 
         from visualize_output import (
-            make_figure, setup_map_ax, draw_hex, draw_boundary,
+            make_figure, setup_map_ax, hex_corners, draw_boundary,
             draw_deployed_fence_edges, _draw_resources, _edge_grid_ids
         )
 
-        grids = precomputed_data['grids']
-        hex_size = precomputed_data['hex_size']
-        boundary_xy = precomputed_data['boundary_xy']
-        terrain_patches = precomputed_data['terrain_patches']
+        # Use shared read-only data from worker globals (set by initializer)
+        grids = _worker_grids
+        hex_size = _worker_hex_size
+        boundary_xy = _worker_boundary_xy
+        terrain_patches = _worker_terrain_patches
 
         cameras = {int(k): v for k, v in best_data.get('cameras', {}).items()}
         camps = {int(k): v for k, v in best_data.get('camps', {}).items()}
@@ -205,9 +245,15 @@ def _render_single_map(args: Tuple) -> Optional[str]:
 
         fig, ax_map, _, ax_leg = make_figure(has_colorbar=False)
 
-        for (cx, cy, fc) in terrain_patches:
-            draw_hex(ax_map, cx, cy, hex_size * 0.97,
-                    facecolor=fc, alpha=0.45)
+        from matplotlib.patches import Polygon
+        from matplotlib.collections import PatchCollection
+
+        _patches = [Polygon(hex_corners(cx, cy, hex_size * 0.97), closed=True)
+                    for cx, cy, _fc in terrain_patches]
+        _facecolors = [fc for _, _, fc in terrain_patches]
+        pc = PatchCollection(_patches, facecolors=_facecolors,
+                             edgecolors='black', linewidths=0.4, alpha=0.45, zorder=1)
+        ax_map.add_collection(pc)
 
         edge_ids = _edge_grid_ids(plot_grids, boundary_xy)
 
@@ -266,36 +312,89 @@ def render_all_maps(input_dir: str, input_json_path: str, output_dir: str,
         print(f"错误: 在 {input_dir} 中没有找到包含 best.json 的 iteration_XXXX 目录!")
         return []
 
+    num_grids = len(precomputed['grids'])
     print(f"找到 {len(iterations)} 个迭代目录")
-    print(f"预计算地形底图: {len(precomputed['terrain_patches'])} 个网格")
+    print(f"预计算地形底图: {num_grids} 个网格")
 
     maps_dir = os.path.join(output_dir, "deployment_maps")
     os.makedirs(maps_dir, exist_ok=True)
 
-    tasks = []
+    # ── Build task list with deployment deduplication ──
+    tasks = []       # (best_json_path, output_png_path, iter_num) for rendering
+    copy_ops = []    # (dest_path, src_path) — copy after rendering
+    prev_deployment = None
+    prev_png_path = None
+
     for iter_num, iter_dir in iterations:
         best_json_path = os.path.join(iter_dir, "best.json")
         output_png_path = os.path.join(maps_dir, f"deployment_map_{iter_num:04d}.png")
-        if os.path.exists(output_png_path):
-            continue
-        tasks.append((best_json_path, output_png_path, iter_num, precomputed))
 
-    if not tasks:
+        if os.path.exists(output_png_path):
+            # Already exists — read its deployment for subsequent comparisons
+            try:
+                prev_deployment = _read_deployment(best_json_path)
+                prev_png_path = output_png_path
+            except Exception:
+                prev_deployment = None
+                prev_png_path = None
+            continue
+
+        try:
+            current_deployment = _read_deployment(best_json_path)
+        except Exception:
+            tasks.append((best_json_path, output_png_path, iter_num))
+            continue
+
+        if prev_deployment is not None and current_deployment == prev_deployment and prev_png_path:
+            # Identical deployment → copy from previous map
+            copy_ops.append((output_png_path, prev_png_path))
+        else:
+            tasks.append((best_json_path, output_png_path, iter_num))
+            prev_deployment = current_deployment
+            prev_png_path = output_png_path
+
+    copied_count = len(copy_ops)
+
+    if not tasks and not copy_ops:
         print("所有 deployment_map 已存在，跳过渲染")
         return sorted(
             [os.path.join(maps_dir, f"deployment_map_{i:04d}.png") for i, _ in iterations],
             key=natural_sort_key
         )
 
-    print(f"需要渲染 {len(tasks)} 张 deployment_map（跳过 {len(iterations) - len(tasks)} 张已存在的）")
+    if copied_count > 0:
+        print(f"检测到 {copied_count} 张 deployment_map 与上一轮部署相同，将直接复制（无需重新渲染）")
 
+    print(f"需要渲染 {len(tasks)} 张 deployment_map（跳过 {len(iterations) - len(tasks) - copied_count} 张已存在的）")
+
+    # ── Calculate optimal worker count with memory safety ──
     if max_workers is None:
-        max_workers = min(os.cpu_count() or 4, 8)
+        cpu_count = os.cpu_count() or 4
+        # Estimate memory per figure: ~200 bytes per grid (hex + deployment data)
+        est_mb_per_figure = max(50, num_grids * 0.0002)
+        avail_mb = _get_available_memory_mb()
+
+        if avail_mb is not None:
+            # Reserve 60% of available RAM for rendering, rest for system
+            safe_mb = avail_mb * 0.6
+            mem_limit = max(1, int(safe_mb / est_mb_per_figure))
+            max_workers = min(cpu_count, mem_limit, 32)
+            print(f"  系统可用内存: {avail_mb:.0f} MB, 单图估算: {est_mb_per_figure:.0f} MB,  内存安全上限: {mem_limit}")
+        else:
+            # No psutil — use a safe conservative default
+            max_workers = min(cpu_count, 16)
+            print(f"  无法检测内存，保守设置 workers={max_workers}")
+    else:
+        max_workers = min(max_workers, os.cpu_count() or 4)
 
     print(f"使用 {max_workers} 个进程并发生成...")
 
     rendered = []
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+    with ProcessPoolExecutor(
+        max_workers=max_workers,
+        initializer=_worker_init,
+        initargs=(precomputed,)
+    ) as executor:
         futures = {executor.submit(_render_single_map, task): task for task in tasks}
         for i, future in enumerate(as_completed(futures), 1):
             result = future.result()
@@ -303,6 +402,12 @@ def render_all_maps(input_dir: str, input_json_path: str, output_dir: str,
                 rendered.append(result)
             if i % 10 == 0 or i == len(tasks):
                 print(f"  渲染进度: {i}/{len(tasks)} ({i*100/len(tasks):.1f}%)")
+
+    # ── Perform copy operations for duplicate deployments ──
+    if copy_ops:
+        print(f"复制 {len(copy_ops)} 张重复部署地图...")
+        for dest, src in copy_ops:
+            shutil.copy2(src, dest)
 
     all_maps = sorted(
         [os.path.join(maps_dir, f"deployment_map_{i:04d}.png") for i, _ in iterations],
@@ -477,7 +582,7 @@ def main():
     parser.add_argument("--input_json", "-j", required=True, help="输入 JSON 文件路径（包含网格数据）")
     parser.add_argument("--output", "-o", default="output.mp4", help="输出视频文件路径")
     parser.add_argument("--fps", "-f", type=float, default=5.0, help="视频帧率 (默认: 5.0)")
-    parser.add_argument("--workers", "-w", type=int, default=None, help="并发进程数 (默认: CPU 核心数, 最大 8)")
+    parser.add_argument("--workers", "-w", type=int, default=None, help="并发进程数 (默认: 自动检测，根据可用内存动态计算，上限 32)")
     parser.add_argument("--output_dir", "-d", default=None, help="中间图片输出目录 (默认: input_dir 同级)")
     parser.add_argument("--backend", "-b", choices=["cv2", "ffmpeg"], default="cv2",
                         help="视频编码后端 (默认: cv2)")
