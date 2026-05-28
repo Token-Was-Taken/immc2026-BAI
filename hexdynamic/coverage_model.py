@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 from grid_model import HexGridModel
 from data_loader import CoverageParameters
 
+# Named constants for synergy normalization
+SYNERGY_DENOMINATOR_OFFSET = 1.0  # Added to P+D or P+C to prevent division by zero
+
 
 @dataclass
 class DeploymentSolution:
@@ -149,8 +152,8 @@ class CoverageModel:
                     self.params.wf * F)
 
             # Synergy terms (normalized to prevent explosive growth)
-            synergy_pd = self.params.alpha_pd * (P * D) / (1.0 + P + D) if (P > 0 or D > 0) else 0.0
-            synergy_pc = self.params.alpha_pc * (P * C) / (1.0 + P + C) if (P > 0 or C > 0) else 0.0
+            synergy_pd = self.params.alpha_pd * (P * D) / (SYNERGY_DENOMINATOR_OFFSET + P + D) if (P > 0 or D > 0) else 0.0
+            synergy_pc = self.params.alpha_pc * (P * C) / (SYNERGY_DENOMINATOR_OFFSET + P + C) if (P > 0 or C > 0) else 0.0
 
             E_i = base + synergy_pd + synergy_pc
 

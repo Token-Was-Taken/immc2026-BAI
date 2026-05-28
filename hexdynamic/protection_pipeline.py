@@ -12,9 +12,12 @@ import numpy as np
 from typing import Dict, Tuple
 
 _RISK_SRC = os.path.join(os.path.dirname(__file__), '..', 'riskIndex', 'src')
-sys.path.insert(0, os.path.abspath(_RISK_SRC))
 _RISK_DIR = os.path.join(os.path.dirname(__file__), '..', 'riskIndex')
-sys.path.insert(0, os.path.abspath(_RISK_DIR))
+
+if os.path.isdir(os.path.abspath(_RISK_SRC)):
+    sys.path.insert(0, os.path.abspath(_RISK_SRC))
+if os.path.isdir(os.path.abspath(_RISK_DIR)):
+    sys.path.insert(0, os.path.abspath(_RISK_DIR))
 
 from risk_model_wrapper import (
     MapConfig, GridInputData, TimeInputData, ModelConfigData,
@@ -38,7 +41,32 @@ from coverage_model import DeploymentSolution
 
 def load_input(path: str) -> dict:
     with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        data = json.load(f)
+    validate_input_schema(data, path)
+    return data
+
+
+def validate_input_schema(data: dict, path: str = "<input>"):
+    """Validate that input JSON contains all required keys with clear error messages."""
+    required_top = ['grids', 'constraints', 'map_config']
+    missing = [k for k in required_top if k not in data]
+    if missing:
+        raise ValueError(f"Input JSON '{path}' is missing required top-level keys: {missing}")
+
+    if not isinstance(data['grids'], list) or len(data['grids']) == 0:
+        raise ValueError(f"Input JSON '{path}': 'grids' must be a non-empty list")
+
+    required_grid_keys = ['grid_id', 'q', 'r', 'terrain_type']
+    for i, grid in enumerate(data['grids'][:5]):
+        grid_missing = [k for k in required_grid_keys if k not in grid]
+        if grid_missing:
+            raise ValueError(f"Input JSON '{path}': grid[{i}] is missing keys: {grid_missing}")
+
+    required_constraints = ['total_patrol', 'total_camps', 'total_cameras', 'total_drones']
+    c = data['constraints']
+    c_missing = [k for k in required_constraints if k not in c]
+    if c_missing:
+        raise ValueError(f"Input JSON '{path}': 'constraints' is missing keys: {c_missing}")
 
 
 def load_warm_start_solution(output_json_path: str) -> DeploymentSolution:
@@ -179,12 +207,20 @@ def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int,
     id_order = []
     for g in data['grids']:
         gid = g['grid_id']
+        try:
+            fire_risk = float(g.get('fire_risk', 0.0))
+        except (ValueError, TypeError):
+            raise ValueError(f"Grid {gid}: 'fire_risk' must be numeric, got '{g.get('fire_risk')}'")
+        try:
+            terrain_complexity = float(g.get('terrain_complexity', 0.0))
+        except (ValueError, TypeError):
+            raise ValueError(f"Grid {gid}: 'terrain_complexity' must be numeric, got '{g.get('terrain_complexity')}'")
         grid_input = GridInputData(
             grid_id=str(gid),
             x=g.get('x', 0),
             y=g.get('y', 0),
-            fire_risk=float(g.get('fire_risk', 0.0)),
-            terrain_complexity=float(g.get('terrain_complexity', 0.0)),
+            fire_risk=fire_risk,
+            terrain_complexity=terrain_complexity,
             vegetation_type=g.get('vegetation_type', 'GRASSLAND'),
             species_densities=g.get('species_densities', {})
         )

@@ -82,8 +82,8 @@ def parse_args():
   python run.py output.json --visualize-only --input input.json
         """
     )
-    p.add_argument("input",  help="输入 JSON（pipeline 模式）或输出 JSON（--visualize-only 模式）")
-    p.add_argument("output", nargs="?", default=None, help="输出 JSON 路径（pipeline 模式必填）")
+    p.add_argument("input",  help="Pipeline 模式：输入 JSON 路径 | Visualize-only 模式：输出 JSON 路径")
+    p.add_argument("output", nargs="?", default=None, help="Pipeline 模式：输出 JSON 路径（必填）| Visualize-only 模式：忽略此参数，用 --input 指定输入 JSON")
 
     # pipeline 选项
     p.add_argument("--vectorized", action="store_true", default=False,

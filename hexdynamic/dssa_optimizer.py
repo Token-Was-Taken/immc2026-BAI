@@ -1,4 +1,5 @@
 import gc
+import hashlib
 import multiprocessing
 import numpy as np
 from typing import Dict, List, Tuple, Callable, Optional, Any
@@ -10,6 +11,22 @@ import threading
 import queue
 import concurrent.futures
 from coverage_model import CoverageModel, DeploymentSolution
+
+
+def _deterministic_hash(solution: DeploymentSolution) -> int:
+    """Generate a deterministic hash key for fitness cache.
+    
+    Uses hashlib.md5 to ensure consistent hashing across processes
+    (unlike Python's built-in hash() which is randomized by PYTHONHASHSEED).
+    """
+    key_data = (
+        tuple(sorted(solution.cameras.items())),
+        tuple(sorted(solution.camps.items())),
+        tuple(sorted(solution.drones.items())),
+        tuple(sorted(solution.rangers.items())),
+        tuple(sorted(solution.fences.items())),
+    )
+    return int(hashlib.md5(str(key_data).encode()).hexdigest(), 16) % (2**31)
 
 
 def _snapshot_solution(solution: DeploymentSolution) -> DeploymentSolution:
@@ -75,16 +92,10 @@ def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cac
 
 
 def _worker_make_cache_key(solution):
-    """Generate a hash key for fitness cache (used in worker processes)."""
+    """Generate a deterministic hash key for fitness cache (used in worker processes)."""
     if solution._cache_key is not None:
         return solution._cache_key
-    key = hash((
-        tuple(sorted(solution.cameras.items())),
-        tuple(sorted(solution.camps.items())),
-        tuple(sorted(solution.drones.items())),
-        tuple(sorted(solution.rangers.items())),
-        tuple(sorted(solution.fences.items())),
-    ))
+    key = _deterministic_hash(solution)
     solution._cache_key = key
     return key
 
@@ -523,6 +534,8 @@ class _SerializationBuffer:
         self.output.clear()
 
     def fill_from(self, solution: DeploymentSolution) -> Dict[str, Any]:
+        # Clear any stale data from previous use
+        self.clear()
         total_cameras = 0
         for k, v in solution.cameras.items():
             self.cameras[str(k)] = v
@@ -624,7 +637,7 @@ class DSSAConfig:
 
     # --- 性能配置 ---
     fitness_cache_max_size: int = 10000  # 适应度缓存最大条目数
-    fitness_workers: int = os.cpu_count() or 16
+    fitness_workers: int = min(os.cpu_count() or 16, 16)  # Cap at 16 to prevent system overload
     output_interval: int = 1  # 批量输出间隔：每 N 轮迭代输出一次（1=每轮都输出）
 
 
@@ -701,6 +714,11 @@ class DSSAOptimizer:
 
         self._fitness_cache = {}
         self._fitness_cache_max_size = self.config.fitness_cache_max_size
+
+    def __del__(self):
+        """Cleanup resources when optimizer is garbage collected."""
+        if hasattr(self, '_fitness_executor'):
+            self._fitness_executor.shutdown(wait=False)
 
     def _initialize_solution(self) -> DeploymentSolution:
         """初始化解决方案
@@ -1124,16 +1142,10 @@ class DSSAOptimizer:
         return fitness
 
     def _make_cache_key(self, solution: DeploymentSolution) -> int:
-        """生成适应度缓存的哈希键，基于部署方案的资源分配"""
+        """生成适应度缓存的确定性哈希键，基于部署方案的资源分配"""
         if solution._cache_key is not None:
             return solution._cache_key
-        key = hash((
-            tuple(sorted(solution.cameras.items())),
-            tuple(sorted(solution.camps.items())),
-            tuple(sorted(solution.drones.items())),
-            tuple(sorted(solution.rangers.items())),
-            tuple(sorted(solution.fences.items())),
-        ))
+        key = _deterministic_hash(solution)
         solution._cache_key = key
         return key
 
@@ -1166,6 +1178,8 @@ class DSSAOptimizer:
             # Base boost + additional amplification for persistent stagnation
             # stagnation_count - stagnation_threshold gives how many iterations beyond threshold
             extra_amplification = max(0, (self.stagnation_count - self.config.stagnation_threshold) // 10)
+            # Cap amplification to prevent unbounded growth (max 3x base boost)
+            extra_amplification = min(extra_amplification, 4)
             amplified_boost = self.config.stagnation_boost * (1.0 + 0.5 * extra_amplification)
             return scheduled * amplified_boost
         
@@ -1559,156 +1573,167 @@ class DSSAOptimizer:
     def optimize(self, callback: Callable[[int, float, DeploymentSolution], None] = None) -> Tuple[DeploymentSolution, float, List[float]]:
         import time
 
-        self.initialize_population()
-        
-        self.initial_solution = self._initialize_solution()
-
-        if self.warm_start_solution is not None:
-            self.best_solution = self.population[0]
-            is_valid, violations = self.coverage_model.validate_solution(self.population[0], self.constraints)
-            if not is_valid:
-                print(f"      [WARM-START] 警告: baseline 方案无效! violations={violations[:5]}")
-            self.best_fitness = self.evaluate_fitness(self.population[0])
-            print(f"      [WARM-START] 用 baseline 部署初始化 best_solution: fitness={self.best_fitness:.10f}")
-
-        fitnesses = self._evaluate_fitness_parallel(self.population)
-        for solution, fitness in zip(self.population, fitnesses):
-            if fitness > self.best_fitness + self.config.fitness_update_epsilon:
-                self.best_fitness = fitness
-                self.best_solution = solution
-
-        self.fitness_history = [self.best_fitness]
-
-        if self.warm_start_solution is not None:
-            ws_eval = self.evaluate_fitness(self.population[0])
-            print(f"      [WARM-START] 种群评估后: best_fitness={self.best_fitness:.10f}"
-                  f" (热启动个体#0={ws_eval:.6f})")
-
-        total_start = time.time()
-        iter_times = []
-
-        num_producers = int(self.config.population_size * self.config.producer_ratio)
-        num_scouts = int(self.config.population_size * self.config.scout_ratio)
-
-        for iteration in range(self.config.max_iterations):
-            iter_start = time.time()
-
-            # Get the effective exploration alpha for this iteration
-            effective_alpha = self._get_exploration_alpha(iteration)
+        try:
+            self.initialize_population()
             
-            escape_producers = self._update_producers(iteration, effective_alpha)
-            escape_followers = self._update_followers(effective_alpha)
-            self._update_scouts()
+            self.initial_solution = self._initialize_solution()
 
-            diversity_interval = 5
-            if iteration % diversity_interval == 0:
-                diversity = self._calculate_diversity()
-                self._last_diversity = diversity
-            else:
-                diversity = getattr(self, '_last_diversity', 1.0)
-            if diversity < self.config.diversity_min_threshold:
-                self._inject_random_solutions(self.config.diversity_inject_ratio)
+            if self.warm_start_solution is not None:
+                self.best_solution = self.population[0]
+                is_valid, violations = self.coverage_model.validate_solution(self.population[0], self.constraints)
+                if not is_valid:
+                    print(f"      [WARM-START] 警告: baseline 方案无效! violations={violations[:5]}")
+                self.best_fitness = self.evaluate_fitness(self.population[0])
+                print(f"      [WARM-START] 用 baseline 部署初始化 best_solution: fitness={self.best_fitness:.10f}")
 
-            # Update stagnation tracking state
-            if self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance:
-                self.stagnation_count = 0
-            else:
-                self.stagnation_count += 1
-            self.prev_best_fitness = self.best_fitness
+            fitnesses = self._evaluate_fitness_parallel(self.population)
+            for solution, fitness in zip(self.population, fitnesses):
+                if fitness > self.best_fitness + self.config.fitness_update_epsilon:
+                    self.best_fitness = fitness
+                    self.best_solution = solution
 
-            # Clear fitness cache when it gets too large to prevent slowdown from hash collisions
-            if len(self._fitness_cache) >= self._fitness_cache_max_size * 0.9:
-                self._fitness_cache.clear()
+            self.fitness_history = [self.best_fitness]
 
-            # JSON output: buffer iteration data, flush every output_interval iterations
-            if self.output_dir:
-                producers = self.population[:num_producers]
-                followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
-                scouts = self.population[self.config.population_size - num_scouts:]
-                snap = _snapshot_solution(self.best_solution)
-                self._output_buffer.append({
-                    'iteration': iteration,
-                    'producers': list(producers),
-                    'followers': list(followers),
-                    'scouts': list(scouts),
-                    'best_solution': snap,
-                })
+            if self.warm_start_solution is not None:
+                ws_eval = self.evaluate_fitness(self.population[0])
+                print(f"      [WARM-START] 种群评估后: best_fitness={self.best_fitness:.10f}"
+                      f" (热启动个体#0={ws_eval:.6f})")
 
-                interval = max(1, self.config.output_interval)
-                is_last = (iteration == self.config.max_iterations - 1)
-                if len(self._output_buffer) >= interval or is_last:
-                    self._async_flush_output_buffer()
+            total_start = time.time()
+            iter_times = []
 
+            num_producers = int(self.config.population_size * self.config.producer_ratio)
+            num_scouts = int(self.config.population_size * self.config.scout_ratio)
+
+            for iteration in range(self.config.max_iterations):
+                iter_start = time.time()
+
+                # Get the effective exploration alpha for this iteration
+                effective_alpha = self._get_exploration_alpha(iteration)
+                
+                escape_producers = self._update_producers(iteration, effective_alpha)
+                escape_followers = self._update_followers(effective_alpha)
+                self._update_scouts()
+
+                diversity_interval = 5
+                if iteration % diversity_interval == 0:
+                    diversity = self._calculate_diversity()
+                    self._last_diversity = diversity
+                else:
+                    diversity = getattr(self, '_last_diversity', 1.0)
+                if diversity < self.config.diversity_min_threshold:
+                    self._inject_random_solutions(self.config.diversity_inject_ratio)
+
+                # Update stagnation tracking state
+                if self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance:
+                    self.stagnation_count = 0
+                else:
+                    self.stagnation_count += 1
+                self.prev_best_fitness = self.best_fitness
+
+                # Clear fitness cache when it gets too large to prevent slowdown from hash collisions
+                if len(self._fitness_cache) >= self._fitness_cache_max_size * 0.9:
+                    self._fitness_cache.clear()
+
+                # JSON output: buffer iteration data, flush every output_interval iterations
+                if self.output_dir:
+                    producers = self.population[:num_producers]
+                    followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
+                    scouts = self.population[self.config.population_size - num_scouts:]
+                    snap = _snapshot_solution(self.best_solution)
+                    self._output_buffer.append({
+                        'iteration': iteration,
+                        'producers': list(producers),
+                        'followers': list(followers),
+                        'scouts': list(scouts),
+                        'best_solution': snap,
+                    })
+
+                    interval = max(1, self.config.output_interval)
+                    is_last = (iteration == self.config.max_iterations - 1)
+                    if len(self._output_buffer) >= interval or is_last:
+                        self._async_flush_output_buffer()
+
+                pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
+                total_benefit = sum(pb_per_grid.values())
+
+                iter_elapsed = time.time() - iter_start
+                iter_times.append(iter_elapsed)
+                self.fitness_history.append(self.best_fitness)
+
+                if callback:
+                    callback(iteration, self.best_fitness, self.best_solution)
+
+                avg_iter = sum(iter_times) / len(iter_times)
+
+                if iteration > 0 and iteration % 20 == 0:
+                    gc.collect()
+                
+                # 打印迭代信息
+                escape_total = escape_producers + escape_followers
+                
+                # Build log line with alpha and stagnation boost annotation
+                if self.stagnation_count > self.config.stagnation_threshold:
+                    extra_amp = max(0, (self.stagnation_count - self.config.stagnation_threshold) // 10)
+                    stagnation_annotation = f" [STAGNATION_BOOST×{1.0 + 0.5 * extra_amp:.1f}]"
+                else:
+                    stagnation_annotation = ""
+                
+                if escape_total > 0:
+                    print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
+                          f"  fitness={self.best_fitness:.10f}"
+                          f"  benefit={total_benefit:.10f}"
+                          f"  div={diversity:.3f}"
+                          f"  α={effective_alpha:.2f}"
+                          f"  [ESCAPE={escape_total}]{stagnation_annotation}"
+                          f"  iter={iter_elapsed*1000:.1f}ms"
+                          f"  avg={avg_iter*1000:.1f}ms")
+                else:
+                    print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
+                          f"  fitness={self.best_fitness:.10f}"
+                          f"  benefit={total_benefit:.10f}"
+                          f"  div={diversity:.3f}"
+                          f"  α={effective_alpha:.2f}{stagnation_annotation}"
+                          f"  iter={iter_elapsed*1000:.1f}ms"
+                          f"  avg={avg_iter*1000:.1f}ms")
+
+            total_elapsed = time.time() - total_start
             pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
-            total_benefit = sum(pb_per_grid.values())
+            final_total_benefit = sum(pb_per_grid.values())
 
-            iter_elapsed = time.time() - iter_start
-            iter_times.append(iter_elapsed)
-            self.fitness_history.append(self.best_fitness)
+            print(f"\nOptimization completed."
+                  f"  Best Fitness = {self.best_fitness:.10f}"
+                  f"  Total Benefit = {final_total_benefit:.10f}"
+                  f"  Total = {total_elapsed:.2f}s"
+                  f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
 
-            if callback:
-                callback(iteration, self.best_fitness, self.best_solution)
+            if self._output_buffer:
+                self._async_flush_output_buffer()
 
-            avg_iter = sum(iter_times) / len(iter_times)
+            if self._json_worker_started:
+                self._json_queue.put(None)
+            print("[ASYNC] 等待异步输出任务完成...")
+            if self._json_worker_started:
+                # Wait with timeout to prevent indefinite blocking on I/O stalls
+                import time as _time
+                _json_wait_start = _time.time()
+                _json_timeout = 30  # seconds
+                while not self._json_queue.empty():
+                    if _time.time() - _json_wait_start > _json_timeout:
+                        print(f"[ASYNC] 警告: JSON输出队列等待超时({_json_timeout}s)，继续执行")
+                        break
+                    _time.sleep(0.1)
+                else:
+                    self._json_queue.join()
+            print("[ASYNC] 所有异步输出任务完成！")
 
-            if iteration > 0 and iteration % 20 == 0:
-                gc.collect()
-            
-            # 打印迭代信息
-            escape_total = escape_producers + escape_followers
-            
-            # Build log line with alpha and stagnation boost annotation
-            if self.stagnation_count > self.config.stagnation_threshold:
-                extra_amp = max(0, (self.stagnation_count - self.config.stagnation_threshold) // 10)
-                stagnation_annotation = f" [STAGNATION_BOOST×{1.0 + 0.5 * extra_amp:.1f}]"
-            else:
-                stagnation_annotation = ""
-            
-            if escape_total > 0:
-                print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
-                      f"  fitness={self.best_fitness:.10f}"
-                      f"  benefit={total_benefit:.10f}"
-                      f"  div={diversity:.3f}"
-                      f"  α={effective_alpha:.2f}"
-                      f"  [ESCAPE={escape_total}]{stagnation_annotation}"
-                      f"  iter={iter_elapsed*1000:.1f}ms"
-                      f"  avg={avg_iter*1000:.1f}ms")
-            else:
-                print(f"Iter {iteration+1:>4}/{self.config.max_iterations}"
-                      f"  fitness={self.best_fitness:.10f}"
-                      f"  benefit={total_benefit:.10f}"
-                      f"  div={diversity:.3f}"
-                      f"  α={effective_alpha:.2f}{stagnation_annotation}"
-                      f"  iter={iter_elapsed*1000:.1f}ms"
-                      f"  avg={avg_iter*1000:.1f}ms")
+            for thread in self._async_threads:
+                if thread.is_alive():
+                    thread.join(timeout=10)
 
-        total_elapsed = time.time() - total_start
-        pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
-        final_total_benefit = sum(pb_per_grid.values())
-
-        print(f"\nOptimization completed."
-              f"  Best Fitness = {self.best_fitness:.10f}"
-              f"  Total Benefit = {final_total_benefit:.10f}"
-              f"  Total = {total_elapsed:.2f}s"
-              f"  Avg/iter = {total_elapsed/self.config.max_iterations*1000:.1f}ms")
-
-        if self._output_buffer:
-            self._async_flush_output_buffer()
-
-        if self._json_worker_started:
-            self._json_queue.put(None)
-        print("[ASYNC] 等待异步输出任务完成...")
-        if self._json_worker_started:
-            self._json_queue.join()
-        print("[ASYNC] 所有异步输出任务完成！")
-
-        for thread in self._async_threads:
-            if thread.is_alive():
-                thread.join(timeout=10)
-
-        self._fitness_executor.shutdown(wait=True)
-
-        return self.best_solution, self.best_fitness, self.fitness_history
+            return self.best_solution, self.best_fitness, self.fitness_history
+        finally:
+            self._fitness_executor.shutdown(wait=True)
 
     def get_solution_statistics(self, solution: DeploymentSolution) -> Dict[str, Any]:
         return {

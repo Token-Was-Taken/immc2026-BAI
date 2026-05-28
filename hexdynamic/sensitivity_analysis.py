@@ -291,6 +291,85 @@ def _run_single_group(args_tuple):
     return group_results
 
 
+def _run_pipeline_warm_start(base_input: dict, res_type: str, resource_values: List[int],
+                             output_dir: str, vectorized: bool,
+                             cache: BenefitCache = None) -> List[dict]:
+    """Serial warm-start: run all resource values in ascending order, each using the previous as warm-start."""
+    other_resources = [r for r in RESOURCE_MAP.keys() if r != res_type]
+    freeze_str = ','.join(other_resources)
+    pipeline_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'protection_pipeline.py')
+
+    cached_results = {}
+    remaining_values = []
+    for rv in resource_values:
+        if cache and cache.has(res_type, rv):
+            cached_results[rv] = cache.get(res_type, rv)
+        else:
+            remaining_values.append(rv)
+
+    if cached_results:
+        print(f"  [CACHE] 命中 {len(cached_results)}/{len(resource_values)} 个缓存")
+
+    if not remaining_values:
+        print(f"  [WARM-START] 所有点均已缓存，跳过运行")
+        return [cached_results[v] for v in sorted(resource_values) if v in cached_results]
+
+    group_results = dict(cached_results)
+    prev_output_path = None
+    pipeline_results = []
+
+    for idx, rv in enumerate(remaining_values):
+        temp_input = copy.deepcopy(base_input)
+        temp_input['constraints'][RESOURCE_MAP[res_type]] = rv
+        for other in other_resources:
+            temp_input['constraints'][RESOURCE_MAP[other]] = 0
+
+        temp_input_path = os.path.join(output_dir, f'temp_input_{res_type}_{rv}.json')
+        temp_output_path = os.path.join(output_dir, f'temp_output_{res_type}_{rv}.json')
+        save_json(temp_input_path, temp_input)
+
+        cmd = [sys.executable, pipeline_path, temp_input_path, temp_output_path]
+        if vectorized:
+            cmd.append('--vectorized')
+        if freeze_str:
+            cmd.extend(['--freeze-resources', freeze_str])
+        if prev_output_path and os.path.exists(prev_output_path):
+            cmd.extend(['--warm-start', prev_output_path])
+
+        warm_tag = "WARM" if (prev_output_path and os.path.exists(prev_output_path)) else "COLD"
+
+        run_start = time.time()
+        proc_result = subprocess.run(cmd, capture_output=True, text=True)
+        run_elapsed = time.time() - run_start
+
+        if proc_result.returncode != 0:
+            print(f"  [{idx+1}/{len(remaining_values)}] {res_type}={rv} [{warm_tag}] FAIL ({run_elapsed:.0f}s)")
+            print(f"  {proc_result.stderr[:300]}")
+            prev_output_path = None
+            continue
+
+        try:
+            output = load_json(temp_output_path)
+            result = {
+                'resource_value': rv,
+                'total_protection_benefit': output['summary']['total_protection_benefit'],
+                'best_fitness': output['summary']['best_fitness'],
+                'resources_deployed': output['summary']['resources_deployed'],
+                'output_json': temp_output_path
+            }
+            group_results[rv] = result
+            pipeline_results.append(result)
+            prev_output_path = temp_output_path
+            if cache:
+                cache.set(res_type, rv, result)
+            print(f"  [{idx+1}/{len(remaining_values)}] {res_type}={rv} [{warm_tag}] OK  benefit={result['total_protection_benefit']:.4f}  ({run_elapsed:.0f}s)")
+        except (IOError, OSError, json.JSONDecodeError, KeyError, ValueError) as e:
+            print(f"  [{idx+1}/{len(remaining_values)}] {res_type}={rv} [{warm_tag}] PARSE ERROR: {e}")
+            prev_output_path = None
+
+    return [group_results[rv] for rv in resource_values if rv in group_results]
+
+
 def _run_pipeline_hybrid(base_input: dict, res_type: str, resource_values: List[int],
                          output_dir: str, vectorized: bool, num_groups: int,
                          cache: BenefitCache = None) -> List[dict]:

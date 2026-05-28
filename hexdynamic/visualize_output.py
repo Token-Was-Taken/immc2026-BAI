@@ -577,8 +577,10 @@ def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path, grid_dpi=8
                     fontfamily="monospace")
         y -= 0.09
 
-    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
-    plt.close(fig)
+    try:
+        fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
+    finally:
+        plt.close(fig)
     print(f"  saved: {save_path}")
 
 
