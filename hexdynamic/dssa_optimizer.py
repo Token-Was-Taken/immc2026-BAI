@@ -717,6 +717,13 @@ class DSSAOptimizer:
         self._fitness_cache = {}
         self._fitness_cache_max_size = self.config.fitness_cache_max_size
 
+        # Precompute deployable grids for each resource type (deployment matrix is constant)
+        self._deployable_grids = {
+            rt: [gid for gid in self.grid_ids
+                 if self.coverage_model.deployment_matrix[rt].get(gid, 0) == 1]
+            for rt in ['camera', 'drone', 'camp', 'patrol', 'fence']
+        }
+
     def __del__(self):
         """Cleanup resources when optimizer is garbage collected."""
         if hasattr(self, '_fitness_executor'):
@@ -1988,9 +1995,8 @@ class DSSAOptimizer:
     # -----------------------------------------------------------------------
 
     def _get_deployable_grids(self, resource_type: str) -> List[int]:
-        """获取某种资源类型可部署的网格列表"""
-        return [gid for gid in self.grid_ids
-                if self.coverage_model.deployment_matrix[resource_type].get(gid, 0) == 1]
+        """获取某种资源类型可部署的网格列表（预计算缓存）"""
+        return self._deployable_grids.get(resource_type, [])
 
     def _discrete_swap(self, solution: DeploymentSolution) -> DeploymentSolution:
         """资源交换：随机选两个网格，交换它们的非围栏资源部署
