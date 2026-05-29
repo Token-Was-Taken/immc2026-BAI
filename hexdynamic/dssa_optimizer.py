@@ -659,6 +659,7 @@ class DSSAOptimizer:
         self.frozen_resources = frozen_resources or []
 
         self.population = []
+        self.population_fitness = []  # Cached fitness for each individual
         self.fitness_history = []
         self.best_solution = None
         self.best_fitness = float('-inf')
@@ -1317,7 +1318,7 @@ class DSSAOptimizer:
             indices.append(i)
 
         futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
-        old_fitnesses = self._evaluate_fitness_parallel(producers)
+        old_fitnesses = [self.population_fitness[i] for i in indices]
 
         for i, old_fit, future in zip(indices, old_fitnesses, futures):
             result = future.result()
@@ -1327,6 +1328,7 @@ class DSSAOptimizer:
             new_fit = result['fitness']
             if new_fit > old_fit:
                 self.population[i] = new_sol
+                self.population_fitness[i] = new_fit
             if new_fit > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = new_fit
                 self.best_solution = new_sol
@@ -1448,7 +1450,7 @@ class DSSAOptimizer:
             indices.append(num_producers + i)
 
         futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
-        old_fitnesses = self._evaluate_fitness_parallel(followers)
+        old_fitnesses = [self.population_fitness[idx] for idx in indices]
 
         for idx, old_fit, future in zip(indices, old_fitnesses, futures):
             result = future.result()
@@ -1458,6 +1460,7 @@ class DSSAOptimizer:
             new_fit = result['fitness']
             if new_fit > old_fit:
                 self.population[idx] = new_sol
+                self.population_fitness[idx] = new_fit
             if new_fit > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = new_fit
                 self.best_solution = new_sol
@@ -1531,7 +1534,7 @@ class DSSAOptimizer:
         start_idx = self.config.population_size - num_scouts
 
         scout_solutions = self.population[start_idx:self.config.population_size]
-        scout_fitnesses = self._evaluate_fitness_parallel(scout_solutions)
+        scout_fitnesses = [self.population_fitness[i] for i in range(start_idx, self.config.population_size)]
 
         init_dict = _sol_to_dict(self.initial_solution) if self.frozen_resources else None
         tasks = []
@@ -1558,9 +1561,11 @@ class DSSAOptimizer:
                 result = future.result()
                 if result is not None:
                     self.population[pop_idx] = _dict_to_sol(result)
+                    self.population_fitness[pop_idx] = result['fitness']
 
         for pop_idx in full_reset_indices:
             self.population[pop_idx] = self._initialize_solution()
+            self.population_fitness[pop_idx] = float('-inf')
 
     def _update_best_solution(self):
         """更新全局最优解：评估所有个体适应度，保留最高者"""
@@ -1587,6 +1592,7 @@ class DSSAOptimizer:
                 print(f"      [WARM-START] 用 baseline 部署初始化 best_solution: fitness={self.best_fitness:.10f}")
 
             fitnesses = self._evaluate_fitness_parallel(self.population)
+            self.population_fitness = list(fitnesses)  # Cache initial fitness values
             for solution, fitness in zip(self.population, fitnesses):
                 if fitness > self.best_fitness + self.config.fitness_update_epsilon:
                     self.best_fitness = fitness
