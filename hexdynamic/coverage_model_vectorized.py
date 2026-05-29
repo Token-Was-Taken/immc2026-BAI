@@ -101,6 +101,10 @@ class VectorizedCoverageModel(CoverageModel):
         )
 
         self._tl = threading.local()
+        
+        # Cache for coverage arrays to avoid redundant computation
+        self._cached_solution_id = None
+        self._cached_coverage = None
 
     def __getstate__(self):
         """Strip unpicklable _tl (threading.local) before serialization."""
@@ -261,7 +265,7 @@ class VectorizedCoverageModel(CoverageModel):
         return {gid: float(protection[i]) for i, gid in enumerate(self.grid_ids)}
 
     def calculate_total_benefit(self, solution: DeploymentSolution) -> float:
-        pc, dc, cc, fp = self._calculate_coverage_arrays(solution)
+        pc, dc, cc, fp = self._get_cached_coverage_arrays(solution)
 
         E = (self.params.wp * pc + self.params.wd * dc +
              self.params.wc * cc + self.params.wf * fp)
@@ -283,7 +287,7 @@ class VectorizedCoverageModel(CoverageModel):
         return total
 
     def calculate_protection_benefit(self, solution: DeploymentSolution) -> Dict[int, float]:
-        pc, dc, cc, fp = self._calculate_coverage_arrays(solution)
+        pc, dc, cc, fp = self._get_cached_coverage_arrays(solution)
 
         E = (self.params.wp * pc + self.params.wd * dc +
              self.params.wc * cc + self.params.wf * fp)
@@ -325,6 +329,16 @@ class VectorizedCoverageModel(CoverageModel):
             total /= total_risk_weighted
 
         return total
+
+    def _get_cached_coverage_arrays(self, solution: DeploymentSolution) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Get coverage arrays with caching to avoid redundant computation."""
+        sid = id(solution)
+        if sid == self._cached_solution_id and self._cached_coverage is not None:
+            return self._cached_coverage
+        result = self._calculate_coverage_arrays(solution)
+        self._cached_solution_id = sid
+        self._cached_coverage = result
+        return result
 
     def _calculate_coverage_arrays(self, solution: DeploymentSolution) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         N = len(self.grid_ids)
