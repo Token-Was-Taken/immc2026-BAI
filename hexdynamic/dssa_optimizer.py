@@ -153,19 +153,31 @@ def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cac
     _worker_grid_risks = grid_risks or {}
 
 
-def _worker_weighted_choice(items, weights=None):
-    """Risk-weighted random choice. If weights is None or use_risk_priority is False, use uniform."""
+def _worker_weighted_choice(items, weights=None, alpha=3.0):
+    """Risk-weighted random choice with alpha-controlled intensity.
+    
+    alpha controls how strongly high-risk grids are preferred:
+    - alpha >= 3.0: strong risk priority (high-risk grids strongly preferred)
+    - alpha = 1.0: uniform random (no risk priority)
+    - 1.0 < alpha < 3.0: moderate risk priority
+    """
     if not items:
         return None
     if weights is None or not _worker_use_risk_priority:
         return random.choice(items)
+    
+    # Scale weights by alpha intensity
+    # alpha=1.0 → uniform, alpha=3.0 → strong risk priority
+    intensity = max(0.0, (alpha - 1.0) / 2.0)  # 0.0 to 1.0
+    scaled_weights = [1.0 + intensity * (w - 0.5) for w in weights]
+    
     # Normalize weights
-    total = sum(weights)
+    total = sum(scaled_weights)
     if total <= 0:
         return random.choice(items)
     r = random.uniform(0, total)
     cumulative = 0
-    for item, w in zip(items, weights):
+    for item, w in zip(items, scaled_weights):
         cumulative += w
         if r <= cumulative:
             return item
@@ -247,7 +259,7 @@ def _worker_repair(solution, skip_force_full=False):
         skip_force_full=skip_force_full)
 
 
-def _worker_discrete_swap(solution):
+def _worker_discrete_swap(solution, alpha=3.0):
     cameras = dict(solution.cameras)
     camps = dict(solution.camps)
     drones = dict(solution.drones)
@@ -260,16 +272,16 @@ def _worker_discrete_swap(solution):
     if len(occupied) < 2:
         return solution
     
-    # Risk-weighted selection: prefer high-risk grids for perturbation
+    # Risk-weighted selection: alpha controls intensity of risk priority
     occupied_list = list(occupied)
     if _worker_use_risk_priority and _worker_grid_risks:
         weights = [_worker_grid_risks.get(gid, 0.5) for gid in occupied_list]
-        grid_a = _worker_weighted_choice(occupied_list, weights)
+        grid_a = _worker_weighted_choice(occupied_list, weights, alpha)
         remaining = [g for g in occupied_list if g != grid_a]
         if not remaining:
             return solution
         weights_b = [_worker_grid_risks.get(g, 0.5) for g in remaining]
-        grid_b = _worker_weighted_choice(remaining, weights_b)
+        grid_b = _worker_weighted_choice(remaining, weights_b, alpha)
     else:
         grid_a, grid_b = random.sample(occupied_list, 2)
     
@@ -313,7 +325,7 @@ def _worker_discrete_swap(solution):
                               rangers=rangers, fences=solution.fences)
 
 
-def _worker_discrete_migrate(solution):
+def _worker_discrete_migrate(solution, alpha=3.0):
     cameras = dict(solution.cameras)
     camps = dict(solution.camps)
     drones = dict(solution.drones)
@@ -333,7 +345,7 @@ def _worker_discrete_migrate(solution):
     # Risk-weighted source selection: prefer migrating FROM high-risk grids
     if _worker_use_risk_priority and _worker_grid_risks:
         src_weights = [_worker_grid_risks.get(gid, 0.5) for _, gid in resource_sources]
-        res_type, src_gid = _worker_weighted_choice(resource_sources, src_weights)
+        res_type, src_gid = _worker_weighted_choice(resource_sources, src_weights, alpha)
     else:
         res_type, src_gid = random.choice(resource_sources)
     
@@ -348,7 +360,7 @@ def _worker_discrete_migrate(solution):
     # Risk-weighted target selection: prefer migrating TO high-risk grids
     if _worker_use_risk_priority and _worker_grid_risks:
         target_weights = [_worker_grid_risks.get(gid, 0.5) for gid in targets]
-        dst_gid = _worker_weighted_choice(targets, target_weights)
+        dst_gid = _worker_weighted_choice(targets, target_weights, alpha)
     else:
         dst_gid = random.choice(targets)
     
@@ -364,7 +376,7 @@ def _worker_discrete_migrate(solution):
                               rangers=rangers, fences=solution.fences)
 
 
-def _worker_discrete_reshuffle(solution):
+def _worker_discrete_reshuffle(solution, alpha=3.0):
     res_types = ['camera', 'drone', 'camp', 'ranger']
     chosen = random.choice(res_types)
     res_map = {'camera': dict(solution.cameras), 'drone': dict(solution.drones),
@@ -387,9 +399,11 @@ def _worker_discrete_reshuffle(solution):
     if not available:
         return solution
     
-    # Risk-weighted sorting: sort by risk (descending) so high-risk grids are chosen first
+    # Risk-weighted sorting: alpha controls how strongly high-risk grids are prioritized
     if _worker_use_risk_priority and _worker_grid_risks:
-        available.sort(key=lambda gid: _worker_grid_risks.get(gid, 0.5), reverse=True)
+        intensity = max(0.0, (alpha - 1.0) / 2.0)  # 0.0 to 1.0
+        # Sort by risk value with alpha-controlled intensity
+        available.sort(key=lambda gid: _worker_grid_risks.get(gid, 0.5) * intensity + random.random() * (1.0 - intensity), reverse=True)
     else:
         random.shuffle(available)
     
@@ -407,16 +421,16 @@ def _worker_discrete_reshuffle(solution):
                               fences=solution.fences)
 
 
-def _worker_discrete_perturb(solution):
+def _worker_discrete_perturb(solution, alpha=3.0):
     r = random.random()
     if r < _worker_swap_prob:
-        result = _worker_discrete_swap(solution)
+        result = _worker_discrete_swap(solution, alpha=alpha)
         # Swap is capacity-preserving, skip force_full_deployment in repair
         return _worker_repair(result, skip_force_full=True)
     elif r < _worker_swap_prob + _worker_migrate_prob:
-        result = _worker_discrete_migrate(solution)
+        result = _worker_discrete_migrate(solution, alpha=alpha)
     else:
-        result = _worker_discrete_reshuffle(solution)
+        result = _worker_discrete_reshuffle(solution, alpha=alpha)
     return _worker_repair(result)
 
 
@@ -549,6 +563,7 @@ def _worker_partial_reset_scout(solution):
 
 def _worker_generate_and_evaluate(task):
     op = task['op']
+    alpha = task.get('alpha', 3.0)  # Default alpha for backward compatibility
     sol_data = task.get('solution')
     if sol_data is not None:
         solution = DeploymentSolution(
@@ -566,10 +581,10 @@ def _worker_generate_and_evaluate(task):
             fences=best_data['fences'])
         new_sol = _worker_exploit_toward_best(solution, best_sol)
     elif op == 'perturb':
-        new_sol = _worker_discrete_perturb(solution)
+        new_sol = _worker_discrete_perturb(solution, alpha=alpha)
     elif op == 'perturb_double':
-        new_sol = _worker_discrete_perturb(solution)
-        new_sol = _worker_discrete_perturb(new_sol)
+        new_sol = _worker_discrete_perturb(solution, alpha=alpha)
+        new_sol = _worker_discrete_perturb(new_sol, alpha=alpha)
     elif op == 'follow':
         prod_data = task['producer']
         producer = DeploymentSolution(
@@ -1430,18 +1445,19 @@ class DSSAOptimizer:
             if R2 < self.config.ST:
                 if i == 0:
                     tasks.append({'op': 'exploit', 'solution': sol_dict,
-                                  'best_solution': best_dict, 'initial_solution': init_dict})
+                                  'best_solution': best_dict, 'initial_solution': init_dict,
+                                  'alpha': alpha})
                 else:
                     tasks.append({'op': 'perturb', 'solution': sol_dict,
-                                  'initial_solution': init_dict})
+                                  'initial_solution': init_dict, 'alpha': alpha})
             else:
                 escape_count += 1
                 if random.random() < 0.5:
                     tasks.append({'op': 'perturb_double', 'solution': sol_dict,
-                                  'initial_solution': init_dict})
+                                  'initial_solution': init_dict, 'alpha': alpha})
                 else:
                     tasks.append({'op': 'perturb', 'solution': sol_dict,
-                                  'initial_solution': init_dict})
+                                  'initial_solution': init_dict, 'alpha': alpha})
             indices.append(i)
 
         futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
@@ -1558,22 +1574,22 @@ class DSSAOptimizer:
                 if random.random() < self.config.follower_explore_ratio:
                     escape_count += 1
                     tasks.append({'op': 'perturb', 'solution': sol_dict,
-                                  'initial_solution': init_dict})
+                                  'initial_solution': init_dict, 'alpha': alpha})
                 else:
                     if i > len(followers) / 2:
                         tasks.append({'op': 'exploit', 'solution': sol_dict,
                                       'best_solution': best_dict,
-                                      'initial_solution': init_dict})
+                                      'initial_solution': init_dict, 'alpha': alpha})
                     else:
                         idx = random.randint(0, num_producers - 1)
                         prod_dict = _sol_to_dict(self.population[idx])
                         tasks.append({'op': 'follow', 'solution': sol_dict,
                                       'producer': prod_dict,
-                                      'initial_solution': init_dict})
+                                      'initial_solution': init_dict, 'alpha': alpha})
             else:
                 escape_count += 1
                 tasks.append({'op': 'perturb', 'solution': sol_dict,
-                              'initial_solution': init_dict})
+                              'initial_solution': init_dict, 'alpha': alpha})
             indices.append(num_producers + i)
 
         futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
@@ -1668,12 +1684,17 @@ class DSSAOptimizer:
         task_indices = []
         full_reset_indices = []
 
+        # Adaptive threshold: becomes more aggressive as optimization progresses
+        progress = getattr(self, '_iteration_progress', 0.0)
+        adaptive_threshold = self.config.scout_reset_threshold - 0.1 * progress
+        adaptive_threshold = max(0.7, adaptive_threshold)  # Floor at 0.7
+
         for i, (solution, fitness) in enumerate(zip(scout_solutions, scout_fitnesses)):
             pop_idx = start_idx + i
             if fitness > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = fitness
                 self.best_solution = solution
-            if self.best_fitness > 0 and fitness < self.config.scout_reset_threshold * self.best_fitness:
+            if self.best_fitness > 0 and fitness < adaptive_threshold * self.best_fitness:
                 if fitness < 0.5 * self.best_fitness:
                     full_reset_indices.append(pop_idx)
                 else:
@@ -1741,6 +1762,9 @@ class DSSAOptimizer:
             for iteration in range(self.config.max_iterations):
                 iter_start = time.time()
 
+                # Track iteration progress for adaptive thresholds
+                self._iteration_progress = iteration / max(self.config.max_iterations - 1, 1)
+
                 # Get the effective exploration alpha for this iteration
                 effective_alpha = self._get_exploration_alpha(iteration)
                 
@@ -1757,9 +1781,15 @@ class DSSAOptimizer:
                 if diversity < self.config.diversity_min_threshold:
                     self._inject_random_solutions(self.config.diversity_inject_ratio)
 
-                # Update stagnation tracking state
-                if self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance:
-                    self.stagnation_count = 0
+                # Update stagnation tracking state (diversity-aware)
+                fitness_improved = self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance
+                diversity_declining = diversity < getattr(self, '_prev_diversity', diversity)
+                self._prev_diversity = diversity
+                
+                if fitness_improved:
+                    self.stagnation_count = 0  # Fitness improved → reset
+                elif diversity_declining:
+                    self.stagnation_count += 2  # Diversity declining → accelerate stagnation detection
                 else:
                     self.stagnation_count += 1
                 self.prev_best_fitness = self.best_fitness
