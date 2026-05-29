@@ -67,7 +67,7 @@ def _write_batch_iterations_main(batch: list, output_dir: str):
     """Write all iterations in batch. Runs in separate process (no GIL)."""
     import os as _os
     for item in batch:
-        iter_dir = _os.path.join(output_dir, f"iteration_{item['iteration']:04d}")
+        iter_dir = _os.path.join(output_dir, f"iteration_{item['iteration']:05d}")
         _os.makedirs(iter_dir, exist_ok=True)
         _write_solutions_json(_os.path.join(iter_dir, "producers.json"), item['producers'])
         _write_solutions_json(_os.path.join(iter_dir, "followers.json"), item['followers'])
@@ -2002,7 +2002,7 @@ class DSSAOptimizer:
         if not self.output_dir:
             return
         self._ensure_json_worker()
-        iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:04d}")
+        iter_dir = os.path.join(self.output_dir, f"iteration_{iteration:05d}")
         self._json_queue.put({
             'iter_dir': iter_dir,
             'producers': list(producers),
