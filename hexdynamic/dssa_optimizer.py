@@ -37,6 +37,66 @@ def _snapshot_solution(solution: DeploymentSolution) -> DeploymentSolution:
     )
 
 
+def _write_solutions_json(path: str, solutions: list):
+    """Write solutions list to JSON file. Runs in separate process."""
+    import json as _json
+    buf = _SerializationBuffer()
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('[')
+        for i, s in enumerate(solutions):
+            if i > 0:
+                f.write(',')
+            buf.fill_from(s)
+            _json.dump(buf.output, f, ensure_ascii=False)
+            buf.clear()
+        f.write(']')
+
+
+def _write_best_json(path: str, best_solution):
+    """Write best solution to JSON file. Runs in separate process."""
+    import json as _json
+    if best_solution is None:
+        return
+    buf = _SerializationBuffer()
+    buf.fill_from(best_solution)
+    with open(path, 'w', encoding='utf-8') as f:
+        _json.dump(buf.output, f, ensure_ascii=False)
+
+
+def _write_batch_iterations_main(batch: list, output_dir: str):
+    """Write all iterations in batch. Runs in separate process (no GIL)."""
+    import os as _os
+    for item in batch:
+        iter_dir = _os.path.join(output_dir, f"iteration_{item['iteration']:04d}")
+        _os.makedirs(iter_dir, exist_ok=True)
+        _write_solutions_json(_os.path.join(iter_dir, "producers.json"), item['producers'])
+        _write_solutions_json(_os.path.join(iter_dir, "followers.json"), item['followers'])
+        _write_solutions_json(_os.path.join(iter_dir, "scouts.json"), item['scouts'])
+        _write_best_json(_os.path.join(iter_dir, "best.json"), item.get('best_solution'))
+
+
+def _json_worker_main(q, output_dir):
+    """JSON worker process main function. Runs in separate process (no GIL)."""
+    while True:
+        task = q.get()
+        if task is None:
+            q.task_done()
+            return
+        try:
+            if 'batch' in task:
+                _write_batch_iterations_main(task['batch'], output_dir)
+            else:
+                iter_dir = task['iter_dir']
+                os.makedirs(iter_dir, exist_ok=True)
+                _write_solutions_json(os.path.join(iter_dir, "producers.json"), task['producers'])
+                _write_solutions_json(os.path.join(iter_dir, "followers.json"), task['followers'])
+                _write_solutions_json(os.path.join(iter_dir, "scouts.json"), task['scouts'])
+                _write_best_json(os.path.join(iter_dir, "best.json"), task.get('best_solution'))
+        except Exception as e:
+            print(f"[WARN] JSON worker error: {e}")
+        q.task_done()
+
+
 # ── Process-pool worker state (module-level, set by initializer per worker) ──
 _worker_coverage_model = None
 _worker_constraints = None
@@ -674,8 +734,9 @@ class DSSAOptimizer:
         self.output_dir = self.config.output_dir
         self._output_lock = threading.Lock()
         self._async_threads = []
-        self._json_queue = queue.Queue()
+        self._json_queue = multiprocessing.Queue()  # Use multiprocessing.Queue for process-based worker
         self._json_worker_started = False
+        self._json_process = None
         self._output_buffer: List[dict] = []  # batch output: accumulates iteration data
 
         # 保存构建输出 JSON 所需的参数
@@ -1737,18 +1798,11 @@ class DSSAOptimizer:
             if self._json_worker_started:
                 self._json_queue.put(None)
             print("[ASYNC] 等待异步输出任务完成...")
-            if self._json_worker_started:
-                # Wait with timeout to prevent indefinite blocking on I/O stalls
-                import time as _time
-                _json_wait_start = _time.time()
-                _json_timeout = 30  # seconds
-                while not self._json_queue.empty():
-                    if _time.time() - _json_wait_start > _json_timeout:
-                        print(f"[ASYNC] 警告: JSON输出队列等待超时({_json_timeout}s)，继续执行")
-                        break
-                    _time.sleep(0.1)
-                else:
-                    self._json_queue.join()
+            if self._json_worker_started and self._json_process is not None:
+                # Wait for process to finish with timeout
+                self._json_process.join(timeout=30)
+                if self._json_process.is_alive():
+                    print(f"[ASYNC] 警告: JSON输出进程超时(30s)，继续执行")
             print("[ASYNC] 所有异步输出任务完成！")
 
             for thread in self._async_threads:
@@ -1843,64 +1897,19 @@ class DSSAOptimizer:
         if not self._json_worker_started:
             with self._output_lock:
                 if not self._json_worker_started:
-                    t = threading.Thread(target=self._json_worker_loop, daemon=True, name='json-worker')
-                    t.start()
+                    # Use multiprocessing.Process to avoid GIL contention with main thread
+                    # JSON serialization is CPU-intensive and would block the optimization loop
+                    self._json_process = multiprocessing.Process(
+                        target=_json_worker_main,
+                        args=(self._json_queue, self.output_dir),
+                        daemon=True,
+                        name='json-worker'
+                    )
+                    self._json_process.start()
                     self._json_worker_started = True
 
-    def _json_worker_loop(self):
-        while True:
-            task = self._json_queue.get()
-            if task is None:
-                self._json_queue.task_done()
-                return
-            try:
-                if 'batch' in task:
-                    self._write_batch_iterations(task['batch'])
-                else:
-                    self._write_single_iteration(task)
-            except Exception as e:
-                print(f"[WARN] JSON worker error: {e}")
-            self._json_queue.task_done()
-
-    def _write_single_iteration(self, task: dict):
-        """Write 4 JSON files for one iteration in parallel."""
-        iter_dir = task['iter_dir']
-        os.makedirs(iter_dir, exist_ok=True)
-        self._write_four_files(iter_dir, task['producers'], task['followers'], task['scouts'],
-                               best_solution=task.get('best_solution'))
-
-    def _write_batch_iterations(self, batch: list):
-        """Write all iterations in the batch sequentially.
-        
-        Runs in the JSON worker thread (separate from main thread).
-        No inner ThreadPoolExecutor needed — avoids GIL contention.
-        """
-        for item in batch:
-            iter_dir = os.path.join(self.output_dir, f"iteration_{item['iteration']:04d}")
-            os.makedirs(iter_dir, exist_ok=True)
-            self._write_solutions_json(
-                os.path.join(iter_dir, "producers.json"), item['producers'])
-            self._write_solutions_json(
-                os.path.join(iter_dir, "followers.json"), item['followers'])
-            self._write_solutions_json(
-                os.path.join(iter_dir, "scouts.json"), item['scouts'])
-            self._write_best_json(
-                os.path.join(iter_dir, "best.json"),
-                item.get('best_solution'))
-
-    def _write_four_files(self, iter_dir: str, producers: list, followers: list, scouts: list,
-                          best_solution=None):
-        """Write producers.json, followers.json, scouts.json, best.json sequentially.
-        
-        Runs in the JSON worker thread (separate from main thread).
-        No inner ThreadPoolExecutor needed — avoids GIL contention.
-        """
-        self._write_solutions_json(os.path.join(iter_dir, "producers.json"), producers)
-        self._write_solutions_json(os.path.join(iter_dir, "followers.json"), followers)
-        self._write_solutions_json(os.path.join(iter_dir, "scouts.json"), scouts)
-        self._write_best_json(os.path.join(iter_dir, "best.json"), best_solution)
-
     def _write_solutions_json(self, path: str, solutions: list):
+        """Write solutions list to JSON file (fallback for single-thread mode)."""
         buf = _SerializationBuffer()
         with open(path, 'w', encoding='utf-8') as f:
             f.write('[')
