@@ -2220,6 +2220,8 @@ class DSSAOptimizer:
     def _calculate_diversity(self) -> float:
         """计算种群多样性（基于资源部署位置的归一化海明距离）
         
+        使用采样近似：随机选择 100 对个体计算多样性，降低 O(P²) 到 O(100×K)。
+        
         返回 [0, 1] 之间的值：
         - 1.0 表示所有个体完全不同
         - 0.0 表示所有个体完全相同
@@ -2253,13 +2255,18 @@ class DSSAOptimizer:
         if n_positions == 0:
             return 0.0
 
+        # Sample-based diversity: use 100 random pairs instead of all P(P-1)/2 pairs
+        n_pop = len(sets)
+        max_possible_pairs = n_pop * (n_pop - 1) // 2
+        sample_pairs = min(100, max_possible_pairs)
+        
         n_pairs = 0
         total_dist = 0.0
-        for i in range(len(sets)):
-            for j in range(i + 1, len(sets)):
-                diff = len(sets[i].symmetric_difference(sets[j]))
-                total_dist += diff / n_positions
-                n_pairs += 1
+        for _ in range(sample_pairs):
+            i, j = random.sample(range(n_pop), 2)
+            diff = len(sets[i].symmetric_difference(sets[j]))
+            total_dist += diff / n_positions
+            n_pairs += 1
 
         return total_dist / n_pairs if n_pairs > 0 else 0.0
 
