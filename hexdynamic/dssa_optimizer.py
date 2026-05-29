@@ -1654,7 +1654,14 @@ class DSSAOptimizer:
                     producers = self.population[:num_producers]
                     followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
                     scouts = self.population[self.config.population_size - num_scouts:]
-                    snap = _snapshot_solution(self.best_solution)
+                    # Only snapshot when best_solution changes to avoid unnecessary dict copies
+                    if not hasattr(self, '_last_snapshot_best_id') or \
+                       self._last_snapshot_best_id != id(self.best_solution):
+                        snap = _snapshot_solution(self.best_solution)
+                        self._last_snapshot_best = snap
+                        self._last_snapshot_best_id = id(self.best_solution)
+                    else:
+                        snap = self._last_snapshot_best
                     self._output_buffer.append({
                         'iteration': iteration,
                         'producers': list(producers),
