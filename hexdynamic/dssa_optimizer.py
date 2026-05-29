@@ -80,7 +80,6 @@ def _json_worker_main(q, output_dir):
     while True:
         task = q.get()
         if task is None:
-            q.task_done()
             return
         try:
             if 'batch' in task:
@@ -94,7 +93,6 @@ def _json_worker_main(q, output_dir):
                 _write_best_json(os.path.join(iter_dir, "best.json"), task.get('best_solution'))
         except Exception as e:
             print(f"[WARN] JSON worker error: {e}")
-        q.task_done()
 
 
 # ── Process-pool worker state (module-level, set by initializer per worker) ──
