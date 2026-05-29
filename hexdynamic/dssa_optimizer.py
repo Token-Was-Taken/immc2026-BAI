@@ -1,5 +1,4 @@
 import gc
-import hashlib
 import multiprocessing
 import numpy as np
 from typing import Dict, List, Tuple, Callable, Optional, Any
@@ -14,19 +13,18 @@ from coverage_model import CoverageModel, DeploymentSolution
 
 
 def _deterministic_hash(solution: DeploymentSolution) -> int:
-    """Generate a deterministic hash key for fitness cache.
+    """Generate a hash key for fitness cache.
     
-    Uses hashlib.md5 to ensure consistent hashing across processes
-    (unlike Python's built-in hash() which is randomized by PYTHONHASHSEED).
+    Uses Python's built-in hash() for speed. For in-process caching
+    with max 10000 entries, collision probability is negligible.
     """
-    key_data = (
+    return hash((
         tuple(sorted(solution.cameras.items())),
         tuple(sorted(solution.camps.items())),
         tuple(sorted(solution.drones.items())),
         tuple(sorted(solution.rangers.items())),
         tuple(sorted(solution.fences.items())),
-    )
-    return int(hashlib.md5(str(key_data).encode()).hexdigest(), 16) % (2**31)
+    ))
 
 
 def _snapshot_solution(solution: DeploymentSolution) -> DeploymentSolution:
