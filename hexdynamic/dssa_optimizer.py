@@ -1870,41 +1870,35 @@ class DSSAOptimizer:
                                best_solution=task.get('best_solution'))
 
     def _write_batch_iterations(self, batch: list):
-        """Write all iterations in the batch — all iterations and 4 files per iteration in parallel."""
-        max_workers = min(len(batch) * 4, 32)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = []
-            for item in batch:
-                iter_dir = os.path.join(self.output_dir, f"iteration_{item['iteration']:04d}")
-                os.makedirs(iter_dir, exist_ok=True)
-                futures.append(ex.submit(self._write_solutions_json,
-                               os.path.join(iter_dir, "producers.json"), item['producers']))
-                futures.append(ex.submit(self._write_solutions_json,
-                               os.path.join(iter_dir, "followers.json"), item['followers']))
-                futures.append(ex.submit(self._write_solutions_json,
-                               os.path.join(iter_dir, "scouts.json"), item['scouts']))
-                futures.append(ex.submit(self._write_best_json,
-                               os.path.join(iter_dir, "best.json"),
-                               item.get('best_solution')))
-            for f in futures:
-                f.result()
+        """Write all iterations in the batch sequentially.
+        
+        Runs in the JSON worker thread (separate from main thread).
+        No inner ThreadPoolExecutor needed — avoids GIL contention.
+        """
+        for item in batch:
+            iter_dir = os.path.join(self.output_dir, f"iteration_{item['iteration']:04d}")
+            os.makedirs(iter_dir, exist_ok=True)
+            self._write_solutions_json(
+                os.path.join(iter_dir, "producers.json"), item['producers'])
+            self._write_solutions_json(
+                os.path.join(iter_dir, "followers.json"), item['followers'])
+            self._write_solutions_json(
+                os.path.join(iter_dir, "scouts.json"), item['scouts'])
+            self._write_best_json(
+                os.path.join(iter_dir, "best.json"),
+                item.get('best_solution'))
 
     def _write_four_files(self, iter_dir: str, producers: list, followers: list, scouts: list,
                           best_solution=None):
-        """Write producers.json, followers.json, scouts.json, best.json in parallel."""
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-            futures = [
-                ex.submit(self._write_solutions_json,
-                          os.path.join(iter_dir, "producers.json"), producers),
-                ex.submit(self._write_solutions_json,
-                          os.path.join(iter_dir, "followers.json"), followers),
-                ex.submit(self._write_solutions_json,
-                          os.path.join(iter_dir, "scouts.json"), scouts),
-                ex.submit(self._write_best_json,
-                          os.path.join(iter_dir, "best.json"), best_solution),
-            ]
-            for f in futures:
-                f.result()
+        """Write producers.json, followers.json, scouts.json, best.json sequentially.
+        
+        Runs in the JSON worker thread (separate from main thread).
+        No inner ThreadPoolExecutor needed — avoids GIL contention.
+        """
+        self._write_solutions_json(os.path.join(iter_dir, "producers.json"), producers)
+        self._write_solutions_json(os.path.join(iter_dir, "followers.json"), followers)
+        self._write_solutions_json(os.path.join(iter_dir, "scouts.json"), scouts)
+        self._write_best_json(os.path.join(iter_dir, "best.json"), best_solution)
 
     def _write_solutions_json(self, path: str, solutions: list):
         buf = _SerializationBuffer()
