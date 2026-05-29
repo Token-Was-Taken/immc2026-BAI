@@ -350,7 +350,8 @@ class CoverageModel:
                        constraints: Dict[str, Any],
                        force_full_deployment: bool = True,
                        use_marginal_contribution: bool = False,
-                       skip_conflict_resolution: bool = False) -> DeploymentSolution:
+                       skip_conflict_resolution: bool = False,
+                       skip_force_full: bool = False) -> DeploymentSolution:
         solution.cameras = {k: v for k, v in solution.cameras.items()
                             if v > 0 and self.deployment_matrix['camera'].get(k, 0) == 1}
         solution.camps = {k: v for k, v in solution.camps.items()
@@ -615,7 +616,7 @@ class CoverageModel:
                     solution.rangers[grid_id] = 1
                     remaining_rangers -= 1
 
-        if force_full_deployment:
+        if force_full_deployment and not skip_force_full:
 
             total_cameras = sum(solution.cameras.values())
             if total_cameras < constraints['total_cameras']:

@@ -159,10 +159,11 @@ def _worker_apply_frozen_resources(solution, initial_solution_data=None):
     return solution
 
 
-def _worker_repair(solution):
+def _worker_repair(solution, skip_force_full=False):
     return _worker_coverage_model.repair_solution(
         solution, _worker_constraints, _worker_force_full_deployment,
-        _worker_use_marginal_contribution_repair, _worker_skip_conflict_resolution)
+        _worker_use_marginal_contribution_repair, _worker_skip_conflict_resolution,
+        skip_force_full=skip_force_full)
 
 
 def _worker_discrete_swap(solution):
@@ -296,6 +297,8 @@ def _worker_discrete_perturb(solution):
     r = random.random()
     if r < _worker_swap_prob:
         result = _worker_discrete_swap(solution)
+        # Swap is capacity-preserving, skip force_full_deployment in repair
+        return _worker_repair(result, skip_force_full=True)
     elif r < _worker_swap_prob + _worker_migrate_prob:
         result = _worker_discrete_migrate(solution)
     else:
