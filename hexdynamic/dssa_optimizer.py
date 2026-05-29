@@ -113,6 +113,8 @@ _worker_migrate_prob = 0.25
 _worker_reshuffle_prob = 0.15
 _worker_scout_partial_reset_ratio = 0.5
 _worker_scout_reset_threshold = 0.95
+_worker_use_risk_priority = False
+_worker_grid_risks = {}  # grid_id -> risk value for risk-weighted selection
 
 
 def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cache_max_size,
@@ -120,7 +122,8 @@ def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cac
                         use_marginal_contribution_repair=False, skip_conflict_resolution=False,
                         frozen_resources=None, initial_solution=None, fixed_fences=None,
                         swap_prob=0.6, migrate_prob=0.25, reshuffle_prob=0.15,
-                        scout_partial_reset_ratio=0.5, scout_reset_threshold=0.95):
+                        scout_partial_reset_ratio=0.5, scout_reset_threshold=0.95,
+                        use_risk_priority=False, grid_risks=None):
     global _worker_coverage_model, _worker_constraints
     global _worker_use_time_aware_fitness, _worker_fitness_cache, _worker_fitness_cache_max_size
     global _worker_grid_ids, _worker_force_full_deployment
@@ -128,6 +131,7 @@ def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cac
     global _worker_frozen_resources, _worker_initial_solution, _worker_fixed_fences
     global _worker_swap_prob, _worker_migrate_prob, _worker_reshuffle_prob
     global _worker_scout_partial_reset_ratio, _worker_scout_reset_threshold
+    global _worker_use_risk_priority, _worker_grid_risks
     _worker_coverage_model = coverage_model
     _worker_constraints = constraints
     _worker_use_time_aware_fitness = use_time_aware_fitness
@@ -145,6 +149,27 @@ def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cac
     _worker_reshuffle_prob = reshuffle_prob
     _worker_scout_partial_reset_ratio = scout_partial_reset_ratio
     _worker_scout_reset_threshold = scout_reset_threshold
+    _worker_use_risk_priority = use_risk_priority
+    _worker_grid_risks = grid_risks or {}
+
+
+def _worker_weighted_choice(items, weights=None):
+    """Risk-weighted random choice. If weights is None or use_risk_priority is False, use uniform."""
+    if not items:
+        return None
+    if weights is None or not _worker_use_risk_priority:
+        return random.choice(items)
+    # Normalize weights
+    total = sum(weights)
+    if total <= 0:
+        return random.choice(items)
+    r = random.uniform(0, total)
+    cumulative = 0
+    for item, w in zip(items, weights):
+        cumulative += w
+        if r <= cumulative:
+            return item
+    return items[-1]
 
 
 def _worker_make_cache_key(solution):
@@ -234,7 +259,20 @@ def _worker_discrete_swap(solution):
     occupied.update(rangers.keys())
     if len(occupied) < 2:
         return solution
-    grid_a, grid_b = random.sample(list(occupied), 2)
+    
+    # Risk-weighted selection: prefer high-risk grids for perturbation
+    occupied_list = list(occupied)
+    if _worker_use_risk_priority and _worker_grid_risks:
+        weights = [_worker_grid_risks.get(gid, 0.5) for gid in occupied_list]
+        grid_a = _worker_weighted_choice(occupied_list, weights)
+        remaining = [g for g in occupied_list if g != grid_a]
+        if not remaining:
+            return solution
+        weights_b = [_worker_grid_risks.get(g, 0.5) for g in remaining]
+        grid_b = _worker_weighted_choice(remaining, weights_b)
+    else:
+        grid_a, grid_b = random.sample(occupied_list, 2)
+    
     cam_a = cameras.pop(grid_a, 0)
     cam_b = cameras.pop(grid_b, 0)
     if cam_b > 0 and _worker_coverage_model.deployment_matrix['camera'].get(grid_a, 0) == 1:
@@ -291,7 +329,14 @@ def _worker_discrete_migrate(solution):
         if cnt > 0: resource_sources.append(('ranger', gid))
     if not resource_sources:
         return solution
-    res_type, src_gid = random.choice(resource_sources)
+    
+    # Risk-weighted source selection: prefer migrating FROM high-risk grids
+    if _worker_use_risk_priority and _worker_grid_risks:
+        src_weights = [_worker_grid_risks.get(gid, 0.5) for _, gid in resource_sources]
+        res_type, src_gid = _worker_weighted_choice(resource_sources, src_weights)
+    else:
+        res_type, src_gid = random.choice(resource_sources)
+    
     res_map = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
     deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
     deployable = _worker_get_deployable_grids(deploy_key[res_type])
@@ -299,7 +344,14 @@ def _worker_discrete_migrate(solution):
     targets = [gid for gid in deployable if gid not in occupied]
     if not targets:
         return solution
-    dst_gid = random.choice(targets)
+    
+    # Risk-weighted target selection: prefer migrating TO high-risk grids
+    if _worker_use_risk_priority and _worker_grid_risks:
+        target_weights = [_worker_grid_risks.get(gid, 0.5) for gid in targets]
+        dst_gid = _worker_weighted_choice(targets, target_weights)
+    else:
+        dst_gid = random.choice(targets)
+    
     src_dict = res_map[res_type]
     max_per_grid = {
         'camera': _worker_constraints.get('max_cameras_per_grid', 1),
@@ -334,7 +386,13 @@ def _worker_discrete_reshuffle(solution):
     available = [gid for gid in deployable if gid not in other_occupied]
     if not available:
         return solution
-    random.shuffle(available)
+    
+    # Risk-weighted sorting: sort by risk (descending) so high-risk grids are chosen first
+    if _worker_use_risk_priority and _worker_grid_risks:
+        available.sort(key=lambda gid: _worker_grid_risks.get(gid, 0.5), reverse=True)
+    else:
+        random.shuffle(available)
+    
     new_dict = {}
     deployed = 0
     for gid in available:
@@ -770,7 +828,9 @@ class DSSAOptimizer:
                       self.config.swap_prob, self.config.migrate_prob,
                       self.config.reshuffle_prob,
                       self.config.scout_partial_reset_ratio,
-                      self.config.scout_reset_threshold),
+                      self.config.scout_reset_threshold,
+                      self.config.use_risk_priority,
+                      self._grid_to_risk),
         )
 
         self._fitness_cache = {}
