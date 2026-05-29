@@ -1660,8 +1660,11 @@ class DSSAOptimizer:
                     if len(self._output_buffer) >= interval or is_last:
                         self._async_flush_output_buffer()
 
-                pb_per_grid = self.coverage_model.calculate_protection_benefit(self.best_solution)
-                total_benefit = sum(pb_per_grid.values())
+                # Calculate total_benefit from cached fitness and total_risk
+                # fitness = total_benefit / total_risk, so total_benefit = fitness * total_risk
+                if not hasattr(self, '_cached_total_risk'):
+                    self._cached_total_risk = sum(self.grid_model.get_grid_risk(gid) for gid in self.grid_ids)
+                total_benefit = self.best_fitness * self._cached_total_risk if self._cached_total_risk > 0 else 0.0
 
                 iter_elapsed = time.time() - iter_start
                 iter_times.append(iter_elapsed)
