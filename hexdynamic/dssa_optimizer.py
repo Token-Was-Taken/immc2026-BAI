@@ -434,6 +434,64 @@ def _worker_discrete_perturb(solution, alpha=3.0):
     return _worker_repair(result)
 
 
+def _worker_big_perturb(solution, alpha=3.0, reset_ratio=0.3):
+    """Global perturbation: randomly reinitialize reset_ratio fraction of the solution.
+    
+    This is more aggressive than swap/migrate/reshuffle and helps escape local optima.
+    reset_ratio controls what fraction of resources to reinitialize (0.1-0.5).
+    """
+    cameras = dict(solution.cameras)
+    camps = dict(solution.camps)
+    drones = dict(solution.drones)
+    rangers = dict(solution.rangers)
+    
+    res_types = ['camera', 'drone', 'camp', 'ranger']
+    res_maps = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
+    deploy_keys = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
+    total_keys = {'camera': 'total_cameras', 'drone': 'total_drones',
+                  'camp': 'total_camps', 'ranger': 'total_patrol'}
+    max_keys = {'camera': 'max_cameras_per_grid', 'drone': 'max_drones_per_grid',
+                'camp': 'max_camps_per_grid', 'ranger': 'max_rangers_per_grid'}
+    
+    # Randomly choose which resource types to reset
+    n_reset = max(1, int(len(res_types) * reset_ratio))
+    types_to_reset = random.sample(res_types, n_reset)
+    
+    for res_type in types_to_reset:
+        total = _worker_constraints.get(total_keys[res_type], 0)
+        if total == 0:
+            continue
+        max_per_grid = _worker_constraints.get(max_keys[res_type], 1)
+        deployable = _worker_get_deployable_grids(deploy_keys[res_type])
+        
+        # Risk-weighted selection for new positions
+        if _worker_use_risk_priority and _worker_grid_risks and deployable:
+            weights = [_worker_grid_risks.get(gid, 0.5) for gid in deployable]
+            # Sort by weighted probability (high-risk grids first)
+            indexed_weights = list(enumerate(weights))
+            indexed_weights.sort(key=lambda x: x[1], reverse=True)
+            available = [deployable[i] for i, _ in indexed_weights]
+        else:
+            available = list(deployable)
+            random.shuffle(available)
+        
+        # Clear existing deployment for this resource type
+        res_maps[res_type].clear()
+        
+        # Redeploy with risk priority
+        deployed = 0
+        for gid in available:
+            if deployed >= total:
+                break
+            count = min(max_per_grid, total - deployed)
+            res_maps[res_type][gid] = count
+            deployed += count
+    
+    return DeploymentSolution(cameras=res_maps['camera'], camps=res_maps['camp'],
+                              drones=res_maps['drone'], rangers=res_maps['ranger'],
+                              fences=solution.fences)
+
+
 def _worker_exploit_toward_best(solution, best_solution):
     cameras = dict(solution.cameras)
     camps = dict(solution.camps)
@@ -585,6 +643,10 @@ def _worker_generate_and_evaluate(task):
     elif op == 'perturb_double':
         new_sol = _worker_discrete_perturb(solution, alpha=alpha)
         new_sol = _worker_discrete_perturb(new_sol, alpha=alpha)
+    elif op == 'big_perturb':
+        reset_ratio = task.get('reset_ratio', 0.3)
+        new_sol = _worker_big_perturb(solution, alpha=alpha, reset_ratio=reset_ratio)
+        new_sol = _worker_repair(new_sol)
     elif op == 'follow':
         prod_data = task['producer']
         producer = DeploymentSolution(
@@ -1438,11 +1500,20 @@ class DSSAOptimizer:
         tasks = []
         indices = []
 
+        # Use big_perturb when stagnation is high to escape local optima
+        use_big_perturb = self.stagnation_count > self.config.stagnation_threshold * 3
+
         for i, solution in enumerate(producers):
             R2 = random.uniform(0, 1)
             sol_dict = _sol_to_dict(solution)
 
-            if R2 < self.config.ST:
+            if use_big_perturb and random.random() < 0.3:
+                # 30% chance of big perturbation when stagnation is high
+                reset_ratio = min(0.5, 0.2 + self.stagnation_count / 1000.0)
+                tasks.append({'op': 'big_perturb', 'solution': sol_dict,
+                              'initial_solution': init_dict, 'alpha': alpha,
+                              'reset_ratio': reset_ratio})
+            elif R2 < self.config.ST:
                 if i == 0:
                     tasks.append({'op': 'exploit', 'solution': sol_dict,
                                   'best_solution': best_dict, 'initial_solution': init_dict,
