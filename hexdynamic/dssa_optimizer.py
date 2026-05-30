@@ -1898,7 +1898,7 @@ class DSSAOptimizer:
                             'best_solution': snap,
                         })
 
-                        interval = max(1, self.config.output_interval)
+                    interval = max(1, self.config.output_interval)
                     is_last = (iteration == self.config.max_iterations - 1)
                     if len(self._output_buffer) >= interval or is_last:
                         self._async_flush_output_buffer()
