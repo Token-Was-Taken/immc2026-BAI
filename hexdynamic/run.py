@@ -8,6 +8,7 @@ run.py — 一键运行：风险计算 + DSSA 优化 + 可视化
     python run.py input.json output.json --allow-partial-deployment
     python run.py input.json output.json --no-visualize   # 只跑优化，不生成图片
     python run.py output.json --visualize-only            # 只生成图片（已有 output JSON）
+    python run.py input.json output.json --only-best      # 只输出 best 变化的迭代
 """
 
 import argparse
@@ -95,9 +96,11 @@ def parse_args():
     p.add_argument("--max-iterations", type=int, default=None,
                    help="DSSA 最大迭代次数（默认：使用 input JSON 配置，若未配置则为 200）")
     p.add_argument("--warm-start", type=str, default=None, metavar="PATH",
-                   help="热启动方案路径（提供已有的 output JSON 作为初始部署方案，加速收敛）")
+                    help="热启动方案路径（提供已有的 output JSON 作为初始部署方案，加速收敛）")
     p.add_argument("--no-gpu", action="store_true", default=False,
-                   help="禁用 GPU 加速（强制使用 CPU）")
+                    help="禁用 GPU 加速（强制使用 CPU）")
+    p.add_argument("--all-iters", action="store_true", default=False,
+                    help="输出所有迭代（默认只输出 best_solution 变化的迭代）")
 
     # 可视化选项
     p.add_argument("--no-visualize", action="store_true", default=False,
@@ -156,6 +159,7 @@ def main():
         max_iterations=args.max_iterations,
         warm_start_path=args.warm_start,
         use_gpu=not args.no_gpu,
+        only_output_on_best_change=not args.all_iters,
     )
 
     # Step 2: 可视化

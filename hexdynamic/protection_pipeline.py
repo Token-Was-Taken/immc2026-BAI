@@ -304,7 +304,7 @@ def build_data_loader(data: dict, risk_map: Dict[int, float], temporal_factor_ma
     return loader
 
 
-def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None, warm_start_path: str = None, max_iterations: int = None, use_gpu: bool = True):
+def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, allow_partial_deployment: bool = False, freeze_resources: str = None, dssa_config=None, out_dir=None, warm_start_path: str = None, max_iterations: int = None, use_gpu: bool = True, only_output_on_best_change: bool = True):
     print(f"[1/4] Read input: {input_path}")
     data = load_input(input_path)
 
@@ -377,6 +377,7 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             skip_conflict_resolution=dc.get('skip_conflict_resolution', False),
             fitness_workers=dc.get('fitness_workers', 16),
             output_interval=dc.get('output_interval', 1),
+            only_output_on_best_change=only_output_on_best_change,
         )
     if dssa_config.output_dir is None:
         dssa_config.output_dir = output_dir

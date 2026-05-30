@@ -814,6 +814,7 @@ class DSSAConfig:
     stagnation_tolerance: float = 1e-6  # minimum improvement to reset counter
     fitness_update_epsilon: float = 1e-9  # min fitness improvement to update best_solution
     stagnation_boost: float = 1.5    # multiplier applied to alpha during stagnation
+    only_output_on_best_change: bool = True  # 只在 best_solution 变化时输出迭代数据
 
     # --- Discrete swap exploration (方案C) ---
     swap_prob: float = 0.6           # Producer 使用离散交换操作的概率（vs 连续向量扰动）
@@ -1871,26 +1872,33 @@ class DSSAOptimizer:
 
                 # JSON output: buffer iteration data, flush every output_interval iterations
                 if self.output_dir:
-                    producers = self.population[:num_producers]
-                    followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
-                    scouts = self.population[self.config.population_size - num_scouts:]
-                    # Only snapshot when best_solution changes to avoid unnecessary dict copies
-                    if not hasattr(self, '_last_snapshot_best_id') or \
-                       self._last_snapshot_best_id != id(self.best_solution):
-                        snap = _snapshot_solution(self.best_solution)
-                        self._last_snapshot_best = snap
-                        self._last_snapshot_best_id = id(self.best_solution)
-                    else:
-                        snap = self._last_snapshot_best
-                    self._output_buffer.append({
-                        'iteration': iteration,
-                        'producers': list(producers),
-                        'followers': list(followers),
-                        'scouts': list(scouts),
-                        'best_solution': snap,
-                    })
+                    # Check if best solution changed
+                    best_changed = not hasattr(self, '_last_snapshot_best_id') or \
+                                   self._last_snapshot_best_id != id(self.best_solution)
+                    
+                    # Only output if: not only_output_on_best_change OR best changed
+                    should_output = not self.config.only_output_on_best_change or best_changed
+                    
+                    if should_output:
+                        producers = self.population[:num_producers]
+                        followers = self.population[num_producers:num_producers + (self.config.population_size - num_producers - num_scouts)]
+                        scouts = self.population[self.config.population_size - num_scouts:]
+                        # Only snapshot when best_solution changes to avoid unnecessary dict copies
+                        if best_changed:
+                            snap = _snapshot_solution(self.best_solution)
+                            self._last_snapshot_best = snap
+                            self._last_snapshot_best_id = id(self.best_solution)
+                        else:
+                            snap = self._last_snapshot_best
+                        self._output_buffer.append({
+                            'iteration': iteration,
+                            'producers': list(producers),
+                            'followers': list(followers),
+                            'scouts': list(scouts),
+                            'best_solution': snap,
+                        })
 
-                    interval = max(1, self.config.output_interval)
+                        interval = max(1, self.config.output_interval)
                     is_last = (iteration == self.config.max_iterations - 1)
                     if len(self._output_buffer) >= interval or is_last:
                         self._async_flush_output_buffer()
