@@ -824,7 +824,7 @@ class DSSAConfig:
     scout_reset_threshold: float = 0.95  # Scout 重置阈值：fitness < threshold * best_fitness 时重置
     scout_partial_reset_ratio: float = 0.5  # Scout 部分重置时，重置的资源类型比例
     diversity_min_threshold: float = 0.3  # 种群多样性最低阈值（低于此值时注入随机解）
-    diversity_inject_ratio: float = 0.2  # 多样性过低时注入随机解的比例
+    diversity_inject_ratio: float = 0.3  # 多样性过低时注入随机解的比例（提升探索能力）
 
     # --- 修复策略配置 ---
     use_marginal_contribution_repair: bool = False  # 是否使用边际贡献 leave-one-out 修复超量（默认关闭，用快速随机移除）
@@ -834,6 +834,7 @@ class DSSAConfig:
     fitness_cache_max_size: int = 10000  # 适应度缓存最大条目数
     fitness_workers: int = min(os.cpu_count() or 16, 16)  # Cap at 16 to prevent system overload
     output_interval: int = 1  # 批量输出间隔：每 N 轮迭代输出一次（1=每轮都输出）
+    num_restarts: int = 1  # 多起点重启次数（1=单次运行，>1=多起点并行取最优）
 
 
 class DSSAOptimizer:
@@ -1502,7 +1503,7 @@ class DSSAOptimizer:
         indices = []
 
         # Use big_perturb when stagnation is high to escape local optima
-        use_big_perturb = self.stagnation_count > self.config.stagnation_threshold * 3
+        use_big_perturb = self.stagnation_count > self.config.stagnation_threshold * 2
 
         for i, solution in enumerate(producers):
             R2 = random.uniform(0, 1)
@@ -1853,6 +1854,16 @@ class DSSAOptimizer:
                 if diversity < self.config.diversity_min_threshold:
                     self._inject_random_solutions(self.config.diversity_inject_ratio)
 
+                # Periodic reset: every 100 iterations, reset 10% of population (except best)
+                # This ensures the optimizer doesn't get permanently stuck
+                if iteration > 0 and iteration % 100 == 0:
+                    n_reset = max(1, int(self.config.population_size * 0.1))
+                    indices_to_reset = random.sample(range(self.config.population_size), n_reset)
+                    for idx in indices_to_reset:
+                        if self.population[idx] is not self.best_solution:
+                            self.population[idx] = self._initialize_solution()
+                            self.population_fitness[idx] = float('-inf')
+
                 # Update stagnation tracking state (diversity-aware)
                 fitness_improved = self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance
                 diversity_declining = diversity < getattr(self, '_prev_diversity', diversity)
@@ -1979,6 +1990,54 @@ class DSSAOptimizer:
             return self.best_solution, self.best_fitness, self.fitness_history
         finally:
             self._fitness_executor.shutdown(wait=True)
+
+    def optimize_multi_start(self, num_restarts: int = None) -> Tuple[DeploymentSolution, float, List[float]]:
+        """Multi-start optimization: run multiple independent optimizations and keep the best.
+        
+        Args:
+            num_restarts: Number of independent restarts (default: config.num_restarts)
+        
+        Returns:
+            Best solution, best fitness, and fitness history from the best run.
+        """
+        if num_restarts is None:
+            num_restarts = self.config.num_restarts
+        
+        if num_restarts <= 1:
+            return self.optimize()
+        
+        print(f"\n[MULTI-START] Running {num_restarts} independent optimizations...")
+        
+        best_overall_solution = None
+        best_overall_fitness = float('-inf')
+        best_history = []
+        
+        for restart in range(num_restarts):
+            print(f"\n--- Restart {restart + 1}/{num_restarts} ---")
+            
+            # Reset optimizer state for this restart
+            self.population = []
+            self.population_fitness = []
+            self.best_solution = None
+            self.best_fitness = float('-inf')
+            self.stagnation_count = 0
+            self.prev_best_fitness = float('-inf')
+            self._fitness_cache = {}
+            
+            # Run optimization
+            solution, fitness, history = self.optimize()
+            
+            # Track best overall
+            if fitness > best_overall_fitness:
+                best_overall_fitness = fitness
+                best_overall_solution = _snapshot_solution(solution)
+                best_history = history
+                print(f"  [NEW BEST] Restart {restart + 1}: fitness={fitness:.10f}")
+            else:
+                print(f"  [NO IMPROVEMENT] Restart {restart + 1}: fitness={fitness:.10f} (best={best_overall_fitness:.10f})")
+        
+        print(f"\n[MULTI-START] Completed. Best fitness across all restarts: {best_overall_fitness:.10f}")
+        return best_overall_solution, best_overall_fitness, best_history
 
     def get_solution_statistics(self, solution: DeploymentSolution) -> Dict[str, Any]:
         return {

@@ -475,7 +475,12 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
                              raw_risk_map=raw_risk_map,
                              boundary_locations=boundary_locations,
                              warm_start_solution=warm_start_solution)
-    best_solution, best_fitness, fitness_history = optimizer.optimize()
+    
+    # Use multi-start if num_restarts > 1, otherwise single optimization
+    if dssa_config.num_restarts > 1:
+        best_solution, best_fitness, fitness_history = optimizer.optimize_multi_start()
+    else:
+        best_solution, best_fitness, fitness_history = optimizer.optimize()
 
     # 打印资源部署总结
     print("\n" + "=" * 70)
