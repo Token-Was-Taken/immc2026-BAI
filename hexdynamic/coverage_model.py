@@ -1,5 +1,6 @@
 import numpy as np
 import random
+import copy
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass, field
 from grid_model import HexGridModel

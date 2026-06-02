@@ -1,4 +1,5 @@
 import gc
+import copy
 import multiprocessing
 import numpy as np
 from typing import Dict, List, Tuple, Callable, Optional, Any
@@ -29,11 +30,11 @@ def _deterministic_hash(solution: DeploymentSolution) -> int:
 
 def _snapshot_solution(solution: DeploymentSolution) -> DeploymentSolution:
     return DeploymentSolution(
-        cameras=dict(solution.cameras),
-        camps=dict(solution.camps),
-        drones=dict(solution.drones),
-        rangers=dict(solution.rangers),
-        fences=dict(solution.fences)
+        cameras=copy.copy(solution.cameras),
+        camps=copy.copy(solution.camps),
+        drones=copy.copy(solution.drones),
+        rangers=copy.copy(solution.rangers),
+        fences=copy.copy(solution.fences)
     )
 
 
@@ -260,10 +261,10 @@ def _worker_repair(solution, skip_force_full=False):
 
 
 def _worker_discrete_swap(solution, alpha=3.0):
-    cameras = dict(solution.cameras)
-    camps = dict(solution.camps)
-    drones = dict(solution.drones)
-    rangers = dict(solution.rangers)
+    cameras = copy.copy(solution.cameras)
+    camps = copy.copy(solution.camps)
+    drones = copy.copy(solution.drones)
+    rangers = copy.copy(solution.rangers)
     occupied = set()
     occupied.update(cameras.keys())
     occupied.update(camps.keys())
@@ -326,10 +327,10 @@ def _worker_discrete_swap(solution, alpha=3.0):
 
 
 def _worker_discrete_migrate(solution, alpha=3.0):
-    cameras = dict(solution.cameras)
-    camps = dict(solution.camps)
-    drones = dict(solution.drones)
-    rangers = dict(solution.rangers)
+    cameras = copy.copy(solution.cameras)
+    camps = copy.copy(solution.camps)
+    drones = copy.copy(solution.drones)
+    rangers = copy.copy(solution.rangers)
     resource_sources = []
     for gid, cnt in cameras.items():
         if cnt > 0: resource_sources.append(('camera', gid))
@@ -379,8 +380,8 @@ def _worker_discrete_migrate(solution, alpha=3.0):
 def _worker_discrete_reshuffle(solution, alpha=3.0):
     res_types = ['camera', 'drone', 'camp', 'ranger']
     chosen = random.choice(res_types)
-    res_map = {'camera': dict(solution.cameras), 'drone': dict(solution.drones),
-               'camp': dict(solution.camps), 'ranger': dict(solution.rangers)}
+    res_map = {'camera': copy.copy(solution.cameras), 'drone': copy.copy(solution.drones),
+               'camp': copy.copy(solution.camps), 'ranger': copy.copy(solution.rangers)}
     deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
     total_key = {'camera': 'total_cameras', 'drone': 'total_drones',
                  'camp': 'total_camps', 'ranger': 'total_patrol'}
@@ -440,10 +441,10 @@ def _worker_big_perturb(solution, alpha=3.0, reset_ratio=0.3):
     This is more aggressive than swap/migrate/reshuffle and helps escape local optima.
     reset_ratio controls what fraction of resources to reinitialize (0.1-0.5).
     """
-    cameras = dict(solution.cameras)
-    camps = dict(solution.camps)
-    drones = dict(solution.drones)
-    rangers = dict(solution.rangers)
+    cameras = copy.copy(solution.cameras)
+    camps = copy.copy(solution.camps)
+    drones = copy.copy(solution.drones)
+    rangers = copy.copy(solution.rangers)
     
     res_types = ['camera', 'drone', 'camp', 'ranger']
     res_maps = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
@@ -493,10 +494,10 @@ def _worker_big_perturb(solution, alpha=3.0, reset_ratio=0.3):
 
 
 def _worker_exploit_toward_best(solution, best_solution):
-    cameras = dict(solution.cameras)
-    camps = dict(solution.camps)
-    drones = dict(solution.drones)
-    rangers = dict(solution.rangers)
+    cameras = copy.copy(solution.cameras)
+    camps = copy.copy(solution.camps)
+    drones = copy.copy(solution.drones)
+    rangers = copy.copy(solution.rangers)
     cross_ratio = random.uniform(0.3, 0.7)
     best_cam_grids = set(best_solution.cameras.keys())
     cur_cam_grids = set(cameras.keys())
@@ -540,10 +541,10 @@ def _worker_exploit_toward_best(solution, best_solution):
 
 
 def _worker_follow_producer(solution, producer):
-    cameras = dict(solution.cameras)
-    camps = dict(solution.camps)
-    drones = dict(solution.drones)
-    rangers = dict(solution.rangers)
+    cameras = copy.copy(solution.cameras)
+    camps = copy.copy(solution.camps)
+    drones = copy.copy(solution.drones)
+    rangers = copy.copy(solution.rangers)
     cross_ratio = random.uniform(0.2, 0.5)
     for gid in set(producer.cameras.keys()) | set(cameras.keys()):
         if random.random() < cross_ratio:
@@ -582,10 +583,10 @@ def _worker_partial_reset_scout(solution):
     res_types = ['camera', 'drone', 'camp', 'ranger']
     n_reset = max(1, int(len(res_types) * _worker_scout_partial_reset_ratio))
     types_to_reset = random.sample(res_types, n_reset)
-    cameras = dict(solution.cameras)
-    camps = dict(solution.camps)
-    drones = dict(solution.drones)
-    rangers = dict(solution.rangers)
+    cameras = copy.copy(solution.cameras)
+    camps = copy.copy(solution.camps)
+    drones = copy.copy(solution.drones)
+    rangers = copy.copy(solution.rangers)
     res_map = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
     deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
     total_key = {'camera': 'total_cameras', 'drone': 'total_drones',
@@ -676,11 +677,11 @@ def _sol_to_dict(solution):
     if solution is None:
         return None
     return {
-        'cameras': dict(solution.cameras),
-        'camps': dict(solution.camps),
-        'drones': dict(solution.drones),
-        'rangers': dict(solution.rangers),
-        'fences': dict(solution.fences),
+        'cameras': copy.copy(solution.cameras),
+        'camps': copy.copy(solution.camps),
+        'drones': copy.copy(solution.drones),
+        'rangers': copy.copy(solution.rangers),
+        'fences': copy.copy(solution.fences),
     }
 
 
