@@ -832,7 +832,7 @@ class DSSAConfig:
 
     # --- 性能配置 ---
     fitness_cache_max_size: int = 10000  # 适应度缓存最大条目数
-    fitness_workers: int = min(os.cpu_count() or 16, 16)  # Cap at 16 to prevent system overload
+    fitness_workers: int = min(os.cpu_count() or 16, 32)  # Cap at 32 to balance memory and utilization
     output_interval: int = 1  # 批量输出间隔：每 N 轮迭代输出一次（1=每轮都输出）
     num_restarts: int = 1  # 多起点重启次数（1=单次运行，>1=多起点并行取最优）
 
@@ -1845,7 +1845,7 @@ class DSSAOptimizer:
                 escape_followers = self._update_followers(effective_alpha)
                 self._update_scouts()
 
-                diversity_interval = 5
+                diversity_interval = 20
                 if iteration % diversity_interval == 0:
                     diversity = self._calculate_diversity()
                     self._last_diversity = diversity
