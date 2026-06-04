@@ -116,6 +116,9 @@ _worker_scout_partial_reset_ratio = 0.5
 _worker_scout_reset_threshold = 0.95
 _worker_use_risk_priority = False
 _worker_grid_risks = {}  # grid_id -> risk value for risk-weighted selection
+_worker_deployable_grids = {}  # resource_type -> list[grid_id]
+_worker_deployable_grid_sets = {}  # resource_type -> set[grid_id]
+_worker_deployable_grids_by_risk_desc = {}  # resource_type -> list[grid_id]
 
 
 def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cache_max_size,
@@ -133,6 +136,8 @@ def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cac
     global _worker_swap_prob, _worker_migrate_prob, _worker_reshuffle_prob
     global _worker_scout_partial_reset_ratio, _worker_scout_reset_threshold
     global _worker_use_risk_priority, _worker_grid_risks
+    global _worker_deployable_grids, _worker_deployable_grid_sets
+    global _worker_deployable_grids_by_risk_desc
     _worker_coverage_model = coverage_model
     _worker_constraints = constraints
     _worker_use_time_aware_fitness = use_time_aware_fitness
@@ -152,6 +157,21 @@ def _worker_initializer(coverage_model, constraints, use_time_aware_fitness, cac
     _worker_scout_reset_threshold = scout_reset_threshold
     _worker_use_risk_priority = use_risk_priority
     _worker_grid_risks = grid_risks or {}
+    _worker_deployable_grids = {
+        rt: [gid for gid in _worker_grid_ids
+             if _worker_coverage_model.deployment_matrix[rt].get(gid, 0) == 1]
+        for rt in ['camera', 'drone', 'camp', 'patrol', 'fence']
+    }
+    _worker_deployable_grid_sets = {rt: set(gids) for rt, gids in _worker_deployable_grids.items()}
+    if _worker_use_risk_priority and _worker_grid_risks:
+        _worker_deployable_grids_by_risk_desc = {
+            rt: sorted(gids, key=lambda gid: _worker_grid_risks.get(gid, 0.5), reverse=True)
+            for rt, gids in _worker_deployable_grids.items()
+        }
+    else:
+        _worker_deployable_grids_by_risk_desc = {
+            rt: list(gids) for rt, gids in _worker_deployable_grids.items()
+        }
 
 
 def _worker_weighted_choice(items, weights=None, alpha=3.0):
@@ -225,8 +245,81 @@ def _worker_evaluate_fitness(sol_data):
 
 
 def _worker_get_deployable_grids(resource_type):
-    return [gid for gid in _worker_grid_ids
-            if _worker_coverage_model.deployment_matrix[resource_type].get(gid, 0) == 1]
+    return _worker_deployable_grids.get(resource_type, [])
+
+
+def _worker_get_deployable_grids_by_risk(resource_type):
+    return _worker_deployable_grids_by_risk_desc.get(resource_type, _worker_deployable_grids.get(resource_type, []))
+
+
+def _worker_pick_available_grid(resource_type, forbidden):
+    """Pick one deployable grid not in forbidden with fast-path sampling."""
+    deployable = _worker_get_deployable_grids(resource_type)
+    if not deployable:
+        return None
+
+    # Risk-priority mode: use pre-sorted high-risk-first cache.
+    if _worker_use_risk_priority and _worker_grid_risks:
+        for gid in _worker_get_deployable_grids_by_risk(resource_type):
+            if gid not in forbidden:
+                return gid
+        return None
+
+    # Random mode: rejection sampling first, then linear fallback.
+    max_trials = min(64, len(deployable))
+    for _ in range(max_trials):
+        gid = random.choice(deployable)
+        if gid not in forbidden:
+            return gid
+    for gid in deployable:
+        if gid not in forbidden:
+            return gid
+    return None
+
+
+def _worker_collect_available_grids(resource_type, forbidden, need_count):
+    """Collect up to need_count deployable grids not in forbidden."""
+    if need_count <= 0:
+        return []
+    deployable = _worker_get_deployable_grids(resource_type)
+    if not deployable:
+        return []
+
+    # Risk-priority mode: pre-sorted scan; avoids per-call sort.
+    if _worker_use_risk_priority and _worker_grid_risks:
+        out = []
+        for gid in _worker_get_deployable_grids_by_risk(resource_type):
+            if gid not in forbidden:
+                out.append(gid)
+                if len(out) >= need_count:
+                    break
+        return out
+
+    # Random mode: for sparse picks use rejection sampling, otherwise shuffle once.
+    if need_count * 4 < len(deployable):
+        out = []
+        seen = set()
+        max_trials = max(need_count * 10, 64)
+        trials = 0
+        while len(out) < need_count and trials < max_trials:
+            gid = random.choice(deployable)
+            trials += 1
+            if gid in forbidden or gid in seen:
+                continue
+            seen.add(gid)
+            out.append(gid)
+        if len(out) >= need_count:
+            return out
+
+    shuffled = list(deployable)
+    random.shuffle(shuffled)
+    out = []
+    for gid in shuffled:
+        if gid not in forbidden:
+            out.append(gid)
+            if len(out) >= need_count:
+                break
+    return out
 
 
 def _worker_apply_frozen_resources(solution, initial_solution_data=None):
@@ -352,23 +445,16 @@ def _worker_discrete_migrate(solution, alpha=3.0):
     
     res_map = {'camera': cameras, 'drone': drones, 'camp': camps, 'ranger': rangers}
     deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
-    deployable = _worker_get_deployable_grids(deploy_key[res_type])
     occupied = set(cameras.keys()) | set(drones.keys()) | set(camps.keys()) | set(rangers.keys())
-    targets = [gid for gid in deployable if gid not in occupied]
-    if not targets:
+    dst_gid = _worker_pick_available_grid(deploy_key[res_type], occupied)
+    if dst_gid is None:
         return solution
-    
-    # Risk-weighted target selection: prefer migrating TO high-risk grids
-    if _worker_use_risk_priority and _worker_grid_risks:
-        target_weights = [_worker_grid_risks.get(gid, 0.5) for gid in targets]
-        dst_gid = _worker_weighted_choice(targets, target_weights, alpha)
-    else:
-        dst_gid = random.choice(targets)
     
     src_dict = res_map[res_type]
     max_per_grid = {
         'camera': _worker_constraints.get('max_cameras_per_grid', 1),
-        'drone': 1, 'camp': 1,
+        'drone': _worker_constraints.get('max_drones_per_grid', 1),
+        'camp': _worker_constraints.get('max_camps_per_grid', 1),
         'ranger': _worker_constraints.get('max_rangers_per_grid', 1),
     }
     count = src_dict.pop(src_gid, 0)
@@ -391,23 +477,16 @@ def _worker_discrete_reshuffle(solution, alpha=3.0):
     if total == 0:
         return solution
     max_per_grid = _worker_constraints.get(max_key[chosen], 1)
-    deployable = _worker_get_deployable_grids(deploy_key[chosen])
     other_occupied = set()
     for rt in res_types:
         if rt != chosen:
             other_occupied.update(res_map[rt].keys())
-    available = [gid for gid in deployable if gid not in other_occupied]
+
+    needed = (total + max_per_grid - 1) // max_per_grid
+    available = _worker_collect_available_grids(deploy_key[chosen], other_occupied, needed)
     if not available:
         return solution
-    
-    # Risk-weighted sorting: alpha controls how strongly high-risk grids are prioritized
-    if _worker_use_risk_priority and _worker_grid_risks:
-        intensity = max(0.0, (alpha - 1.0) / 2.0)  # 0.0 to 1.0
-        # Sort by risk value with alpha-controlled intensity
-        available.sort(key=lambda gid: _worker_grid_risks.get(gid, 0.5) * intensity + random.random() * (1.0 - intensity), reverse=True)
-    else:
-        random.shuffle(available)
-    
+
     new_dict = {}
     deployed = 0
     for gid in available:
@@ -463,18 +542,11 @@ def _worker_big_perturb(solution, alpha=3.0, reset_ratio=0.3):
         if total == 0:
             continue
         max_per_grid = _worker_constraints.get(max_keys[res_type], 1)
-        deployable = _worker_get_deployable_grids(deploy_keys[res_type])
-        
-        # Risk-weighted selection for new positions
-        if _worker_use_risk_priority and _worker_grid_risks and deployable:
-            weights = [_worker_grid_risks.get(gid, 0.5) for gid in deployable]
-            # Sort by weighted probability (high-risk grids first)
-            indexed_weights = list(enumerate(weights))
-            indexed_weights.sort(key=lambda x: x[1], reverse=True)
-            available = [deployable[i] for i, _ in indexed_weights]
-        else:
-            available = list(deployable)
-            random.shuffle(available)
+        needed = (total + max_per_grid - 1) // max_per_grid
+        # big_perturb fully resets chosen resource type, so forbidden set is empty
+        available = _worker_collect_available_grids(deploy_keys[res_type], set(), needed)
+        if not available:
+            continue
         
         # Clear existing deployment for this resource type
         res_maps[res_type].clear()
@@ -598,13 +670,14 @@ def _worker_partial_reset_scout(solution):
         if total == 0:
             continue
         max_per_grid = _worker_constraints.get(max_key[res_type], 1)
-        deployable = _worker_get_deployable_grids(deploy_key[res_type])
         other_occupied = set()
         for rt in res_types:
             if rt != res_type:
                 other_occupied.update(res_map[rt].keys())
-        available = [gid for gid in deployable if gid not in other_occupied]
-        random.shuffle(available)
+        needed = (total + max_per_grid - 1) // max_per_grid
+        available = _worker_collect_available_grids(deploy_key[res_type], other_occupied, needed)
+        if not available:
+            continue
         new_dict = {}
         deployed = 0
         for gid in available:
@@ -661,6 +734,14 @@ def _worker_generate_and_evaluate(task):
         return None
 
     new_sol = _worker_apply_frozen_resources(new_sol, task.get('initial_solution'))
+
+    # Fast-path: skip expensive fitness evaluation when the operation is a no-op.
+    if solution is not None:
+        old_key = _worker_make_cache_key(solution)
+        new_key = _worker_make_cache_key(new_sol)
+        if old_key == new_key:
+            return {'unchanged': True}
+
     fitness = _worker_evaluate_fitness(new_sol)
 
     return {
@@ -834,6 +915,11 @@ class DSSAConfig:
     # --- 性能配置 ---
     fitness_cache_max_size: int = 10000  # 适应度缓存最大条目数
     fitness_workers: int = min(os.cpu_count() or 16, 32)  # Cap at 32 to balance memory and utilization
+    parallel_chunksize: int = 0  # 0 = auto-tuned; >0 forces ProcessPoolExecutor.map chunksize
+    single_wave_role_update: bool = True  # Batch producer/follower/scout updates into one pool wave
+    scout_update_interval: int = 2  # Update scouts every N iterations to reduce role-stage overhead
+    profile_iteration_stages: bool = False  # Print stage-level timing per iteration
+    profile_log_every: int = 1  # Stage timing log frequency (iterations)
     output_interval: int = 1  # 批量输出间隔：每 N 轮迭代输出一次（1=每轮都输出）
     num_restarts: int = 1  # 多起点重启次数（1=单次运行，>1=多起点并行取最优）
 
@@ -888,6 +974,14 @@ class DSSAOptimizer:
         if self.config.use_risk_priority:
             self._initialize_risk_groups()
 
+        # Map chunksize tuning: reduces submit/result overhead and smooths CPU utilization.
+        self._fitness_workers = min(self.config.fitness_workers, self.config.population_size)
+        if self.config.parallel_chunksize and self.config.parallel_chunksize > 0:
+            self._parallel_chunksize = int(self.config.parallel_chunksize)
+        else:
+            # Auto: keep a few chunks per worker while avoiding tiny chunk overhead.
+            self._parallel_chunksize = max(1, self.config.population_size // max(1, self._fitness_workers * 4))
+
         # Process pool for parallel fitness evaluation (avoids GIL contention)
         # Limit BLAS threads per worker to avoid memory explosion from
         # many processes each spawning their own thread pools (OpenBLAS error).
@@ -896,7 +990,7 @@ class DSSAOptimizer:
         os.environ.setdefault('OMP_NUM_THREADS', '1')
         os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
         self._fitness_executor = concurrent.futures.ProcessPoolExecutor(
-            max_workers=min(self.config.fitness_workers, self.config.population_size),
+            max_workers=self._fitness_workers,
             initializer=_worker_initializer,
             initargs=(self.coverage_model, self.constraints,
                       self.config.use_time_aware_fitness,
@@ -1328,9 +1422,16 @@ class DSSAOptimizer:
         return solution
 
     def _evaluate_fitness_parallel(self, solutions: List[DeploymentSolution]) -> List[float]:
-        futures = [self._fitness_executor.submit(_worker_evaluate_fitness, _sol_to_dict(sol))
-                   for sol in solutions]
-        return [f.result() for f in futures]
+        if not solutions:
+            return []
+        payload = [_sol_to_dict(sol) for sol in solutions]
+        return list(
+            self._fitness_executor.map(
+                _worker_evaluate_fitness,
+                payload,
+                chunksize=self._parallel_chunksize
+            )
+        )
 
     def evaluate_fitness(self, solution: DeploymentSolution) -> float:
         cache_key = self._make_cache_key(solution)
@@ -1534,12 +1635,16 @@ class DSSAOptimizer:
                                   'initial_solution': init_dict, 'alpha': alpha})
             indices.append(i)
 
-        futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
         old_fitnesses = [self.population_fitness[i] for i in indices]
-
-        for i, old_fit, future in zip(indices, old_fitnesses, futures):
-            result = future.result()
+        results_iter = self._fitness_executor.map(
+            _worker_generate_and_evaluate,
+            tasks,
+            chunksize=self._parallel_chunksize
+        )
+        for i, old_fit, result in zip(indices, old_fitnesses, results_iter):
             if result is None:
+                continue
+            if result.get('unchanged'):
                 continue
             new_sol = _dict_to_sol(result)
             new_fit = result['fitness']
@@ -1630,7 +1735,8 @@ class DSSAOptimizer:
 
     def _update_followers(self, alpha: float):
         num_producers = int(self.config.population_size * self.config.producer_ratio)
-        num_followers = int(self.config.population_size * (1 - self.config.producer_ratio))
+        num_scouts = int(self.config.population_size * self.config.scout_ratio)
+        num_followers = max(0, self.config.population_size - num_producers - num_scouts)
         followers = self.population[num_producers:num_producers + num_followers]
 
         escape_count = 0
@@ -1655,23 +1761,33 @@ class DSSAOptimizer:
                                       'best_solution': best_dict,
                                       'initial_solution': init_dict, 'alpha': alpha})
                     else:
-                        idx = random.randint(0, num_producers - 1)
-                        prod_dict = _sol_to_dict(self.population[idx])
-                        tasks.append({'op': 'follow', 'solution': sol_dict,
-                                      'producer': prod_dict,
-                                      'initial_solution': init_dict, 'alpha': alpha})
+                        # Guard against num_producers == 0 when producer_ratio is very small.
+                        if num_producers > 0:
+                            idx = random.randint(0, num_producers - 1)
+                            prod_dict = _sol_to_dict(self.population[idx])
+                            tasks.append({'op': 'follow', 'solution': sol_dict,
+                                          'producer': prod_dict,
+                                          'initial_solution': init_dict, 'alpha': alpha})
+                        else:
+                            escape_count += 1
+                            tasks.append({'op': 'perturb', 'solution': sol_dict,
+                                          'initial_solution': init_dict, 'alpha': alpha})
             else:
                 escape_count += 1
                 tasks.append({'op': 'perturb', 'solution': sol_dict,
                               'initial_solution': init_dict, 'alpha': alpha})
             indices.append(num_producers + i)
 
-        futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
         old_fitnesses = [self.population_fitness[idx] for idx in indices]
-
-        for idx, old_fit, future in zip(indices, old_fitnesses, futures):
-            result = future.result()
+        results_iter = self._fitness_executor.map(
+            _worker_generate_and_evaluate,
+            tasks,
+            chunksize=self._parallel_chunksize
+        )
+        for idx, old_fit, result in zip(indices, old_fitnesses, results_iter):
             if result is None:
+                continue
+            if result.get('unchanged'):
                 continue
             new_sol = _dict_to_sol(result)
             new_fit = result['fitness']
@@ -1683,6 +1799,187 @@ class DSSAOptimizer:
                 self.best_solution = new_sol
 
         return escape_count
+
+    def _build_producer_tasks(self, alpha: float):
+        num_producers = int(self.config.population_size * self.config.producer_ratio)
+        producers = self.population[:num_producers]
+        best_dict = _sol_to_dict(self.best_solution)
+        init_dict = _sol_to_dict(self.initial_solution) if self.frozen_resources else None
+        use_big_perturb = self.stagnation_count > self.config.stagnation_threshold * 2
+
+        tasks = []
+        indices = []
+        old_fitnesses = []
+        escape_count = 0
+
+        for i, solution in enumerate(producers):
+            R2 = random.uniform(0, 1)
+            sol_dict = _sol_to_dict(solution)
+            if use_big_perturb and random.random() < 0.3:
+                reset_ratio = min(0.5, 0.2 + self.stagnation_count / 1000.0)
+                task = {
+                    'op': 'big_perturb', 'solution': sol_dict, 'initial_solution': init_dict,
+                    'alpha': alpha, 'reset_ratio': reset_ratio
+                }
+            elif R2 < self.config.ST:
+                if i == 0:
+                    task = {
+                        'op': 'exploit', 'solution': sol_dict, 'best_solution': best_dict,
+                        'initial_solution': init_dict, 'alpha': alpha
+                    }
+                else:
+                    task = {'op': 'perturb', 'solution': sol_dict, 'initial_solution': init_dict, 'alpha': alpha}
+            else:
+                escape_count += 1
+                if random.random() < 0.5:
+                    task = {'op': 'perturb_double', 'solution': sol_dict, 'initial_solution': init_dict, 'alpha': alpha}
+                else:
+                    task = {'op': 'perturb', 'solution': sol_dict, 'initial_solution': init_dict, 'alpha': alpha}
+
+            tasks.append(task)
+            indices.append(i)
+            old_fitnesses.append(self.population_fitness[i])
+
+        return tasks, indices, old_fitnesses, escape_count
+
+    def _build_follower_tasks(self, alpha: float):
+        num_producers = int(self.config.population_size * self.config.producer_ratio)
+        num_scouts = int(self.config.population_size * self.config.scout_ratio)
+        num_followers = max(0, self.config.population_size - num_producers - num_scouts)
+        followers = self.population[num_producers:num_producers + num_followers]
+
+        best_dict = _sol_to_dict(self.best_solution)
+        init_dict = _sol_to_dict(self.initial_solution) if self.frozen_resources else None
+
+        tasks = []
+        indices = []
+        old_fitnesses = []
+        escape_count = 0
+
+        for i, solution in enumerate(followers):
+            R2 = random.uniform(0, 1)
+            sol_dict = _sol_to_dict(solution)
+            if R2 < self.config.ST:
+                if random.random() < self.config.follower_explore_ratio:
+                    escape_count += 1
+                    task = {'op': 'perturb', 'solution': sol_dict, 'initial_solution': init_dict, 'alpha': alpha}
+                else:
+                    if i > len(followers) / 2:
+                        task = {
+                            'op': 'exploit', 'solution': sol_dict, 'best_solution': best_dict,
+                            'initial_solution': init_dict, 'alpha': alpha
+                        }
+                    else:
+                        if num_producers > 0:
+                            idx = random.randint(0, num_producers - 1)
+                            prod_dict = _sol_to_dict(self.population[idx])
+                            task = {
+                                'op': 'follow', 'solution': sol_dict, 'producer': prod_dict,
+                                'initial_solution': init_dict, 'alpha': alpha
+                            }
+                        else:
+                            escape_count += 1
+                            task = {'op': 'perturb', 'solution': sol_dict, 'initial_solution': init_dict, 'alpha': alpha}
+            else:
+                escape_count += 1
+                task = {'op': 'perturb', 'solution': sol_dict, 'initial_solution': init_dict, 'alpha': alpha}
+
+            pop_idx = num_producers + i
+            tasks.append(task)
+            indices.append(pop_idx)
+            old_fitnesses.append(self.population_fitness[pop_idx])
+
+        return tasks, indices, old_fitnesses, escape_count
+
+    def _build_scout_tasks(self, iteration: int):
+        interval = max(1, int(self.config.scout_update_interval))
+        if iteration % interval != 0:
+            return [], [], [], []
+
+        num_scouts = int(self.config.population_size * self.config.scout_ratio)
+        if num_scouts <= 0:
+            return [], [], [], []
+
+        start_idx = self.config.population_size - num_scouts
+        scout_solutions = self.population[start_idx:self.config.population_size]
+        scout_fitnesses = [self.population_fitness[i] for i in range(start_idx, self.config.population_size)]
+        init_dict = _sol_to_dict(self.initial_solution) if self.frozen_resources else None
+
+        progress = getattr(self, '_iteration_progress', 0.0)
+        adaptive_threshold = self.config.scout_reset_threshold - 0.1 * progress
+        adaptive_threshold = max(0.7, adaptive_threshold)
+
+        partial_tasks = []
+        partial_indices = []
+        partial_old_fitnesses = []
+        full_reset_indices = []
+
+        for i, (solution, fitness) in enumerate(zip(scout_solutions, scout_fitnesses)):
+            pop_idx = start_idx + i
+            if fitness > self.best_fitness + self.config.fitness_update_epsilon:
+                self.best_fitness = fitness
+                self.best_solution = solution
+            if self.best_fitness > 0 and fitness < adaptive_threshold * self.best_fitness:
+                if fitness < 0.5 * self.best_fitness:
+                    full_reset_indices.append(pop_idx)
+                else:
+                    partial_tasks.append({
+                        'op': 'scout_partial_reset',
+                        'solution': _sol_to_dict(solution),
+                        'initial_solution': init_dict
+                    })
+                    partial_indices.append(pop_idx)
+                    partial_old_fitnesses.append(self.population_fitness[pop_idx])
+
+        return partial_tasks, partial_indices, partial_old_fitnesses, full_reset_indices
+
+    def _apply_task_results(self, indices, old_fitnesses, results_iter):
+        for idx, old_fit, result in zip(indices, old_fitnesses, results_iter):
+            if result is None:
+                continue
+            if result.get('unchanged'):
+                continue
+            new_sol = _dict_to_sol(result)
+            new_fit = result['fitness']
+            if new_fit > old_fit:
+                self.population[idx] = new_sol
+                self.population_fitness[idx] = new_fit
+            if new_fit > self.best_fitness + self.config.fitness_update_epsilon:
+                self.best_fitness = new_fit
+                self.best_solution = new_sol
+
+    def _update_roles_single_wave(self, iteration: int, alpha: float):
+        p_tasks, p_indices, p_old_fitnesses, escape_producers = self._build_producer_tasks(alpha)
+        f_tasks, f_indices, f_old_fitnesses, escape_followers = self._build_follower_tasks(alpha)
+        s_tasks, s_indices, s_old_fitnesses, full_reset_indices = self._build_scout_tasks(iteration)
+
+        all_tasks = p_tasks + f_tasks + s_tasks
+        all_indices = p_indices + f_indices + s_indices
+        all_old_fitnesses = p_old_fitnesses + f_old_fitnesses + s_old_fitnesses
+
+        if all_tasks:
+            results_iter = self._fitness_executor.map(
+                _worker_generate_and_evaluate,
+                all_tasks,
+                chunksize=self._parallel_chunksize
+            )
+            self._apply_task_results(all_indices, all_old_fitnesses, results_iter)
+
+        if full_reset_indices:
+            reset_solutions = []
+            for pop_idx in full_reset_indices:
+                sol = self._initialize_solution()
+                self.population[pop_idx] = sol
+                reset_solutions.append(sol)
+
+            reset_fitnesses = self._evaluate_fitness_parallel(reset_solutions)
+            for pop_idx, fit in zip(full_reset_indices, reset_fitnesses):
+                self.population_fitness[pop_idx] = fit
+                if fit > self.best_fitness + self.config.fitness_update_epsilon:
+                    self.best_fitness = fit
+                    self.best_solution = self.population[pop_idx]
+
+        return escape_producers, escape_followers
 
     def _follow_producer(self, solution: DeploymentSolution, producer: DeploymentSolution) -> DeploymentSolution:
         """Follower 向 Producer 靠拢的离散操作
@@ -1778,16 +2075,31 @@ class DSSAOptimizer:
                     task_indices.append(pop_idx)
 
         if tasks:
-            futures = [self._fitness_executor.submit(_worker_generate_and_evaluate, t) for t in tasks]
-            for pop_idx, future in zip(task_indices, futures):
-                result = future.result()
+            results_iter = self._fitness_executor.map(
+                _worker_generate_and_evaluate,
+                tasks,
+                chunksize=self._parallel_chunksize
+            )
+            for pop_idx, result in zip(task_indices, results_iter):
                 if result is not None:
+                    if result.get('unchanged'):
+                        continue
                     self.population[pop_idx] = _dict_to_sol(result)
                     self.population_fitness[pop_idx] = result['fitness']
 
-        for pop_idx in full_reset_indices:
-            self.population[pop_idx] = self._initialize_solution()
-            self.population_fitness[pop_idx] = float('-inf')
+        if full_reset_indices:
+            reset_solutions = []
+            for pop_idx in full_reset_indices:
+                sol = self._initialize_solution()
+                self.population[pop_idx] = sol
+                reset_solutions.append(sol)
+
+            reset_fitnesses = self._evaluate_fitness_parallel(reset_solutions)
+            for pop_idx, fit in zip(full_reset_indices, reset_fitnesses):
+                self.population_fitness[pop_idx] = fit
+                if fit > self.best_fitness + self.config.fitness_update_epsilon:
+                    self.best_fitness = fit
+                    self.best_solution = self.population[pop_idx]
 
     def _update_best_solution(self):
         """更新全局最优解：评估所有个体适应度，保留最高者"""
@@ -1796,6 +2108,19 @@ class DSSAOptimizer:
             if fitness > self.best_fitness + self.config.fitness_update_epsilon:
                 self.best_fitness = fitness
                 self.best_solution = solution
+
+    def _rank_population_by_fitness(self):
+        """Sort population and cached fitness in descending fitness order."""
+        if not self.population or len(self.population) != len(self.population_fitness):
+            return
+
+        ranked = sorted(
+            zip(self.population_fitness, self.population),
+            key=lambda item: item[0],
+            reverse=True
+        )
+        self.population_fitness = [fitness for fitness, _ in ranked]
+        self.population = [solution for _, solution in ranked]
 
     def optimize(self, callback: Callable[[int, float, DeploymentSolution], None] = None) -> Tuple[DeploymentSolution, float, List[float]]:
         import time
@@ -1819,6 +2144,7 @@ class DSSAOptimizer:
                 if fitness > self.best_fitness + self.config.fitness_update_epsilon:
                     self.best_fitness = fitness
                     self.best_solution = solution
+            self._rank_population_by_fitness()
 
             self.fitness_history = [self.best_fitness]
 
@@ -1835,25 +2161,34 @@ class DSSAOptimizer:
 
             for iteration in range(self.config.max_iterations):
                 iter_start = time.time()
+                stage_t0 = iter_start
 
                 # Track iteration progress for adaptive thresholds
                 self._iteration_progress = iteration / max(self.config.max_iterations - 1, 1)
 
                 # Get the effective exploration alpha for this iteration
                 effective_alpha = self._get_exploration_alpha(iteration)
+                stage_after_alpha = time.time()
                 
-                escape_producers = self._update_producers(iteration, effective_alpha)
-                escape_followers = self._update_followers(effective_alpha)
-                self._update_scouts()
+                if self.config.single_wave_role_update:
+                    escape_producers, escape_followers = self._update_roles_single_wave(iteration, effective_alpha)
+                else:
+                    escape_producers = self._update_producers(iteration, effective_alpha)
+                    escape_followers = self._update_followers(effective_alpha)
+                    interval = max(1, int(self.config.scout_update_interval))
+                    if iteration % interval == 0:
+                        self._update_scouts()
+                stage_after_roles = time.time()
 
                 diversity_interval = 20
                 if iteration % diversity_interval == 0:
                     diversity = self._calculate_diversity()
                     self._last_diversity = diversity
+                    if diversity < self.config.diversity_min_threshold:
+                        self._inject_random_solutions(self.config.diversity_inject_ratio)
                 else:
                     diversity = getattr(self, '_last_diversity', 1.0)
-                if diversity < self.config.diversity_min_threshold:
-                    self._inject_random_solutions(self.config.diversity_inject_ratio)
+                stage_after_diversity = time.time()
 
                 # Periodic reset: every 100 iterations, reset 10% of population (except best)
                 # This ensures the optimizer doesn't get permanently stuck
@@ -1864,6 +2199,7 @@ class DSSAOptimizer:
                         if self.population[idx] is not self.best_solution:
                             self.population[idx] = self._initialize_solution()
                             self.population_fitness[idx] = float('-inf')
+                stage_after_periodic_reset = time.time()
 
                 # Update stagnation tracking state (diversity-aware)
                 fitness_improved = self.best_fitness - self.prev_best_fitness > self.config.stagnation_tolerance
@@ -1881,6 +2217,10 @@ class DSSAOptimizer:
                 # Clear fitness cache when it gets too large to prevent slowdown from hash collisions
                 if len(self._fitness_cache) >= self._fitness_cache_max_size * 0.9:
                     self._fitness_cache.clear()
+
+                # Keep role assignment (producer/follower/scout slices) fitness-ranked.
+                self._rank_population_by_fitness()
+                stage_after_rank = time.time()
 
                 # JSON output: buffer iteration data, flush every output_interval iterations
                 if self.output_dir:
@@ -1912,8 +2252,9 @@ class DSSAOptimizer:
 
                     interval = max(1, self.config.output_interval)
                     is_last = (iteration == self.config.max_iterations - 1)
-                    if len(self._output_buffer) >= interval or is_last:
+                    if self._output_buffer and (len(self._output_buffer) >= interval or is_last):
                         self._async_flush_output_buffer()
+                stage_after_output = time.time()
 
                 # Calculate total_benefit from cached fitness and total_risk
                 # fitness = total_benefit / total_risk, so total_benefit = fitness * total_risk
@@ -1927,11 +2268,30 @@ class DSSAOptimizer:
 
                 if callback:
                     callback(iteration, self.best_fitness, self.best_solution)
+                stage_after_callback = time.time()
 
                 avg_iter = sum(iter_times) / len(iter_times)
 
                 if iteration > 0 and iteration % 20 == 0:
                     gc.collect()
+                stage_after_gc = time.time()
+
+                if self.config.profile_iteration_stages:
+                    freq = max(1, int(self.config.profile_log_every))
+                    if iteration % freq == 0:
+                        t_alpha = (stage_after_alpha - stage_t0) * 1000.0
+                        t_roles = (stage_after_roles - stage_after_alpha) * 1000.0
+                        t_div = (stage_after_diversity - stage_after_roles) * 1000.0
+                        t_reset = (stage_after_periodic_reset - stage_after_diversity) * 1000.0
+                        t_rank = (stage_after_rank - stage_after_periodic_reset) * 1000.0
+                        t_output = (stage_after_output - stage_after_rank) * 1000.0
+                        t_tail = (stage_after_gc - stage_after_output) * 1000.0
+                        print(
+                            f"  [PROFILE] iter={iteration+1}/{self.config.max_iterations}"
+                            f" alpha={t_alpha:.1f}ms roles={t_roles:.1f}ms"
+                            f" diversity={t_div:.1f}ms reset={t_reset:.1f}ms"
+                            f" rank={t_rank:.1f}ms output={t_output:.1f}ms tail={t_tail:.1f}ms"
+                        )
                 
                 # 打印迭代信息
                 escape_total = escape_producers + escape_followers
@@ -2235,6 +2595,70 @@ class DSSAOptimizer:
         """获取某种资源类型可部署的网格列表（预计算缓存）"""
         return self._deployable_grids.get(resource_type, [])
 
+    def _pick_available_grid(self, resource_type: str, forbidden: set):
+        deployable = self._get_deployable_grids(resource_type)
+        if not deployable:
+            return None
+
+        if self.config.use_risk_priority and self._grid_to_risk:
+            ranked = sorted(deployable, key=lambda gid: self._grid_to_risk.get(gid, 0.5), reverse=True)
+            for gid in ranked:
+                if gid not in forbidden:
+                    return gid
+            return None
+
+        max_trials = min(64, len(deployable))
+        for _ in range(max_trials):
+            gid = random.choice(deployable)
+            if gid not in forbidden:
+                return gid
+        for gid in deployable:
+            if gid not in forbidden:
+                return gid
+        return None
+
+    def _collect_available_grids(self, resource_type: str, forbidden: set, need_count: int) -> List[int]:
+        if need_count <= 0:
+            return []
+        deployable = self._get_deployable_grids(resource_type)
+        if not deployable:
+            return []
+
+        if self.config.use_risk_priority and self._grid_to_risk:
+            ranked = sorted(deployable, key=lambda gid: self._grid_to_risk.get(gid, 0.5), reverse=True)
+            out = []
+            for gid in ranked:
+                if gid not in forbidden:
+                    out.append(gid)
+                    if len(out) >= need_count:
+                        break
+            return out
+
+        if need_count * 4 < len(deployable):
+            out = []
+            seen = set()
+            max_trials = max(need_count * 10, 64)
+            trials = 0
+            while len(out) < need_count and trials < max_trials:
+                gid = random.choice(deployable)
+                trials += 1
+                if gid in forbidden or gid in seen:
+                    continue
+                seen.add(gid)
+                out.append(gid)
+            if len(out) >= need_count:
+                return out
+
+        shuffled = list(deployable)
+        random.shuffle(shuffled)
+        out = []
+        for gid in shuffled:
+            if gid not in forbidden:
+                out.append(gid)
+                if len(out) >= need_count:
+                    break
+        return out
+
     def _discrete_swap(self, solution: DeploymentSolution) -> DeploymentSolution:
         """资源交换：随机选两个网格，交换它们的非围栏资源部署
         
@@ -2355,21 +2779,17 @@ class DSSAOptimizer:
         deploy_key = {'camera': 'camera', 'drone': 'drone', 'camp': 'camp', 'ranger': 'patrol'}
 
         # 找到可部署该资源的目标网格（排除已有资源的网格）
-        deployable = self._get_deployable_grids(deploy_key[res_type])
         occupied = set(cameras.keys()) | set(drones.keys()) | set(camps.keys()) | set(rangers.keys())
-        targets = [gid for gid in deployable if gid not in occupied]
-
-        if not targets:
+        dst_gid = self._pick_available_grid(deploy_key[res_type], occupied)
+        if dst_gid is None:
             return solution
-
-        dst_gid = random.choice(targets)
 
         # 迁移资源
         src_dict = res_map[res_type]
         max_per_grid = {
             'camera': self.constraints.get('max_cameras_per_grid', 1),
-            'drone': 1,
-            'camp': 1,
+            'drone': self.constraints.get('max_drones_per_grid', 1),
+            'camp': self.constraints.get('max_camps_per_grid', 1),
             'ranger': self.constraints.get('max_rangers_per_grid', 1),
         }
 
@@ -2405,7 +2825,6 @@ class DSSAOptimizer:
             return solution
 
         max_per_grid = self.constraints.get(max_key[chosen], 1)
-        deployable = self._get_deployable_grids(deploy_key[chosen])
 
         # 排除已有其他资源的网格
         other_occupied = set()
@@ -2413,11 +2832,10 @@ class DSSAOptimizer:
             if rt != chosen:
                 other_occupied.update(res_map[rt].keys())
 
-        available = [gid for gid in deployable if gid not in other_occupied]
+        needed = (total + max_per_grid - 1) // max_per_grid
+        available = self._collect_available_grids(deploy_key[chosen], other_occupied, needed)
         if not available:
             return solution
-
-        random.shuffle(available)
 
         new_dict = {}
         deployed = 0
@@ -2515,6 +2933,7 @@ class DSSAOptimizer:
         for idx in indices:
             if self.population[idx] is not self.best_solution:
                 self.population[idx] = self._initialize_solution()
+                self.population_fitness[idx] = float('-inf')
 
     def _partial_reset_scout(self, solution: DeploymentSolution) -> DeploymentSolution:
         """Scout 部分重置：随机重置部分资源类型，保留其余
@@ -2544,7 +2963,6 @@ class DSSAOptimizer:
                 continue
 
             max_per_grid = self.constraints.get(max_key[res_type], 1)
-            deployable = self._get_deployable_grids(deploy_key[res_type])
 
             # 排除已有其他资源的网格
             other_occupied = set()
@@ -2552,8 +2970,10 @@ class DSSAOptimizer:
                 if rt != res_type:
                     other_occupied.update(res_map[rt].keys())
 
-            available = [gid for gid in deployable if gid not in other_occupied]
-            random.shuffle(available)
+            needed = (total + max_per_grid - 1) // max_per_grid
+            available = self._collect_available_grids(deploy_key[res_type], other_occupied, needed)
+            if not available:
+                continue
 
             new_dict = {}
             deployed = 0

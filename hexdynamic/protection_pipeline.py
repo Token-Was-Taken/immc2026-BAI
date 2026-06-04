@@ -376,6 +376,11 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             use_marginal_contribution_repair=dc.get('use_marginal_contribution_repair', False),
             skip_conflict_resolution=dc.get('skip_conflict_resolution', False),
             fitness_workers=dc.get('fitness_workers', 16),
+            parallel_chunksize=dc.get('parallel_chunksize', 0),
+            single_wave_role_update=dc.get('single_wave_role_update', True),
+            scout_update_interval=dc.get('scout_update_interval', 2),
+            profile_iteration_stages=dc.get('profile_iteration_stages', False),
+            profile_log_every=dc.get('profile_log_every', 1),
             output_interval=dc.get('output_interval', 1),
             only_output_on_best_change=only_output_on_best_change,
         )

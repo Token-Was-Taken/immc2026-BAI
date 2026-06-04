@@ -59,62 +59,107 @@ def draw_hex(ax, cx, cy, size, facecolor, edgecolor="black", lw=0.4, alpha=1.0, 
     ax.add_patch(poly)
 
 
+def draw_hex_batch(ax, grids, hex_size, facecolors, scale=0.97, edgecolor="black", lw=0.3, alpha=1.0):
+    """批量绘制六边形（PatchCollection），比逐格 draw_hex 快 100 倍以上"""
+    from matplotlib.patches import Polygon
+    from matplotlib.collections import PatchCollection
+    patches = []
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        corners = hex_corners(cx, cy, hex_size * scale)
+        patches.append(Polygon(corners, closed=True))
+    pc = PatchCollection(patches, facecolors=facecolors,
+                         edgecolors=edgecolor, linewidths=lw, alpha=alpha)
+    ax.add_collection(pc)
+
+
 # ---------------------------------------------------------------------------
 # 数据加载
 # ---------------------------------------------------------------------------
 
-def load_data(output_path, input_path=None):
-    with open(output_path, "r", encoding="utf-8") as f:
-        out = json.load(f)
+def load_data(output_path=None, input_path=None):
+    """
+    加载 input/output JSON 数据。
+
+    支持三种模式：
+      1. output_path + input_path：完整模式，output 用于部署/保护图，input 用于风险/物种/地形图
+      2. output_path only：output 同时充当 input（兼容旧逻辑）
+      3. input_path only：仅 input 模式，只生成风险/物种/地形图
+
+    返回: (input_data, output_data, grid_map, species_map, hex_size, boundary_xy)
+      - input_data: input JSON 原始数据（含 risk_normalized, species_densities, terrain_type 等）
+      - output_data: output JSON 原始数据（含 deployment, protection_benefit 等），无 output 时为 None
+      - grid_map: {grid_id: grid_dict} 基于 input_data
+      - species_map: {grid_id: species_densities}
+      - hex_size: 六边形大小
+      - boundary_xy: 边界坐标列表
+    """
     inp = None
+    out = None
+
     if input_path and os.path.exists(input_path):
         with open(input_path, "r", encoding="utf-8") as f:
             inp = json.load(f)
 
-    # 自动检测：如果 output_path 中没有 risk_normalized，但 input_path 中有，说明参数反了，交换
-    if inp is not None:
+    if output_path and os.path.exists(output_path):
+        with open(output_path, "r", encoding="utf-8") as f:
+            out = json.load(f)
+
+    # 如果只提供了一个文件，自动判断是 input 还是 output
+    if inp is not None and out is None:
+        # 只有 input，output_data 为 None
+        pass
+    elif inp is None and out is not None:
+        # 只有 output，同时当作 input 使用
+        inp = out
+    elif inp is not None and out is not None:
+        # 两个都有，自动检测是否反了
         out_has_risk = any("risk_normalized" in g for g in out.get("grids", [])[:10])
         inp_has_risk = any("risk_normalized" in g for g in inp.get("grids", [])[:10])
         if not out_has_risk and inp_has_risk:
-            print(f"  [auto-fix] 检测到参数顺序颠倒：交换 output/input ({output_path} <-> {input_path})")
+            print(f"  [auto-fix] 检测到参数顺序颠倒：交换 output/input")
             out, inp = inp, out
-            output_path, input_path = input_path, output_path
 
+    if inp is None:
+        raise ValueError("至少需要提供 input_path 或 output_path 之一")
+
+    # hex_size: 优先从 input 取
     hex_size = 1.0
-    for g in out["grids"]:
+    for g in inp["grids"]:
         if g.get("hex_size"):
             hex_size = float(g["hex_size"])
             break
 
-    out_map = {g["grid_id"]: g for g in out["grids"]}
+    # grid_map 基于 input_data
+    grid_map = {g["grid_id"]: g for g in inp["grids"]}
+
+    # species_map 从 input_data 取
     species_map = {}
-    if inp:
-        for g in inp.get("grids", []):
+    for g in inp.get("grids", []):
+        if "species_densities" in g:
+            species_map[g["grid_id"]] = g["species_densities"]
+
+    # 如果 output 也有 species_densities 但 input 没有，从 output 补充
+    if not species_map and out:
+        for g in out.get("grids", []):
             if "species_densities" in g:
                 species_map[g["grid_id"]] = g["species_densities"]
 
-    # 提取 boundary_locations，兼容 [{x,y,original_grid_id},...] 和 [[x,y],...] 两种格式
+    # boundary_xy: 优先从 input 取
     boundary_xy = None
-    if inp and "map_config" in inp:
-        bl = inp["map_config"].get("boundary_locations")
-        if bl:
-            boundary_xy = []
-            for item in bl:
-                if isinstance(item, dict):
-                    boundary_xy.append((item['x'], item['y']))
-                else:
-                    boundary_xy.append(tuple(item))
-    elif out and "map_config" in out:
-        bl = out["map_config"].get("boundary_locations")
-        if bl:
-            boundary_xy = []
-            for item in bl:
-                if isinstance(item, dict):
-                    boundary_xy.append((item['x'], item['y']))
-                else:
-                    boundary_xy.append(tuple(item))
+    for src in [inp, out]:
+        if src and "map_config" in src:
+            bl = src["map_config"].get("boundary_locations")
+            if bl:
+                boundary_xy = []
+                for item in bl:
+                    if isinstance(item, dict):
+                        boundary_xy.append((item['x'], item['y']))
+                    else:
+                        boundary_xy.append(tuple(item))
+                break
 
-    return out, out_map, species_map, hex_size, boundary_xy
+    return inp, out, grid_map, species_map, hex_size, boundary_xy
 
 
 # ---------------------------------------------------------------------------
@@ -131,14 +176,21 @@ def compute_figsize(grids, hex_size, grid_dpi=80, save_dpi=150, has_colorbar=Fal
     """
     if not grids:
         return (14, 9)
-    xs, ys = [], []
+    # 只跟踪 min/max，避免分配全量列表
+    x_min = x_max = y_min = y_max = None
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
-        xs.append(cx)
-        ys.append(cy)
+        if x_min is None:
+            x_min = x_max = cx
+            y_min = y_max = cy
+        else:
+            if cx < x_min: x_min = cx
+            if cx > x_max: x_max = cx
+            if cy < y_min: y_min = cy
+            if cy > y_max: y_max = cy
     margin = hex_size * 2
-    data_width = max(xs) - min(xs) + hex_size * 2 + margin * 2
-    data_height = max(ys) - min(ys) + hex_size * 2 + margin * 2
+    data_width = x_max - x_min + hex_size * 2 + margin * 2
+    data_height = y_max - y_min + hex_size * 2 + margin * 2
     hex_pixel_span = hex_size * math.sqrt(3)
     if hex_pixel_span == 0:
         hex_pixel_span = 1.0
@@ -149,6 +201,17 @@ def compute_figsize(grids, hex_size, grid_dpi=80, save_dpi=150, has_colorbar=Fal
     cbar_pixel_w = grid_dpi * 0.8 if has_colorbar else 0
     total_pixel_w = map_pixel_w + cbar_pixel_w + legend_pixel_w
     total_pixel_h = max(map_pixel_h, grid_dpi * 6)
+    # 限制最大像素尺寸，防止 OOM（matplotlib 大图极耗内存）
+    MAX_PIXEL = 12000
+    if total_pixel_w > MAX_PIXEL or total_pixel_h > MAX_PIXEL:
+        # 等比缩放到 MAX_PIXEL 以内
+        s = MAX_PIXEL / max(total_pixel_w, total_pixel_h)
+        total_pixel_w *= s
+        total_pixel_h *= s
+        map_pixel_w *= s
+        map_pixel_h *= s
+        legend_pixel_w *= s
+        cbar_pixel_w *= s
     fig_w = total_pixel_w / save_dpi
     fig_h = total_pixel_h / save_dpi
     map_frac_w = map_pixel_w / total_pixel_w
@@ -200,12 +263,19 @@ def make_figure(grids=None, hex_size=1.0, grid_dpi=80, save_dpi=150, has_colorba
 
 
 def setup_map_ax(ax, grids, hex_size, margin=1.5):
-    xs, ys = [], []
+    x_min = x_max = y_min = y_max = None
     for g in grids:
         cx, cy = grid_center(g["q"], g["r"], hex_size)
-        xs.append(cx); ys.append(cy)
-    ax.set_xlim(min(xs) - hex_size - margin, max(xs) + hex_size + margin)
-    ax.set_ylim(min(ys) - hex_size - margin, max(ys) + hex_size + margin)
+        if x_min is None:
+            x_min = x_max = cx
+            y_min = y_max = cy
+        else:
+            if cx < x_min: x_min = cx
+            if cx > x_max: x_max = cx
+            if cy < y_min: y_min = cy
+            if cy > y_max: y_max = cy
+    ax.set_xlim(x_min - hex_size - margin, x_max + hex_size + margin)
+    ax.set_ylim(y_min - hex_size - margin, y_max + hex_size + margin)
     ax.set_aspect('equal')
 
 
@@ -248,7 +318,7 @@ def draw_boundary(ax, grids, boundary_xy, hex_size):
             continue
         q, r = g["q"], g["r"]
         cx, cy = grid_center(q, r, hex_size)
-        for (dq, dr), (vi, vj) in zip(neighbor_dirs, dir_to_edge_verts.values()):
+        for (dq, dr), (vi, vj) in dir_to_edge_verts.items():
             nq, nr = q + dq, r + dr
             if (nq, nr) not in inner_qr:
                 # 这条边朝向保护区外，画轮廓线
@@ -291,7 +361,9 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size, color=None):
     
     # Build grid lookup
     grid_by_id = {g["grid_id"]: g for g in grids}
-    
+    # O(1) (q, r) → grid_id 查询，避免 O(N²) 扫描
+    qr_to_grid_id = {(g["q"], g["r"]): g["grid_id"] for g in grids}
+
     # Build set of all grid IDs for checking if a neighbor exists
     all_grid_ids = set(grid_by_id.keys())
     
@@ -390,12 +462,8 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size, color=None):
                 neighbor_r = g1["r"] + dr
                 neighbor_key = (neighbor_q, neighbor_r)
                 
-                # Check if this neighbor exists in our grid set
-                neighbor_id = None
-                for gid, g in grid_by_id.items():
-                    if g["q"] == neighbor_q and g["r"] == neighbor_r:
-                        neighbor_id = gid
-                        break
+                # Check if this neighbor exists in our grid set (O(1) lookup)
+                neighbor_id = qr_to_grid_id.get((neighbor_q, neighbor_r))
                 
                 if neighbor_id is None:
                     # This is a boundary direction - draw the edge
@@ -513,51 +581,98 @@ def _draw_resources(ax, grids, out, hex_size, edge_ids):
     
     centers = {g["grid_id"]: grid_center(g["q"], g["r"], hex_size) for g in grids}
 
+    # 批量按资源类型收集坐标，一次 scatter 调用绘制所有同类型资源
+    resource_coords = {key: [] for key in RESOURCE_MARKERS}
+    resource_texts = []  # (x, y, text, color)
+
     for g in grids:
         cx, cy = centers[g["grid_id"]]
-        dep = g["deployment"]
+        dep = g.get("deployment", {})
+        if not dep:
+            continue
         offset = 0
         for key, (marker, color, _) in RESOURCE_MARKERS.items():
             val = dep.get(key, 0)
             if val > 0:
                 ox = (offset - 1) * hex_size * 0.28
-                ax.scatter(cx + ox, cy, marker=marker, s=60, color=color,
-                           edgecolors="black", linewidths=0.5, zorder=5)
+                resource_coords[key].append((cx + ox, cy))
                 if val > 1:
-                    ax.text(cx + ox, cy + hex_size * 0.35, str(val),
-                            ha="center", va="bottom", fontsize=6, color=color, zorder=6)
+                    resource_texts.append((cx + ox, cy + hex_size * 0.35, str(val), color))
                 offset += 1
+
+    for key, (marker, color, _) in RESOURCE_MARKERS.items():
+        if resource_coords[key]:
+            xs, ys = zip(*resource_coords[key])
+            ax.scatter(xs, ys, marker=marker, s=60, color=color,
+                       edgecolors="black", linewidths=0.5, zorder=5)
+
+    for x, y, text, color in resource_texts:
+        ax.text(x, y, text, ha="center", va="bottom", fontsize=6, color=color, zorder=6)
 
 
 # ---------------------------------------------------------------------------
 # 图 1：风险热力图
 # ---------------------------------------------------------------------------
 
-def plot_risk_heatmap(out, out_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
-    grids = out["grids"]
-    if not grids or "risk_normalized" not in grids[0]:
-        print(f"  [skip] {os.path.basename(save_path)} — 输出数据缺少 risk_normalized 字段")
+def plot_risk_heatmap(input_data, grid_map, hex_size, boundary_xy, save_path, output_data=None, grid_dpi=80, save_dpi=150):
+    """绘制风险热力图
+
+    数据来源优先级：
+      1. output_data 的 risk_normalized（真实归一化风险，最佳）
+      2. output_data 的 raw_risk（未归一化，按 max 归一化）
+      3. input_data 的 risk_normalized / raw_risk / fire_risk（fallback）
+    """
+    # 优先从 output_data 取真实风险
+    data = output_data if (output_data and output_data.get("grids")) else input_data
+    grids = data["grids"]
+    if not grids:
+        print(f"  [skip] {os.path.basename(save_path)} — 无网格数据")
         return
-    summary = out.get("summary", {})
-    show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
+
+    if "risk_normalized" in grids[0]:
+        risk_key = "risk_normalized"
+        risk_vals = [g["risk_normalized"] for g in grids]
+        norm = Normalize(vmin=0, vmax=1)
+        cbar_label = "Normalized Risk"
+        title = "Risk Heatmap"
+    elif "raw_risk" in grids[0]:
+        risk_key = "raw_risk"
+        risk_vals = [g["raw_risk"] for g in grids]
+        rmax = max(risk_vals)
+        norm = Normalize(vmin=0, vmax=rmax if rmax > 0 else 1)
+        cbar_label = "Raw Risk"
+        title = "Risk Heatmap (raw)"
+    elif "fire_risk" in grids[0]:
+        # fire_risk 不是综合风险，绘制时明确标注
+        risk_key = "fire_risk"
+        risk_vals = [g["fire_risk"] for g in grids]
+        rmin, rmax = min(risk_vals), max(risk_vals)
+        norm = Normalize(vmin=rmin, vmax=rmax if rmax > rmin else 1)
+        cbar_label = "Fire Risk Factor (raw)"
+        title = "Fire Risk Factor Heatmap\n(NOT real risk — provide output JSON for normalized risk)"
+    else:
+        print(f"  [skip] {os.path.basename(save_path)} — 数据缺少 risk_normalized / raw_risk / fire_risk 字段")
+        return
+
+    summary = input_data.get("summary", {})
+    show_grid_ids = input_data.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("YlOrRd")
-    norm = Normalize(vmin=0, vmax=1)
 
     fig, ax, ax_cbar, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=True)
 
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g["risk_normalized"])))
-        if show_grid_ids:
+    facecolors = [cmap(norm(g[risk_key])) for g in grids]
+    draw_hex_batch(ax, grids, hex_size, facecolors)
+    if show_grid_ids:
+        for g in grids:
+            cx, cy = grid_center(g["q"], g["r"], hex_size)
             ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
-    ax.set_title("Risk Heatmap", fontsize=13, fontweight="bold", pad=8)
+    ax.set_title(title, fontsize=12, fontweight="bold", pad=8)
 
-    add_colorbar(fig, ax_cbar, cmap, norm, "Normalized Risk")
+    add_colorbar(fig, ax_cbar, cmap, norm, cbar_label)
 
-    risk_vals = [g["risk_normalized"] for g in grids]
     n_grids = len(grids)
     total_risk = sum(risk_vals)
     items = [
@@ -603,10 +718,11 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path, grid_dpi=80, 
         norm = Normalize(vmin=0, vmax=vmax if vmax > 0 else 1)
         fig, ax, ax_cbar, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=True)
 
-        for g in grids:
-            cx, cy = grid_center(g["q"], g["r"], hex_size)
-            draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g.get(value_key, 0))))
-            if show_grid_ids:
+        facecolors = [cmap(norm(g.get(value_key, 0))) for g in grids]
+        draw_hex_batch(ax, grids, hex_size, facecolors)
+        if show_grid_ids:
+            for g in grids:
+                cx, cy = grid_center(g["q"], g["r"], hex_size)
                 ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
         setup_map_ax(ax, grids, hex_size)
@@ -673,13 +789,13 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, sav
         ax.set_aspect("equal")
     ax_leg.axis("off")
 
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax_before, cx, cy, hex_size * 0.97,
-                 facecolor=cmap(norm(g["risk_normalized"])))
-        draw_hex(ax_after, cx, cy, hex_size * 0.97,
-                 facecolor=cmap(norm(g["residual_risk_normalized"])))
-        if show_grid_ids:
+    facecolors_before = [cmap(norm(g["risk_normalized"])) for g in grids]
+    facecolors_after = [cmap(norm(g["residual_risk_normalized"])) for g in grids]
+    draw_hex_batch(ax_before, grids, hex_size, facecolors_before)
+    draw_hex_batch(ax_after, grids, hex_size, facecolors_after)
+    if show_grid_ids:
+        for g in grids:
+            cx, cy = grid_center(g["q"], g["r"], hex_size)
             ax_before.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
             ax_after.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
@@ -731,28 +847,32 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, sav
     print(f"  saved: {save_path}")
 
 
-def plot_terrain_map(out, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
-    grids = out["grids"]
-    show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
+def plot_terrain_map(input_data, hex_size, boundary_xy, save_path, output_data=None, grid_dpi=80, save_dpi=150):
+    """绘制地形地图，仅需 input JSON 数据；有 output 时叠加围栏"""
+    grids = input_data["grids"]
+    show_grid_ids = input_data.get("visualization_config", {}).get("show_grid_ids", False)
     fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"))
-        if show_grid_ids:
+    facecolors = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
+    draw_hex_batch(ax, grids, hex_size, facecolors)
+    if show_grid_ids:
+        for g in grids:
+            cx, cy = grid_center(g["q"], g["r"], hex_size)
             ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
-    draw_deployed_fence_edges(ax, grids, out, hex_size, color="#1a1a1a")
+    if output_data:
+        draw_deployed_fence_edges(ax, grids, output_data, hex_size, color="#1a1a1a")
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
     ax.set_title("Terrain Map", fontsize=13, fontweight="bold", pad=8)
 
     handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, label=t)
                for t, c in TERRAIN_COLORS.items()]
-    handles.append(
-        plt.Line2D([0], [1], color="#1a1a1a", linewidth=FENCE_EDGE_LINEWIDTH * 2, 
-                   label="Fence (bold edge)")
-    )
+    if output_data:
+        handles.append(
+            plt.Line2D([0], [1], color="#1a1a1a", linewidth=FENCE_EDGE_LINEWIDTH * 2, 
+                       label="Fence (bold edge)")
+        )
     legend_in_ax(ax_leg, handles, "Terrain Type", y_start=0.97)
 
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
@@ -768,9 +888,8 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path, grid_dpi=
     edge_ids = _edge_grid_ids(grids, boundary_xy)
     fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
+    facecolors = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
+    draw_hex_batch(ax, grids, hex_size, facecolors, alpha=0.45)
 
     _draw_resources(ax, grids, out, hex_size, edge_ids)
     draw_deployed_fence_edges(ax, grids, out, hex_size)
@@ -899,8 +1018,9 @@ def _draw_composite(ax, grids, hex_size, all_species, species_map):
     ax.axis("off")
 
 
-def plot_species_map(out, species_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
-    grids = out["grids"]
+def plot_species_map(input_data, species_map, hex_size, boundary_xy, save_path, grid_dpi=80, save_dpi=150):
+    """绘制物种密度地图，仅需 input JSON 数据"""
+    grids = input_data["grids"]
     if not species_map:
         print("  [skip] species_map.png — no species data")
         return
@@ -910,23 +1030,35 @@ def plot_species_map(out, species_map, hex_size, boundary_xy, save_path, grid_dp
 
     fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax, cx, cy, hex_size * 0.97,
-                 facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
+    # 批量绘制地形六边形
+    facecolors = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
+    draw_hex_batch(ax, grids, hex_size, facecolors, alpha=0.45)
 
+    # 批量绘制物种标记（每个物种一次 scatter 调用）
+    # 预计算每个网格的活跃物种列表，避免内层循环重复计算
+    grid_active = {}
     for g in grids:
         sd = species_map.get(g["grid_id"], {})
-        active = [sp for sp in all_species if sd.get(sp, 0) > 0]
-        if not active:
-            continue
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        n = len(active)
-        for i, sp in enumerate(active):
-            style = SPECIES_STYLE.get(sp, {"marker": "P", "color": "#333", "size_scale": 80})
+        grid_active[g["grid_id"]] = [s for s in all_species if sd.get(s, 0) > 0]
+
+    for sp in all_species:
+        style = SPECIES_STYLE.get(sp, {"marker": "P", "color": "#333", "size_scale": 80})
+        xs, ys, sizes = [], [], []
+        for g in grids:
+            sd = species_map.get(g["grid_id"], {})
+            d = sd.get(sp, 0)
+            if d <= 0:
+                continue
+            cx, cy = grid_center(g["q"], g["r"], hex_size)
+            active = grid_active[g["grid_id"]]
+            i = active.index(sp)
+            n = len(active)
             ox = (i - (n - 1) / 2) * hex_size * 0.35
-            size = max(10, style["size_scale"] * sd[sp])
-            ax.scatter(cx + ox, cy, marker=style["marker"], s=size,
+            xs.append(cx + ox)
+            ys.append(cy)
+            sizes.append(max(10, style["size_scale"] * d))
+        if xs:
+            ax.scatter(xs, ys, marker=style["marker"], s=sizes,
                        color=style["color"], edgecolors="black",
                        linewidths=0.4, alpha=0.85, zorder=4)
 
@@ -958,11 +1090,20 @@ def plot_species_map(out, species_map, hex_size, boundary_xy, save_path, grid_dp
 
 
 def _compute_panel_figsize(grids, hex_size, grid_dpi, save_dpi):
-    xs = [grid_center(g["q"], g["r"], hex_size)[0] for g in grids]
-    ys = [grid_center(g["q"], g["r"], hex_size)[1] for g in grids]
+    x_min = x_max = y_min = y_max = None
+    for g in grids:
+        cx, cy = grid_center(g["q"], g["r"], hex_size)
+        if x_min is None:
+            x_min = x_max = cx
+            y_min = y_max = cy
+        else:
+            if cx < x_min: x_min = cx
+            if cx > x_max: x_max = cx
+            if cy < y_min: y_min = cy
+            if cy > y_max: y_max = cy
     margin = hex_size * 2
-    data_width = max(xs) - min(xs) + hex_size * 2 + margin * 2
-    data_height = max(ys) - min(ys) + hex_size * 2 + margin * 2
+    data_width = x_max - x_min + hex_size * 2 + margin * 2
+    data_height = y_max - y_min + hex_size * 2 + margin * 2
     hex_pixel_span = hex_size * math.sqrt(3)
     if hex_pixel_span == 0:
         hex_pixel_span = 1.0
@@ -1093,25 +1234,37 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
     all_species = []
     if species_map:
         all_species = sorted({sp for sd in species_map.values() for sp in sd})
-    
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax1, cx, cy, hex_size * 0.97,
-                 facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
 
+    # 批量绘制地形六边形
+    facecolors1 = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
+    draw_hex_batch(ax1, grids, hex_size, facecolors1, alpha=0.45)
+
+    # 批量绘制物种标记
     if species_map:
+        # 预计算每个网格的活跃物种列表
+        grid_active = {}
         for g in grids:
             sd = species_map.get(g["grid_id"], {})
-            active = [sp for sp in all_species if sd.get(sp, 0) > 0]
-            if not active:
-                continue
-            cx, cy = grid_center(g["q"], g["r"], hex_size)
-            n = len(active)
-            for i, sp in enumerate(active):
-                style = SPECIES_STYLE.get(sp, {"marker": "P", "color": "#333", "size_scale": 80})
+            grid_active[g["grid_id"]] = [s for s in all_species if sd.get(s, 0) > 0]
+
+        for sp in all_species:
+            style = SPECIES_STYLE.get(sp, {"marker": "P", "color": "#333", "size_scale": 80})
+            xs, ys, sizes = [], [], []
+            for g in grids:
+                sd = species_map.get(g["grid_id"], {})
+                d = sd.get(sp, 0)
+                if d <= 0:
+                    continue
+                cx, cy = grid_center(g["q"], g["r"], hex_size)
+                active = grid_active[g["grid_id"]]
+                i = active.index(sp)
+                n = len(active)
                 ox = (i - (n - 1) / 2) * hex_size * 0.35
-                size = max(10, style["size_scale"] * sd[sp])
-                ax1.scatter(cx + ox, cy, marker=style["marker"], s=size,
+                xs.append(cx + ox)
+                ys.append(cy)
+                sizes.append(max(10, style["size_scale"] * d))
+            if xs:
+                ax1.scatter(xs, ys, marker=style["marker"], s=sizes,
                            color=style["color"], edgecolors="black",
                            linewidths=0.4, alpha=0.85, zorder=4)
 
@@ -1120,10 +1273,8 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
     ax1.set_title("Species Density (Top)", fontsize=13, fontweight="bold", pad=8)
 
     # ================= 下半部分：部署资源图
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax2, cx, cy, hex_size * 0.97,
-                 facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
+    facecolors2 = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
+    draw_hex_batch(ax2, grids, hex_size, facecolors2, alpha=0.45)
 
     _draw_resources(ax2, grids, out, hex_size, edge_ids=_edge_grid_ids(grids, boundary_xy))
     draw_deployed_fence_edges(ax2, grids, out, hex_size)
@@ -1197,10 +1348,11 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     norm_max = max((g.get("protection_benefit_normalized", 0) for g in grids), default=1)
     norm = Normalize(vmin=0, vmax=norm_max)
 
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax1, cx, cy, hex_size * 0.97, facecolor=cmap(norm(g.get("protection_benefit_normalized", 0))))
-        if show_grid_ids:
+    facecolors_pb = [cmap(norm(g.get("protection_benefit_normalized", 0))) for g in grids]
+    draw_hex_batch(ax1, grids, hex_size, facecolors_pb)
+    if show_grid_ids:
+        for g in grids:
+            cx, cy = grid_center(g["q"], g["r"], hex_size)
             ax1.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=6, zorder=4)
 
     setup_map_ax(ax1, grids, hex_size)
@@ -1215,9 +1367,8 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     cb.ax.tick_params(labelsize=8)
 
     # ================= 下半部分：Deployment Map
-    for g in grids:
-        cx, cy = grid_center(g["q"], g["r"], hex_size)
-        draw_hex(ax2, cx, cy, hex_size * 0.97, facecolor=TERRAIN_COLORS.get(g["terrain_type"], "#ccc"), alpha=0.45)
+    facecolors_dep = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
+    draw_hex_batch(ax2, grids, hex_size, facecolors_dep, alpha=0.45)
 
     _draw_resources(ax2, grids, out, hex_size, edge_ids)
     draw_deployed_fence_edges(ax2, grids, out, hex_size)
@@ -1237,11 +1388,14 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     
     # 部署资源统计
     for res, (marker, color, label) in RESOURCE_MARKERS.items():
-        total = sum(g.get("resources_deployed", {}).get(res, 0) for g in grids)
+        total = sum(g.get("deployment", {}).get(res, 0) for g in grids)
         if total > 0:
             summary_items.append((label, str(total), False))
-    
-    fence_total = sum(len(g.get("fences", [])) for g in grids)
+
+    fence_total = sum(
+        len(g.get("fences", {}).get("boundary_edge_list", []))
+        for g in grids
+    )
     if fence_total > 0:
         summary_items.append(("Fence Edges", str(fence_total), False))
 
@@ -1325,7 +1479,8 @@ def parse_args():
         description="可视化 protection_pipeline.py 的输出 JSON",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("output", help="pipeline 输出 JSON 路径")
+    p.add_argument("output", nargs="?", default=None,
+                   help="pipeline 输出 JSON 路径（可选，无 output 时仅生成风险/物种/地形图）")
     p.add_argument("--input", "-i", default=None, help="pipeline 输入 JSON 路径（用于物种数据）")
     p.add_argument("--out_dir", "-d", default="./figures", help="图片输出目录")
     p.add_argument("--prefix", default="", help="输出文件名前缀")
@@ -1340,48 +1495,56 @@ def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    print(f"加载数据: {args.output}")
-    out, out_map, species_map, hex_size, boundary_xy = load_data(args.output, args.input)
-    print(f"  网格数: {len(out['grids'])}, hex_size: {hex_size}")
+    print(f"加载数据: output={args.output}, input={args.input}")
+    input_data, output_data, grid_map, species_map, hex_size, boundary_xy = load_data(
+        output_path=args.output, input_path=args.input)
+    print(f"  网格数: {len(input_data['grids'])}, hex_size: {hex_size}")
     if boundary_xy:
         print(f"  边界格子数: {len(boundary_xy)}")
     print(f"  grid_dpi: {args.grid_dpi}, save_dpi: {args.dpi}")
+    print(f"  output_data: {'有' if output_data else '无（仅生成风险/物种/地形图）'}")
 
     pre = args.prefix + "_" if args.prefix else ""
     print("生成图片...")
 
-    plot_risk_heatmap(out, out_map, hex_size, boundary_xy,
+    # 仅需 input 的图
+    plot_risk_heatmap(input_data, grid_map, hex_size, boundary_xy,
                       save_path=os.path.join(args.out_dir, f"{pre}risk_heatmap.png"),
+                      output_data=output_data,
                       grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    plot_risk_comparison(out, hex_size, boundary_xy,
-                         save_path=os.path.join(args.out_dir, f"{pre}risk_comparison.png"),
-                         grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    plot_protection_heatmap(out, hex_size, boundary_xy,
-                            save_path=os.path.join(args.out_dir, f"{pre}protection_heatmap.png"),
-                            grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    plot_terrain_map(out, hex_size, boundary_xy,
+    plot_terrain_map(input_data, hex_size, boundary_xy,
                      save_path=os.path.join(args.out_dir, f"{pre}terrain_map.png"),
+                     output_data=output_data,
                      grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    plot_terrain_deployment_map(out, hex_size, boundary_xy,
-                                save_path=os.path.join(args.out_dir, f"{pre}terrain_deployment_map.png"),
-                                grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    plot_species_map(out, species_map, hex_size, boundary_xy,
+    plot_species_map(input_data, species_map, hex_size, boundary_xy,
                      save_path=os.path.join(args.out_dir, f"{pre}species_map.png"),
                      grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    plot_species_panels(out, species_map, hex_size, boundary_xy,
-                        save_path=os.path.join(args.out_dir, f"{pre}species_panels.png"),
-                        grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    
-    plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy,
-                                      save_path=os.path.join(args.out_dir, f"{pre}species_deployment_comparison.png"),
-                                      grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    
-    plot_protection_deployment_comparison(out, hex_size, boundary_xy,
-                                          save_path=os.path.join(args.out_dir, f"{pre}protection_deployment_comparison.png"),
-                                          grid_dpi=args.grid_dpi, save_dpi=args.dpi)
-    plot_fitness_history(out,
-                         save_path=os.path.join(args.out_dir, f"{pre}fitness_history.png"),
-                         save_dpi=args.dpi)
+
+    # 需要 output 的图
+    if output_data:
+        plot_risk_comparison(output_data, hex_size, boundary_xy,
+                             save_path=os.path.join(args.out_dir, f"{pre}risk_comparison.png"),
+                             grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+        plot_protection_heatmap(output_data, hex_size, boundary_xy,
+                                save_path=os.path.join(args.out_dir, f"{pre}protection_heatmap.png"),
+                                grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+        plot_terrain_deployment_map(output_data, hex_size, boundary_xy,
+                                    save_path=os.path.join(args.out_dir, f"{pre}terrain_deployment_map.png"),
+                                    grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+        plot_species_panels(output_data, species_map, hex_size, boundary_xy,
+                            save_path=os.path.join(args.out_dir, f"{pre}species_panels.png"),
+                            grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+        plot_species_deployment_comparison(output_data, species_map, hex_size, boundary_xy,
+                                           save_path=os.path.join(args.out_dir, f"{pre}species_deployment_comparison.png"),
+                                           grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+        plot_protection_deployment_comparison(output_data, hex_size, boundary_xy,
+                                              save_path=os.path.join(args.out_dir, f"{pre}protection_deployment_comparison.png"),
+                                              grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+        plot_fitness_history(output_data,
+                             save_path=os.path.join(args.out_dir, f"{pre}fitness_history.png"),
+                             save_dpi=args.dpi)
+    else:
+        print("  [skip] 部署/保护相关图 — 无 output 数据")
     print("完成。")
 
 

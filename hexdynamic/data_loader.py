@@ -171,14 +171,16 @@ class DataLoader:
                 else:
                     # 其他资源使用地形规则
                     terrain_ok = terrain_deployment[grid.terrain_type][resource]
-                    
-                    # 物种密度约束：patrol 和 camp 不能部署在物种密度不为零的网格
+
+                    # 物种密度约束：patrol 和 camp 只能部署在犀牛+大象密度都 < 0.2 的网格（鸟类不影响）
                     if terrain_ok == 1 and resource in ('patrol', 'camp'):
                         sd = grid.species_densities or {}
-                        has_species = any(v > 0 for v in sd.values())
-                        if has_species:
+                        rhino_density = sd.get('black_rhino', 0.0) + sd.get('rhino', 0.0)
+                        elephant_density = sd.get('african_elephant', 0.0) + sd.get('elephant', 0.0)
+                        # 犀牛或大象密度 >= 0.2 时，禁止部署
+                        if rhino_density >= 0.2 or elephant_density >= 0.2:
                             terrain_ok = 0
-                    
+
                     self.deployment_matrix[resource][grid.grid_id] = terrain_ok
 
     def initialize_coverage_effectiveness(self, overrides: Dict[str, Dict[str, float]] = None):
