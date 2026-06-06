@@ -682,7 +682,8 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
             }
         },
         'visualization_config': {
-            'show_grid_ids': False
+            'show_grid_ids': False,
+            'raw_risk_vmax': data.get('visualization_config', {}).get('raw_risk_vmax')
         },
         'grids': grid_results
     }

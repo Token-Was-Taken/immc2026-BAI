@@ -78,6 +78,18 @@ def visualize(output_path: str, input_path: str, out_dir: str, prefix: str, grid
         boundary_xy,
         save_path=p("risk_heatmap.png"),
         output_data=output_data,
+        risk_mode="normalized",
+        grid_dpi=grid_dpi,
+        save_dpi=save_dpi,
+    )
+    plot_risk_heatmap(
+        input_data,
+        grid_map,
+        hex_size,
+        boundary_xy,
+        save_path=p("risk_heatmap_raw.png"),
+        output_data=output_data,
+        risk_mode="raw",
         grid_dpi=grid_dpi,
         save_dpi=save_dpi,
     )

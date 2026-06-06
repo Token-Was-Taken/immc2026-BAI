@@ -7241,8 +7241,8 @@
     ]
   },
   "time": {
-    "hour_of_day": 12,
-    "season": "DRY"
+    "hour_of_day": 23,
+    "season": "RAINY"
   },
   "use_temporal_factors": false,
   "risk_model_config": {
@@ -7341,10 +7341,14 @@
     "fitness_workers": 32,
     "output_interval": 10,
     "parallel_chunksize": 4,
-    "profile_iteration_stages": true,
+    "profile_iteration_stages": false,
     "profile_log_every": 1,
     "scout_update_interval": 2,
     "single_wave_role_update": true
+  },
+  "visualization_config": {
+    "show_grid_ids": false,
+    "raw_risk_vmax": 1.0
   },
   "grids": [
     {
