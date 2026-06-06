@@ -70,6 +70,8 @@ class VectorizedCoverageModel(CoverageModel):
         self._reach_camera = self._eff_radius_camera * 2.0
 
         self._tl = threading.local()
+        self._drone_influence = self._build_sparse_influence(self._eff_radius_drone_safe, self._reach_drone, self._eff_drone)
+        self._camera_influence = self._build_sparse_influence(self._eff_radius_camera_safe, self._reach_camera, self._eff_camera)
 
         # Cache for coverage arrays to avoid redundant computation.
         self._cached_solution_id = None
@@ -127,6 +129,39 @@ class VectorizedCoverageModel(CoverageModel):
             tl.named_buffers[name] = buf
         return buf
 
+    def _build_sparse_influence(self, eff_radius: np.ndarray, reach: np.ndarray, effectiveness: np.ndarray):
+        max_reach = int(np.ceil(float(np.max(reach)))) if len(reach) else 0
+        if max_reach <= 0:
+            return None
+
+        try:
+            dist = self._grid_model.get_distance_sparse(max_reach).tocsr()
+        except (MemoryError, ValueError):
+            return None
+
+        nnz_cap = 35_000_000
+        if dist.nnz > nnz_cap:
+            return None
+
+        row_counts = np.diff(dist.indptr)
+        rows = np.repeat(np.arange(dist.shape[0], dtype=np.int32), row_counts)
+        cols = dist.indices
+        d = dist.data.astype(np.float32, copy=False)
+
+        row_reach = reach[rows]
+        valid = (row_reach > 0) & (d <= row_reach)
+        if not np.any(valid):
+            return None
+
+        rows = rows[valid]
+        cols = cols[valid]
+        d = d[valid]
+        values = np.exp(-d / eff_radius[rows]).astype(np.float32, copy=False)
+        values *= effectiveness[rows].astype(np.float32, copy=False)
+
+        from scipy import sparse
+        return sparse.csr_matrix((values, (rows, cols)), shape=dist.shape)
+
     def _ranger_vec(self, solution: DeploymentSolution) -> np.ndarray:
         vec = self._get_tl_buffer("ranger_vec", (len(self.grid_ids),), dtype=np.float64)
         vec.fill(0.0)
@@ -143,6 +178,17 @@ class VectorizedCoverageModel(CoverageModel):
         vec.fill(0.0)
         id_to_idx = self._id_to_idx
         for gid, cnt in solution.cameras.items():
+            if cnt > 0:
+                idx = id_to_idx.get(gid)
+                if idx is not None:
+                    vec[idx] += cnt
+        return vec
+
+    def _drone_vec(self, solution: DeploymentSolution) -> np.ndarray:
+        vec = self._get_tl_buffer("drone_vec", (len(self.grid_ids),), dtype=np.float64)
+        vec.fill(0.0)
+        id_to_idx = self._id_to_idx
+        for gid, cnt in solution.drones.items():
             if cnt > 0:
                 idx = id_to_idx.get(gid)
                 if idx is not None:
@@ -194,11 +240,15 @@ class VectorizedCoverageModel(CoverageModel):
         if len(drone_idx) == 0:
             return {gid: 0.0 for gid in self.grid_ids}
 
-        dists = self._compute_dists_to(drone_idx)
-        eff_r = self._eff_radius_drone_safe[:, None]
-        within = dists <= self._reach_drone[:, None]
-        coverage = (np.exp(-dists / eff_r) * within).sum(axis=1)
-        coverage = np.minimum(1.0, coverage) * self._eff_drone
+        if self._drone_influence is not None:
+            coverage = np.asarray(self._drone_influence.dot(self._drone_vec(solution))).ravel()
+            coverage = np.minimum(1.0, coverage)
+        else:
+            dists = self._compute_dists_to(drone_idx)
+            eff_r = self._eff_radius_drone_safe[:, None]
+            within = dists <= self._reach_drone[:, None]
+            coverage = (np.exp(-dists / eff_r) * within).sum(axis=1)
+            coverage = np.minimum(1.0, coverage) * self._eff_drone
         return {gid: float(coverage[i]) for i, gid in enumerate(self.grid_ids)}
 
     def calculate_camera_coverage(self, solution: DeploymentSolution) -> Dict[int, float]:
@@ -207,12 +257,16 @@ class VectorizedCoverageModel(CoverageModel):
         if len(active) == 0:
             return {gid: 0.0 for gid in self.grid_ids}
 
-        dists = self._compute_dists_to(active)
-        weights = cam_vec[active]
-        eff_r = self._eff_radius_camera_safe[:, None]
-        within = dists <= self._reach_camera[:, None]
-        coverage = (np.exp(-dists / eff_r) * within * weights).sum(axis=1)
-        coverage = np.minimum(1.0, coverage) * self._eff_camera
+        if self._camera_influence is not None:
+            coverage = np.asarray(self._camera_influence.dot(cam_vec)).ravel()
+            coverage = np.minimum(1.0, coverage)
+        else:
+            dists = self._compute_dists_to(active)
+            weights = cam_vec[active]
+            eff_r = self._eff_radius_camera_safe[:, None]
+            within = dists <= self._reach_camera[:, None]
+            coverage = (np.exp(-dists / eff_r) * within * weights).sum(axis=1)
+            coverage = np.minimum(1.0, coverage) * self._eff_camera
         return {gid: float(coverage[i]) for i, gid in enumerate(self.grid_ids)}
 
     def calculate_fence_protection(self, solution: DeploymentSolution) -> Dict[int, float]:
@@ -269,11 +323,12 @@ class VectorizedCoverageModel(CoverageModel):
 
     def _get_cached_coverage_arrays(self, solution: DeploymentSolution):
         sid = id(solution)
-        if sid == self._cached_solution_id and self._cached_coverage is not None:
-            return self._cached_coverage
+        tl = self._tl
+        if getattr(tl, "cached_solution_id", None) == sid and getattr(tl, "cached_coverage", None) is not None:
+            return tl.cached_coverage
         result = self._calculate_coverage_arrays(solution)
-        self._cached_solution_id = sid
-        self._cached_coverage = result
+        tl.cached_solution_id = sid
+        tl.cached_coverage = result
         return result
 
     def _calculate_coverage_arrays(self, solution: DeploymentSolution):
@@ -292,11 +347,15 @@ class VectorizedCoverageModel(CoverageModel):
 
         drone_idx = self._resource_indices(solution.drones)
         if len(drone_idx) > 0:
-            dists_d = self._compute_dists_to(drone_idx)
-            eff_r_d = self._eff_radius_drone_safe[:, None]
-            within_d = dists_d <= self._reach_drone[:, None]
-            dc = (np.exp(-dists_d / eff_r_d) * within_d).sum(axis=1)
-            dc = np.minimum(1.0, dc) * self._eff_drone
+            if self._drone_influence is not None:
+                dc = np.asarray(self._drone_influence.dot(self._drone_vec(solution))).ravel()
+                dc = np.minimum(1.0, dc)
+            else:
+                dists_d = self._compute_dists_to(drone_idx)
+                eff_r_d = self._eff_radius_drone_safe[:, None]
+                within_d = dists_d <= self._reach_drone[:, None]
+                dc = (np.exp(-dists_d / eff_r_d) * within_d).sum(axis=1)
+                dc = np.minimum(1.0, dc) * self._eff_drone
         else:
             dc = self._get_tl_buffer("dc_zeros", (n_grids,), dtype=np.float64)
             dc.fill(0.0)
@@ -304,12 +363,16 @@ class VectorizedCoverageModel(CoverageModel):
         cam_vec = self._camera_vec(solution)
         active_c = np.where(cam_vec > 0)[0]
         if len(active_c) > 0:
-            dists_c = self._compute_dists_to(active_c)
-            weights_c = cam_vec[active_c]
-            eff_r_c = self._eff_radius_camera_safe[:, None]
-            within_c = dists_c <= self._reach_camera[:, None]
-            cc = (np.exp(-dists_c / eff_r_c) * within_c * weights_c).sum(axis=1)
-            cc = np.minimum(1.0, cc) * self._eff_camera
+            if self._camera_influence is not None:
+                cc = np.asarray(self._camera_influence.dot(cam_vec)).ravel()
+                cc = np.minimum(1.0, cc)
+            else:
+                dists_c = self._compute_dists_to(active_c)
+                weights_c = cam_vec[active_c]
+                eff_r_c = self._eff_radius_camera_safe[:, None]
+                within_c = dists_c <= self._reach_camera[:, None]
+                cc = (np.exp(-dists_c / eff_r_c) * within_c * weights_c).sum(axis=1)
+                cc = np.minimum(1.0, cc) * self._eff_camera
         else:
             cc = self._get_tl_buffer("cc_zeros", (n_grids,), dtype=np.float64)
             cc.fill(0.0)

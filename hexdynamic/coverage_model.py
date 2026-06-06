@@ -32,6 +32,29 @@ class CoverageModel:
         # coverage_effectiveness[grid_id][resource] = multiplier (default 1.0)
         self.coverage_effectiveness = coverage_effectiveness or {}
         self.grid_ids = grid_model.get_all_grid_ids()
+        self._deployable_boundary_edges_by_grid, self._deployable_boundary_edges = (
+            self._precompute_deployable_boundary_edges()
+        )
+        self._total_possible_fence_edges = len(self._deployable_boundary_edges)
+
+    def _precompute_deployable_boundary_edges(self):
+        by_grid = {}
+        all_edges = []
+        fence_matrix = self.deployment_matrix.get('fence', {})
+        for grid_id in self.grid_ids:
+            if fence_matrix.get(grid_id, 0) <= 0:
+                continue
+            edges = tuple(self.grid_model.get_boundary_edges_for_grid(grid_id))
+            if edges:
+                by_grid[grid_id] = edges
+                all_edges.extend((g_id, direction) for g_id, direction in edges)
+        return by_grid, tuple(all_edges)
+
+    def get_deployable_boundary_edges_for_grid(self, grid_id: int) -> Tuple[Tuple[int, int], ...]:
+        return self._deployable_boundary_edges_by_grid.get(grid_id, ())
+
+    def get_all_deployable_boundary_edges(self) -> Tuple[Tuple[int, int], ...]:
+        return self._deployable_boundary_edges
 
     def _effectiveness(self, grid_id: int, resource: str) -> float:
         return self.coverage_effectiveness.get(grid_id, {}).get(resource, 1.0)
@@ -457,16 +480,10 @@ class CoverageModel:
                         self.deployment_matrix['fence'].get(gid2, 0) != 1):
                     del solution.fences[edge_key]
 
-        total_possible = 0
-        for grid_id in self.grid_ids:
-            if self.deployment_matrix['fence'].get(grid_id, 0) > 0:
-                boundary_edges = self.grid_model.get_boundary_edges_for_grid(grid_id)
-                total_possible += len(boundary_edges)
-
         total_fence_length = constraints.get('total_fence_length', float('inf'))
         total_fences = sum(solution.fences.values())
 
-        if total_possible > total_fence_length:
+        if self._total_possible_fence_edges > total_fence_length:
             while total_fences > total_fence_length:
                 fence_counts = [(k, v) for k, v in solution.fences.items() if v > 0]
                 if not fence_counts:
