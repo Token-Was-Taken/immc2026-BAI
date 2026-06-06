@@ -1,4 +1,4 @@
-﻿﻿"""
+"""
 visualize_output.py
 杈撳叆锛歱rotection_pipeline.py 鐢熸垚鐨?output JSON锛? 鍙€夌殑 input JSON 鐢ㄤ簬鐗╃鏁版嵁锛?
 杈撳嚭锛? 寮犲浘鐗?
@@ -349,47 +349,36 @@ def setup_map_ax(ax, grids, hex_size, margin=1.5):
 
 def draw_boundary(ax, grids, boundary_xy, hex_size):
     """
-    鍦ㄨ竟鐣屾牸瀛愮殑澶栦晶杈逛笂鐢讳繚鎶ゅ尯杞粨绾裤€?
-    boundary_xy: [(x, y), ...] 杈圭晫鏍煎瓙鐨勭瑳鍗″皵鍧愭爣锛堟潵鑷?input JSON锛?
-    閫氳繃 x/y 鍖归厤 grids 閲岀殑鏍煎瓙锛屾壘鍒板搴旂殑 q/r锛屽啀鎵惧嚭鏈濆悜淇濇姢鍖哄鐨勫叚杈瑰舰杈圭粯鍒躲€?
+    Draw the protected-area outline on every exposed side of edge grids.
+
+    Older inputs include map_config.boundary_locations, but that list can be
+    incomplete for irregular shapes. The reliable source for the visible edge is
+    the actual grid topology: any hex side with no neighbor in grids is outside.
     """
-    if not boundary_xy:
+    if not grids:
         return
 
-    # 寤虹珛 (x, y) 鈫?grid 鐨勬槧灏?
-    xy_to_grid = {(g["x"], g["y"]): g for g in grids}
-    # 淇濇姢鍖哄唴鎵€鏈夋牸瀛愮殑 (q, r) 闆嗗悎
     inner_qr = {(g["q"], g["r"]) for g in grids}
 
-    # pointy-top 鍏竟褰㈢殑 6 涓偦灞呮柟鍚戯紙axial 鍧愭爣鍋忕Щ锛?
-    # 瀵瑰簲杈圭殑涓や釜椤剁偣瑙掑害绱㈠紩锛堥《鐐逛粠 -30掳 寮€濮嬶紝姣?60掳 涓€涓級
-    # 鏂瑰悜椤哄簭锛欵, NE, NW, W, SW, SE
-    neighbor_dirs = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)]
-    # 姣忎釜鏂瑰悜瀵瑰簲鐨勫渚ц竟椤剁偣绱㈠紩锛坧ointy-top锛岄《鐐?i 鍦ㄨ搴?60*i - 30 搴︼級
-    # FIX: Rotate direction mapping to match actual deployment
     dir_to_edge_verts = {
-        (1,  0): (1, 0),   # E  鈫?椤剁偣 1,0
-        (0,  1): (2, 1),   # NE 鈫?椤剁偣 2,1
-        (-1, 1): (3, 2),   # NW 鈫?椤剁偣 3,2
-        (-1, 0): (4, 3),   # W  鈫?椤剁偣 4,3
-        (0, -1): (5, 4),   # SW 鈫?椤剁偣 5,4
-        (1, -1): (0, 5),   # SE 鈫?椤剁偣 0,5
+        (1, 0): (1, 0),
+        (0, 1): (2, 1),
+        (-1, 1): (3, 2),
+        (-1, 0): (4, 3),
+        (0, -1): (5, 4),
+        (1, -1): (0, 5),
     }
 
     def get_corner(cx, cy, size, i):
         a = math.pi / 3 * i - math.pi / 6
         return cx + size * math.cos(a), cy + size * math.sin(a)
 
-    for bx, by in boundary_xy:
-        g = xy_to_grid.get((bx, by))
-        if g is None:
-            continue
+    for g in grids:
         q, r = g["q"], g["r"]
         cx, cy = grid_center(q, r, hex_size)
         for (dq, dr), (vi, vj) in dir_to_edge_verts.items():
             nq, nr = q + dq, r + dr
             if (nq, nr) not in inner_qr:
-                # 杩欐潯杈规湞鍚戜繚鎶ゅ尯澶栵紝鐢昏疆寤撶嚎
                 p1 = get_corner(cx, cy, hex_size, vi)
                 p2 = get_corner(cx, cy, hex_size, vj)
                 ax.plot([p1[0], p2[0]], [p1[1], p2[1]],
