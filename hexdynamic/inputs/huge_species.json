@@ -8799,7 +8799,7 @@
     "scout_update_interval": 2,
     "single_wave_role_update": true
   },
-    "visualization_config": {
+  "visualization_config": {
     "show_grid_ids": false,
     "raw_risk_vmax": 1.0
   },
