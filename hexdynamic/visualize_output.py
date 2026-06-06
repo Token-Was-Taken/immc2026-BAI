@@ -1,16 +1,16 @@
-﻿﻿"""
+"""
 visualize_output.py
-杈撳叆锛歱rotection_pipeline.py 鐢熸垚鐨?output JSON锛? 鍙€夌殑 input JSON 鐢ㄤ簬鐗╃鏁版嵁锛?
-杈撳嚭锛? 寮犲浘鐗?
-  1. risk_heatmap.png           鈥?椋庨櫓鐑姏鍥?
-  2. protection_heatmap.png     鈥?淇濇姢鏀剁泭鐑姏鍥?+ 璧勬簮閮ㄧ讲鍙犲姞
-  3. terrain_map.png            鈥?鍦扮悊灞炴€у湴鍥?
-  4. terrain_deployment_map.png 鈥?鍦板舰 + 閮ㄧ讲璧勬簮鍙犲姞
-  5. species_map.png            鈥?鐗╃瀵嗗害鍦板浘
+输入：protection_pipeline.py 生成的 output JSON（+ 可选的 input JSON 用于物种数据）
+输出：5 张图片
+  1. risk_heatmap.png           — 风险热力图
+  2. protection_heatmap.png     — 保护收益热力图 + 资源部署叠加
+  3. terrain_map.png            — 地理属性地图
+  4. terrain_deployment_map.png — 地形 + 部署资源叠加
+  5. species_map.png            — 物种密度地图
 
-鍥句緥鍜屾枃瀛楄鏄庡叏閮ㄦ斁鍦ㄥ湴鍥惧彸渚х嫭绔嬪尯鍩燂紝涓嶉伄鎸″湴鍥俱€?
+图例和文字说明全部放在地图右侧独立区域，不遮挡地图。
 
-鐢ㄦ硶锛?
+用法：
     python visualize_output.py output.json
     python visualize_output.py output.json --input input.json --out_dir ./figures
 """
