@@ -1,8 +1,8 @@
 """
-Generate species_densities for big4o.json using terrain and waterhole proximity.
+#Generate species_densities for huge.json using terrain and waterhole proximity.
 
 Rule addition:
-- Ensure at least 40% of SparseGrass grids have both rhino=0.0 and elephant=0.0.
+- Ensure at least 60% of SparseGrass grids have both rhino=0.0 and elephant=0.0.
 """
 import json
 import math
@@ -12,9 +12,9 @@ from math import ceil
 
 random.seed(42)
 
-INPUT = r"e:\code\immc2026-BAI\hexdynamic\inputs\big4o.json"
-VIEWER = r"e:\code\immc2026-BAI\marker\big-viewer.json"
-OUTPUT = r"e:\code\immc2026-BAI\hexdynamic\inputs\big4o_species.json"
+INPUT = r"d:\code\immc2026-BAI\hexdynamic\inputs\huge.json"
+VIEWER = r"d:\code\immc2026-BAI\marker\big-viewer.json"
+OUTPUT = r"d:\code\immc2026-BAI\hexdynamic\inputs\huge_species.json"
 
 with open(INPUT, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -172,7 +172,7 @@ def density_for(g):
     return {"rhino": rhino, "elephant": elephant, "bird": bird}
 
 
-def enforce_sparsegrass_min_no_rhino_elephant(grids, min_ratio=0.4):
+def enforce_sparsegrass_min_no_rhino_elephant(grids, min_ratio=0.6):
     """Ensure at least min_ratio of SparseGrass grids have rhino=0 and elephant=0."""
     sparse = [g for g in grids if g["terrain_type"] == "SparseGrass"]
     if not sparse:
@@ -212,7 +212,7 @@ for g in grids:
     g["species_densities"] = density_for(g)
 
 sparse_total, sparse_target, sparse_changed = enforce_sparsegrass_min_no_rhino_elephant(
-    grids, min_ratio=0.4
+    grids, min_ratio=0.7
 )
 if sparse_total > 0:
     sparse_zero = sum(
@@ -226,7 +226,7 @@ if sparse_total > 0:
     print(
         f"\nSparseGrass zero rhino+elephant enforced: "
         f"{sparse_zero}/{sparse_total} ({sparse_zero_ratio:.1%}), "
-        f"target >= {sparse_target}/{sparse_total} (40.0%), adjusted={sparse_changed}"
+        f"target >= {sparse_target}/{sparse_total} (70.0%), adjusted={sparse_changed}"
     )
 
 
