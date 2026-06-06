@@ -8794,7 +8794,7 @@
     "fitness_workers": 32,
     "output_interval": 10,
     "parallel_chunksize": 4,
-    "profile_iteration_stages": false,
+    "profile_iteration_stages": true,
     "profile_log_every": 1,
     "scout_update_interval": 2,
     "single_wave_role_update": true
