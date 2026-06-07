@@ -693,51 +693,6 @@ def _worker_partial_reset_scout(solution):
     return _worker_repair(result)
 
 
-def _worker_initialize_solution():
-    cameras = {}
-    camps = {}
-    drones = {}
-    rangers = {}
-    fences = dict(_worker_fixed_fences)
-
-    def deploy_resource(resource_type, target_key, max_key, out_dict, forbidden=None):
-        target = _worker_constraints.get(target_key, 0)
-        if target <= 0:
-            return
-        max_per_grid = _worker_constraints.get(max_key, 1)
-        needed = (target + max_per_grid - 1) // max_per_grid
-        available = _worker_collect_available_grids(resource_type, forbidden or set(), needed)
-        deployed = 0
-        for gid in available:
-            if deployed >= target:
-                break
-            count = min(max_per_grid, target - deployed)
-            out_dict[gid] = count
-            deployed += count
-
-    deploy_resource('camera', 'total_cameras', 'max_cameras_per_grid', cameras)
-    deploy_resource('drone', 'total_drones', 'max_drones_per_grid', drones)
-    deploy_resource('camp', 'total_camps', 'max_camps_per_grid', camps)
-    deploy_resource('patrol', 'total_patrol', 'max_rangers_per_grid', rangers, set(camps))
-
-    total_fence_length = _worker_constraints.get('total_fence_length', float('inf'))
-    all_fence_edges = []
-    for grid_id in _worker_grid_ids:
-        if _worker_coverage_model.deployment_matrix['fence'].get(grid_id, 0) > 0:
-            for edge_key in _worker_coverage_model.get_deployable_boundary_edges_for_grid(grid_id):
-                if edge_key not in _worker_fixed_fences:
-                    all_fence_edges.append(edge_key)
-    if len(all_fence_edges) > total_fence_length:
-        random.shuffle(all_fence_edges)
-        all_fence_edges = all_fence_edges[:int(total_fence_length)]
-    for edge_key in all_fence_edges:
-        fences[edge_key] = 1
-
-    solution = DeploymentSolution(cameras=cameras, camps=camps, drones=drones,
-                                  rangers=rangers, fences=fences)
-    return _worker_repair(solution)
-
-
 def _worker_generate_and_evaluate(task):
     op = task['op']
     alpha = task.get('alpha', 3.0)  # Default alpha for backward compatibility
@@ -750,9 +705,7 @@ def _worker_generate_and_evaluate(task):
     else:
         solution = None
 
-    if op == 'random_init':
-        new_sol = _worker_initialize_solution()
-    elif op == 'exploit':
+    if op == 'exploit':
         best_data = task['best_solution']
         best_sol = DeploymentSolution(
             cameras=best_data['cameras'], camps=best_data['camps'],
@@ -1029,23 +982,13 @@ class DSSAOptimizer:
             # Auto: keep a few chunks per worker while avoiding tiny chunk overhead.
             self._parallel_chunksize = max(1, self.config.population_size // max(1, self._fitness_workers * 4))
 
-        # Process pool avoids GIL contention for the Python-loop coverage model.
-        # The vectorized model spends most fitness time in NumPy/GPU kernels and
-        # benefits from threads because they avoid repeatedly pickling solutions
-        # and the coverage model across process boundaries.
+        # Process pool avoids GIL contention in candidate generation/repair and
+        # keeps large vectorized fitness work from contending inside one process.
         os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
         os.environ.setdefault('MKL_NUM_THREADS', '1')
         os.environ.setdefault('OMP_NUM_THREADS', '1')
         os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
-        self._use_thread_fitness_executor = (
-            self.coverage_model.__class__.__name__ == "VectorizedCoverageModel"
-        )
-        executor_cls = (
-            concurrent.futures.ThreadPoolExecutor
-            if self._use_thread_fitness_executor
-            else concurrent.futures.ProcessPoolExecutor
-        )
-        self._fitness_executor = executor_cls(
+        self._fitness_executor = concurrent.futures.ProcessPoolExecutor(
             max_workers=self._fitness_workers,
             initializer=_worker_initializer,
             initargs=(self.coverage_model, self.constraints,
@@ -1062,8 +1005,6 @@ class DSSAOptimizer:
                       self.config.use_risk_priority,
                       self._grid_to_risk),
         )
-        if self._use_thread_fitness_executor:
-            print(f"      [PERF] Vectorized fitness executor: threads={self._fitness_workers}")
 
         self._fitness_cache = {}
         self._fitness_cache_max_size = self.config.fitness_cache_max_size
@@ -2001,26 +1942,6 @@ class DSSAOptimizer:
                 self.best_fitness = new_fit
                 self.best_solution = new_sol
 
-    def _reset_population_indices_parallel(self, indices):
-        indices = [idx for idx in indices if self.population[idx] is not self.best_solution]
-        if not indices:
-            return
-        results_iter = self._fitness_executor.map(
-            _worker_generate_and_evaluate,
-            [{'op': 'random_init'} for _ in indices],
-            chunksize=self._parallel_chunksize
-        )
-        for idx, result in zip(indices, results_iter):
-            if result is None or result.get('unchanged'):
-                continue
-            sol = _dict_to_sol(result)
-            fit = result['fitness']
-            self.population[idx] = sol
-            self.population_fitness[idx] = fit
-            if fit > self.best_fitness + self.config.fitness_update_epsilon:
-                self.best_fitness = fit
-                self.best_solution = sol
-
     def _update_roles_single_wave(self, iteration: int, alpha: float):
         p_tasks, p_indices, p_old_fitnesses, escape_producers = self._build_producer_tasks(alpha)
         f_tasks, f_indices, f_old_fitnesses, escape_followers = self._build_follower_tasks(alpha)
@@ -2038,7 +1959,19 @@ class DSSAOptimizer:
             )
             self._apply_task_results(all_indices, all_old_fitnesses, results_iter)
 
-        self._reset_population_indices_parallel(full_reset_indices)
+        if full_reset_indices:
+            reset_solutions = []
+            for pop_idx in full_reset_indices:
+                sol = self._initialize_solution()
+                self.population[pop_idx] = sol
+                reset_solutions.append(sol)
+
+            reset_fitnesses = self._evaluate_fitness_parallel(reset_solutions)
+            for pop_idx, fit in zip(full_reset_indices, reset_fitnesses):
+                self.population_fitness[pop_idx] = fit
+                if fit > self.best_fitness + self.config.fitness_update_epsilon:
+                    self.best_fitness = fit
+                    self.best_solution = self.population[pop_idx]
 
         return escape_producers, escape_followers
 
@@ -2148,7 +2081,19 @@ class DSSAOptimizer:
                     self.population[pop_idx] = _dict_to_sol(result)
                     self.population_fitness[pop_idx] = result['fitness']
 
-        self._reset_population_indices_parallel(full_reset_indices)
+        if full_reset_indices:
+            reset_solutions = []
+            for pop_idx in full_reset_indices:
+                sol = self._initialize_solution()
+                self.population[pop_idx] = sol
+                reset_solutions.append(sol)
+
+            reset_fitnesses = self._evaluate_fitness_parallel(reset_solutions)
+            for pop_idx, fit in zip(full_reset_indices, reset_fitnesses):
+                self.population_fitness[pop_idx] = fit
+                if fit > self.best_fitness + self.config.fitness_update_epsilon:
+                    self.best_fitness = fit
+                    self.best_solution = self.population[pop_idx]
 
     def _update_best_solution(self):
         """更新全局最优解：评估所有个体适应度，保留最高者"""
@@ -2244,7 +2189,10 @@ class DSSAOptimizer:
                 if iteration > 0 and iteration % 100 == 0:
                     n_reset = max(1, int(self.config.population_size * 0.1))
                     indices_to_reset = random.sample(range(self.config.population_size), n_reset)
-                    self._reset_population_indices_parallel(indices_to_reset)
+                    for idx in indices_to_reset:
+                        if self.population[idx] is not self.best_solution:
+                            self.population[idx] = self._initialize_solution()
+                            self.population_fitness[idx] = float('-inf')
                 stage_after_periodic_reset = time.time()
 
                 # Update stagnation tracking state (diversity-aware)
@@ -2976,7 +2924,10 @@ class DSSAOptimizer:
         n_inject = max(1, int(self.config.population_size * ratio))
         indices = random.sample(range(self.config.population_size), min(n_inject, self.config.population_size))
 
-        self._reset_population_indices_parallel(indices)
+        for idx in indices:
+            if self.population[idx] is not self.best_solution:
+                self.population[idx] = self._initialize_solution()
+                self.population_fitness[idx] = float('-inf')
 
     def _partial_reset_scout(self, solution: DeploymentSolution) -> DeploymentSolution:
         """Scout 部分重置：随机重置部分资源类型，保留其余
