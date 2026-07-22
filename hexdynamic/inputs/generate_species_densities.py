@@ -12,9 +12,9 @@ from math import ceil
 
 random.seed(42)
 
-INPUT = r"d:\code\immc2026-BAI\hexdynamic\inputs\huge.json"
-VIEWER = r"d:\code\immc2026-BAI\marker\big-viewer.json"
-OUTPUT = r"d:\code\immc2026-BAI\hexdynamic\inputs\huge_species.json"
+INPUT = r"e:\code\immc2026-BAI\hexdynamic\inputs\etosha_input.json"
+VIEWER = r"e:\code\immc2026-BAI\marker\etosha-viewer.json"
+OUTPUT = r"e:\code\immc2026-BAI\hexdynamic\inputs\etosha_species.json"
 
 with open(INPUT, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -100,6 +100,13 @@ for g in grids:
         min_d = min(hex_distance(row, col, nr, nc) for nr, nc in non_saltmarsh_coords)
         grid_saltmarsh_edge_dist[g["grid_id"]] = min_d
 
+# 4b) Distance to nearest SaltMarsh for ALL grids (bird concentration factor)
+grid_min_saltmarsh_dist = {}
+for g in grids:
+    row, col = parse_grid_id(g["original_grid_id"])
+    min_d = min(hex_distance(row, col, sr, sc) for sr, sc in saltmarsh_coords)
+    grid_min_saltmarsh_dist[g["grid_id"]] = min_d
+
 
 rows = [parse_grid_id(g["original_grid_id"])[0] for g in grids]
 cols = [parse_grid_id(g["original_grid_id"])[1] for g in grids]
@@ -121,6 +128,8 @@ def density_for(g):
     prox_rhino = math.exp(-d_water / 5.0)
     prox_elephant = math.exp(-d_water / 8.0)
     prox_bird = math.exp(-d_water / 3.0)
+    d_saltmarsh = grid_min_saltmarsh_dist.get(gid, 99)
+    prox_sm = math.exp(-d_saltmarsh / 6.0)
     ecotone = grid_ecotone_score[gid]
     sm_edge_d = grid_saltmarsh_edge_dist.get(gid, 0)
 
@@ -153,16 +162,16 @@ def density_for(g):
         elephant_base = 0.0
 
     if terrain == "DenseGrass":
-        bird_base = 0.2 + 0.15 * ecotone + 0.1 * prox_bird
+        bird_base = 0.01 + 0.10 * prox_sm + 0.03 * ecotone
     elif terrain == "SparseGrass":
-        bird_base = 0.35 + 0.2 * ecotone + 0.1 * prox_bird
+        bird_base = 0.02 + 0.20 * prox_sm + 0.05 * ecotone
     elif terrain == "WaterHole":
-        bird_base = 0.5 + 0.15 * ecotone
+        bird_base = 0.1 + 0.15 * prox_sm + 0.1 * prox_bird
     elif terrain == "SaltMarsh":
         edge_factor = math.exp(-sm_edge_d / 3.0)
-        bird_base = 0.1 + 0.6 * edge_factor
+        bird_base = 0.15 + 0.65 * edge_factor
     elif terrain == "Road":
-        bird_base = 0.03 + 0.05 * ecotone
+        bird_base = 0.01 + 0.05 * prox_sm
     else:
         bird_base = 0.0
 
@@ -284,6 +293,46 @@ for dist_range, label in [
     ea = sum(g["species_densities"]["elephant"] for g in subset) / len(subset)
     ba = sum(g["species_densities"]["bird"] for g in subset) / len(subset)
     print(f"  {label:<12} n={len(subset):>5} | rhino={ra:.3f}  elephant={ea:.3f}  bird={ba:.3f}")
+
+print("\n--- SaltMarsh Proximity Effect (Bird, all terrains) ---")
+for dist_range, label in [
+    (0, "d=0(SaltMarsh)"),
+    (1, "d=1"),
+    (2, "d=2"),
+    (3, "d=3-5"),
+    (6, "d=6-10"),
+    (11, "d=11+"),
+]:
+    if dist_range == 0:
+        subset = [g for g in grids if g["terrain_type"] == "SaltMarsh"]
+    elif dist_range <= 2:
+        subset = [
+            g for g in grids
+            if g["terrain_type"] != "SaltMarsh"
+            and grid_min_saltmarsh_dist[g["grid_id"]] == dist_range
+        ]
+    elif dist_range == 3:
+        subset = [
+            g for g in grids
+            if g["terrain_type"] != "SaltMarsh"
+            and 3 <= grid_min_saltmarsh_dist[g["grid_id"]] <= 5
+        ]
+    elif dist_range == 6:
+        subset = [
+            g for g in grids
+            if g["terrain_type"] != "SaltMarsh"
+            and 6 <= grid_min_saltmarsh_dist[g["grid_id"]] <= 10
+        ]
+    else:
+        subset = [
+            g for g in grids
+            if g["terrain_type"] != "SaltMarsh"
+            and grid_min_saltmarsh_dist[g["grid_id"]] >= 11
+        ]
+    if not subset:
+        continue
+    ba = sum(g["species_densities"]["bird"] for g in subset) / len(subset)
+    print(f"  {label:<16} n={len(subset):>5} | bird={ba:.3f}")
 
 with open(OUTPUT, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)

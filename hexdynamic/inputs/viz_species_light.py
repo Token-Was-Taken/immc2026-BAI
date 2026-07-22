@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Polygon
 
-INPUT  = r'e:\code\immc2026-BAI\hexdynamic\inputs\big4o_species.json'
-OUT_DIR = r'e:\code\immc2026-BAI\hexdynamic\figures\inputs_viz'
+INPUT  = r'e:\code\immc2026-BAI\hexdynamic\inputs\etosha_species.json'
+OUT_DIR = r'e:\code\immc2026-BAI\hexdynamic\figures\inputs_viz_etosha'
 os.makedirs(OUT_DIR, exist_ok=True)
 
 with open(INPUT, 'r', encoding='utf-8') as f:

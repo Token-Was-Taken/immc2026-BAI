@@ -494,7 +494,7 @@ def plot_attributes_map(grids: list, hex_size: float = 1.0, save_path: str = Non
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run(input_path: str, output_dir: str, hex_size: float = None):
+def run(input_path: str, output_dir: str, vis: bool = False, hex_size: float = None):
     try:
         os.makedirs(output_dir, exist_ok=True)
         print(f"[1/3] Loading input: {input_path}")
@@ -527,13 +527,16 @@ def run(input_path: str, output_dir: str, hex_size: float = None):
         if min(norm_vals) > 0 and min(raw_vals) > 0:
             temporal_factor = np.mean(raw_vals) / np.mean(norm_vals) if np.mean(norm_vals) > 0 else None
 
-        print("[3/3] Generating maps...")
-        plot_risk_heatmap(grids, normalized_risks, hex_size,
-                          save_path=os.path.join(output_dir, 'risk_heatmap.png'))
-        plot_raw_risk_heatmap(grids, raw_risks, hex_size,
-                              save_path=os.path.join(output_dir, 'raw_risk_heatmap.png'))
-        plot_attributes_map(grids, hex_size,
-                            save_path=os.path.join(output_dir, 'attributes_map.png'))
+        if vis:
+            print("[3/3] Generating maps...")
+            plot_risk_heatmap(grids, normalized_risks, hex_size,
+                              save_path=os.path.join(output_dir, 'risk_heatmap.png'))
+            plot_raw_risk_heatmap(grids, raw_risks, hex_size,
+                                  save_path=os.path.join(output_dir, 'raw_risk_heatmap.png'))
+            plot_attributes_map(grids, hex_size,
+                                save_path=os.path.join(output_dir, 'attributes_map.png'))
+        else:
+            print("[3/3] Skipping visualization (--vis not provided)")
 
         # Save risk results as JSON
         result_path = os.path.join(output_dir, 'risk_results.json')
@@ -584,11 +587,13 @@ if __name__ == '__main__':
     )
     parser.add_argument('input', help='Input JSON path (same format as protection_pipeline)')
     parser.add_argument('output_dir', help='Output directory for generated maps and JSON')
+    parser.add_argument('--vis', action='store_true',
+                        help='Generate visualization maps in addition to computing risk index')
     parser.add_argument('--hex-size', type=float, default=None,
                         help='Hex cell size for rendering (auto-detected from input if not provided)')
     args = parser.parse_args()
 
-    run(args.input, args.output_dir, hex_size=args.hex_size)
+    run(args.input, args.output_dir, vis=args.vis, hex_size=args.hex_size)
 
 
 # DEBUG: Add this at the very end to test (disabled)

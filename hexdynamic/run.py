@@ -229,8 +229,58 @@ Examples:
         help="Approx pixels per hex in output image (auto if omitted)",
     )
     parser.add_argument("--dpi", type=int, default=150, help="matplotlib savefig DPI")
+    parser.add_argument("--workers", "-w", type=int, default=None, help="Concurrent processes for video rendering (default: auto)")
 
     return parser.parse_args()
+
+
+def _try_generate_iteration_video(output_json: str, input_json: str, viz_out_dir: str,
+                                   grid_dpi: int = None, save_dpi: int = 150,
+                                   fps: float = 5.0, workers: int = None):
+    """
+    Locate iteration_XXXX directories (if any) sibling to `output_json` and
+    render a deployment_video.mp4 from their best.json snapshots.
+
+    Used by both pipeline mode and visualize-only mode.
+    """
+    if not output_json or not os.path.exists(output_json):
+        return
+    iteration_input_dir = os.path.dirname(os.path.abspath(output_json))
+    has_iters = any(
+        name.startswith("iteration_") and os.path.isdir(os.path.join(iteration_input_dir, name))
+        for name in os.listdir(iteration_input_dir)
+    )
+    if not has_iters:
+        return
+
+    # Need an input JSON for terrain base map
+    if not input_json or not os.path.exists(input_json):
+        print("\n[VIDEO] Skip: iteration dirs found but input JSON is missing")
+        return
+
+    print("\n[VIDEO] Generating iteration deployment video...")
+    print(f"[VIDEO] Iteration input dir: {iteration_input_dir}")
+
+    # Lazy import heavy rendering/video stack only when needed.
+    from images_to_video import create_video, render_all_maps
+
+    if grid_dpi is None:
+        try:
+            with open(input_json, "r", encoding="utf-8") as f:
+                _in = json.load(f)
+            grid_dpi = auto_grid_dpi(_in.get("grids", []))
+        except Exception:
+            grid_dpi = 80
+
+    image_paths = render_all_maps(
+        iteration_input_dir, input_json, viz_out_dir,
+        grid_dpi=grid_dpi, save_dpi=save_dpi, max_workers=workers
+    )
+    if image_paths:
+        video_path = os.path.join(viz_out_dir, "iteration_deployment.mp4")
+        create_video(image_paths, video_path, fps=fps, resize_factor=1.0)
+    else:
+        print("\n[VIDEO] No iteration deployment maps found, skip video generation")
 
 
 def _resolve_viz_only_paths(args):
@@ -261,6 +311,14 @@ def main():
             print("Error: --visualize-only requires output JSON or --input-json", file=sys.stderr)
             sys.exit(1)
         visualize(output_json, input_json, viz_out_dir, args.prefix, grid_dpi=args.grid_dpi, save_dpi=args.dpi)
+
+        # In visualize-only mode, also generate the iteration deployment video
+        # if iteration directories exist alongside the output JSON.
+        if not args.no_visualize and output_json:
+            _try_generate_iteration_video(
+                output_json, input_json, viz_out_dir,
+                grid_dpi=args.grid_dpi, save_dpi=args.dpi, workers=args.workers
+            )
         return
 
     # pipeline mode requires both input and output
@@ -318,7 +376,11 @@ def main():
                 # Lazy import heavy rendering/video stack only when needed.
                 from images_to_video import create_video, render_all_maps
 
-                image_paths = render_all_maps(iteration_input_dir, args.input, viz_out_dir)
+                image_paths = render_all_maps(
+                    iteration_input_dir, args.input, viz_out_dir,
+                    max_workers=args.workers,
+                    grid_dpi=args.grid_dpi, save_dpi=args.dpi, fps=5.0
+                )
                 if image_paths:
                     video_path = os.path.join(viz_out_dir, "iteration_deployment.mp4")
                     create_video(image_paths, video_path, fps=5, resize_factor=1.0)

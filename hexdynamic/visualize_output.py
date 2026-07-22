@@ -668,17 +668,25 @@ SPECIES_STYLE = {
 }
 
 
-def _edge_grid_ids(grids, boundary_xy=None):
+def _edge_grid_ids(grids, boundary_xy=None, hex_size=1.0):
     """
-    杩斿洖杈圭紭缃戞牸鐨処D闆嗗悎
-    
-    濡傛灉鎻愪緵浜哹oundary_xy锛屼娇鐢ㄥ疄闄呯殑杈圭晫缃戞牸
-    鍚﹀垯浣跨敤鐭╁舰杈圭晫鐨勮竟缂樼綉鏍硷紙鍚戝悗鍏煎锛?
+    Return the set of grid_ids on the boundary.
+
+    If boundary_xy is provided, match by computed (x, y) center coordinates
+    (using grid_center with hex_size). Otherwise use rectangular edge fallback.
     """
     if boundary_xy:
-        # 浣跨敤瀹為檯鐨勮竟鐣岀綉鏍?
-        xy_to_grid = {(g["x"], g["y"]): g for g in grids}
-        return {xy_to_grid[(x, y)]["grid_id"] for (x, y) in boundary_xy if (x, y) in xy_to_grid}
+        # Compute (x, y) from q/r/hex_size — grids may not have stored x/y fields
+        xy_to_grid = {}
+        for g in grids:
+            cx, cy = grid_center(g["q"], g["r"], hex_size)
+            xy_to_grid[(round(cx, 2), round(cy, 2))] = g
+        result = set()
+        for (x, y) in boundary_xy:
+            key = (round(x, 2), round(y, 2))
+            if key in xy_to_grid:
+                result.add(xy_to_grid[key]["grid_id"])
+        return result
     else:
         # 浣跨敤鐭╁舰杈圭晫鐨勮竟缂樼綉鏍硷紙鏃ч€昏緫锛?
         rows = [g["r"] for g in grids]
@@ -777,14 +785,7 @@ def plot_risk_heatmap(input_data, grid_map, hex_size, boundary_xy, save_path, ou
             return
         risk_key = "raw_risk"
         risk_vals = [g["raw_risk"] for g in grids]
-        rmax = max(risk_vals)
-        raw_vmax_cfg = viz_cfg.get("raw_risk_vmax")
-        try:
-            raw_vmax_cfg = float(raw_vmax_cfg) if raw_vmax_cfg is not None else None
-        except (TypeError, ValueError):
-            raw_vmax_cfg = None
-        vmax_use = raw_vmax_cfg if (raw_vmax_cfg is not None and raw_vmax_cfg > 0) else (rmax if rmax > 0 else 1)
-        norm = Normalize(vmin=0, vmax=vmax_use)
+        norm = Normalize(vmin=0, vmax=1)
         title = "Risk Heatmap (raw)"
     elif "risk_normalized" in grids[0]:
         risk_key = "risk_normalized"
@@ -794,16 +795,14 @@ def plot_risk_heatmap(input_data, grid_map, hex_size, boundary_xy, save_path, ou
     elif "raw_risk" in grids[0]:
         risk_key = "raw_risk"
         risk_vals = [g["raw_risk"] for g in grids]
-        rmax = max(risk_vals)
-        norm = Normalize(vmin=0, vmax=rmax if rmax > 0 else 1)
+        norm = Normalize(vmin=0, vmax=1)
         title = "Risk Heatmap (raw)"
     elif "fire_risk" in grids[0]:
-        # fire_risk 涓嶆槸缁煎悎椋庨櫓锛岀粯鍒舵椂鏄庣‘鏍囨敞
         risk_key = "fire_risk"
         risk_vals = [g["fire_risk"] for g in grids]
         rmin, rmax = min(risk_vals), max(risk_vals)
         norm = Normalize(vmin=rmin, vmax=rmax if rmax > rmin else 1)
-        title = "Fire Risk Factor Heatmap\n(NOT real risk 鈥?provide output JSON for normalized risk)"
+        title = "Fire Risk Factor Heatmap\n(NOT real risk — provide output JSON for normalized risk)"
     else:
         print(f"  [skip] {os.path.basename(save_path)} 鈥?鏁版嵁缂哄皯 risk_normalized / raw_risk / fire_risk 瀛楁")
         return
@@ -833,7 +832,7 @@ def plot_risk_heatmap(input_data, grid_map, hex_size, boundary_xy, save_path, ou
         ("Summary",     None,                                                  True),
         ("Total Grids", str(summary.get('total_grids', n_grids)),              False),
         ("Risk Min",    f"{min(risk_vals):.4f}",                               False),
-        ("Risk Max",    f"{max(risk_vals):.4f}",                               False),
+        ("Risk Max",    f"{norm.vmax:.4f}",                                    False),
         ("Risk Mean",   f"{total_risk/n_grids:.4f}" if n_grids else "N/A",    False),
         ("Total Risk",  f"{summary.get('total_risk', total_risk):.4f}",        False),
     ]
@@ -1045,7 +1044,7 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path, grid_dpi=
     if not grids or "deployment" not in grids[0]:
         print(f"  [skip] {os.path.basename(save_path)} 鈥?杈撳嚭鏁版嵁缂哄皯 deployment 瀛楁")
         return
-    edge_ids = _edge_grid_ids(grids, boundary_xy)
+    edge_ids = _edge_grid_ids(grids, boundary_xy, hex_size)
     fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
     facecolors = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
@@ -1434,7 +1433,7 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
     facecolors2 = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
     draw_hex_batch(ax2, grids, hex_size, facecolors2, alpha=0.5, edgecolor=HEX_EDGE_COLOR, lw=0.22)
 
-    _draw_resources(ax2, grids, out, hex_size, edge_ids=_edge_grid_ids(grids, boundary_xy))
+    _draw_resources(ax2, grids, out, hex_size, edge_ids=_edge_grid_ids(grids, boundary_xy, hex_size))
     draw_deployed_fence_edges(ax2, grids, out, hex_size)
     
     setup_map_ax(ax2, grids, hex_size)
@@ -1481,7 +1480,7 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
         return
     summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
-    edge_ids = _edge_grid_ids(grids, boundary_xy)
+    edge_ids = _edge_grid_ids(grids, boundary_xy, hex_size)
 
     figsize_single, _ = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar=True)
     fig_w = figsize_single[0]

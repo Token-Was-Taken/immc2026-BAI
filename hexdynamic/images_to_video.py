@@ -43,20 +43,53 @@ RESOURCE_MARKERS = {
 FENCE_COLOR = "#c0392b"
 FENCE_EDGE_LINEWIDTH = 3.0
 
-# ── Worker process globals (set via initializer to avoid per-task serialization) ──
+# ── Worker process globals (loaded from file in initializer to avoid pickle OOM) ──
 _worker_grids = None
 _worker_hex_size = None
 _worker_boundary_xy = None
 _worker_terrain_patches = None
+_worker_terrain_png_path = None        # pre-rendered terrain base layer PNG
+_worker_terrain_extent = None           # (xmin, xmax, ymin, ymax) matching the PNG
+_worker_terrain_img = None              # uint8 RGBA numpy array (loaded once per worker)
 
 
-def _worker_init(precomputed_data: Dict[str, Any]):
-    """Initialize worker process with shared read-only terrain data."""
+def _worker_init(params: Dict[str, Any]):
+    """Initialize worker process — loads data from lightweight index file.
+
+    Instead of loading the full input JSON (50+ MB for 43K grids), workers
+    load a minimal grid index (~3 MB) containing only grid_id, q, r,
+    terrain_type, and hex_size. This avoids MemoryError when 8+ workers
+    start simultaneously on Windows (spawn mode).
+    """
     global _worker_grids, _worker_hex_size, _worker_boundary_xy, _worker_terrain_patches
-    _worker_grids = precomputed_data['grids']
-    _worker_hex_size = precomputed_data['hex_size']
-    _worker_boundary_xy = precomputed_data['boundary_xy']
-    _worker_terrain_patches = precomputed_data['terrain_patches']
+    global _worker_terrain_png_path, _worker_terrain_extent, _worker_terrain_img
+
+    _worker_hex_size = params['hex_size']
+    _worker_boundary_xy = params['boundary_xy']
+    _worker_terrain_patches = params.get('terrain_patches')  # only in fallback mode
+    _worker_terrain_png_path = params.get('terrain_png_path')
+    _worker_terrain_extent = params.get('terrain_extent')
+
+    # Load minimal grid index (created by master process) instead of full JSON
+    grid_index_path = params.get('grid_index_path')
+    if grid_index_path and os.path.exists(grid_index_path):
+        with open(grid_index_path, 'r', encoding='utf-8') as f:
+            _worker_grids = json.load(f)
+    else:
+        # Fallback: load full input JSON
+        input_json_path = params['input_json_path']
+        with open(input_json_path, 'r', encoding='utf-8') as f:
+            _data = json.load(f)
+        _worker_grids = _data.get('grids', [])
+
+    # Pre-load terrain PNG as uint8 once per worker (plt.imread would
+    # convert to float32, wasting 4x memory — 228 MB vs 57 MB).
+    if _worker_terrain_png_path and os.path.exists(_worker_terrain_png_path):
+        from PIL import Image
+        import numpy as np
+        pil_img = Image.open(_worker_terrain_png_path)
+        _worker_terrain_img = np.asarray(pil_img)
+        pil_img.close()
 
 
 def _get_available_memory_mb() -> Optional[float]:
@@ -134,6 +167,61 @@ def precompute_terrain(grid_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _render_terrain_base_map(grids, hex_size, boundary_xy, terrain_patches,
+                              grid_dpi, save_dpi, output_path):
+    """
+    Pre-render the static terrain + boundary layer once as a standalone
+    map image. Workers load this PNG as background and only overlay
+    per-iteration resources, avoiding 43K polygon allocations per process.
+
+    Returns (extent_xmin, extent_xmax, extent_ymin, extent_ymax) so workers
+    can align their imshow() to the data coordinate system.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Polygon
+    from matplotlib.collections import PatchCollection
+    from visualize_output import (compute_figsize, hex_corners, setup_map_ax,
+                                   draw_boundary)
+
+    # Build a figure with only the map axes (no legend panel) at the
+    # same position / size as the full deployment-map figure.
+    figsize, fracs = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar=False)
+    map_fw, map_fh, _, _ = fracs
+
+    left_pad = 0.02
+    bottom_pad = 0.06
+    usable_w = 1.0 - left_pad - 0.01   # right_pad
+    usable_h = 1.0 - 0.08 - bottom_pad  # top_pad - bottom_pad
+    map_w = map_fw * usable_w
+
+    fig = plt.figure(figsize=figsize)
+    ax_map = fig.add_axes([left_pad, bottom_pad, map_w, map_fh * usable_h])
+
+    # Draw terrain hexagons
+    _patches = [Polygon(hex_corners(cx, cy, hex_size * 0.97), closed=True)
+                for cx, cy, _fc in terrain_patches]
+    _facecolors = [fc for _, _, fc in terrain_patches]
+    pc = PatchCollection(_patches, facecolors=_facecolors,
+                         edgecolors='black', linewidths=0.4, alpha=0.45, zorder=1)
+    ax_map.add_collection(pc)
+    setup_map_ax(ax_map, grids, hex_size)
+    draw_boundary(ax_map, grids, boundary_xy, hex_size)
+    ax_map.axis('off')
+
+    # Record the data-extent of the rendered image
+    xlim = ax_map.get_xlim()
+    ylim = ax_map.get_ylim()
+    extent = (xlim[0], xlim[1], ylim[0], ylim[1])
+
+    fig.savefig(output_path, dpi=save_dpi, bbox_inches='tight',
+                pad_inches=0, facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+    return extent
+
+
 def _draw_legend(ax_leg):
     import matplotlib.patches as mpatches
     import matplotlib.pyplot as plt
@@ -186,7 +274,7 @@ def _draw_legend(ax_leg):
 
 def _render_single_map(args: Tuple) -> Optional[str]:
     """Render a single deployment map (runs in worker process, uses shared globals)."""
-    best_json_path, output_png_path, iteration = args
+    best_json_path, output_png_path, iteration, grid_dpi, save_dpi = args
 
     try:
         import gc
@@ -243,31 +331,64 @@ def _render_single_map(args: Tuple) -> Optional[str]:
 
         output_base = {'grids': plot_grids}
 
-        fig, ax_map, _, ax_leg = make_figure(has_colorbar=False)
+        fig, ax_map, _, ax_leg = make_figure(
+            grids=plot_grids, hex_size=hex_size,
+            grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False
+        )
 
-        from matplotlib.patches import Polygon
-        from matplotlib.collections import PatchCollection
+        # ── Base layer: pre-rendered terrain (uint8 array loaded once per worker) ──
+        terrain_extent = _worker_terrain_extent
+        if _worker_terrain_img is not None and terrain_extent:
+            ax_map.imshow(_worker_terrain_img, extent=terrain_extent,
+                          interpolation='none', zorder=0, aspect='auto')
+            ax_map.set_xlim(terrain_extent[0], terrain_extent[1])
+            ax_map.set_ylim(terrain_extent[2], terrain_extent[3])
+            ax_map.set_aspect('equal')
+            ax_map.axis('off')
+        else:
+            # Fallback: render terrain hexagons inline (43K polygons — heavy!)
+            from matplotlib.patches import Polygon
+            from matplotlib.collections import PatchCollection
+            _patches = [Polygon(hex_corners(cx, cy, hex_size * 0.97), closed=True)
+                        for cx, cy, _fc in terrain_patches]
+            _facecolors = [fc for _, _, fc in terrain_patches]
+            pc = PatchCollection(_patches, facecolors=_facecolors,
+                                 edgecolors='black', linewidths=0.4, alpha=0.45, zorder=1)
+            ax_map.add_collection(pc)
+            setup_map_ax(ax_map, plot_grids, hex_size)
+            draw_boundary(ax_map, plot_grids, boundary_xy, hex_size)
 
-        _patches = [Polygon(hex_corners(cx, cy, hex_size * 0.97), closed=True)
-                    for cx, cy, _fc in terrain_patches]
-        _facecolors = [fc for _, _, fc in terrain_patches]
-        pc = PatchCollection(_patches, facecolors=_facecolors,
-                             edgecolors='black', linewidths=0.4, alpha=0.45, zorder=1)
-        ax_map.add_collection(pc)
-
-        edge_ids = _edge_grid_ids(plot_grids, boundary_xy)
+        # ── Upper layer: per-iteration resource deployment ──
+        edge_ids = _edge_grid_ids(plot_grids, boundary_xy, hex_size)
 
         _draw_resources(ax_map, plot_grids, output_base, hex_size, edge_ids)
         draw_deployed_fence_edges(ax_map, plot_grids, output_base, hex_size)
-        setup_map_ax(ax_map, plot_grids, hex_size)
-        draw_boundary(ax_map, plot_grids, boundary_xy, hex_size)
 
         ax_map.set_title(f"Iteration {iteration:04d}", fontsize=13, fontweight='bold', pad=8)
 
         _draw_legend(ax_leg)
 
         os.makedirs(os.path.dirname(output_png_path), exist_ok=True)
-        fig.savefig(output_png_path, dpi=72, bbox_inches="tight")
+
+        # Try savefig at requested save_dpi; on MemoryError, retry at lower DPI
+        # on the SAME figure object (lower dpi = smaller raster = less memory).
+        last_err = None
+        for attempt_dpi in (save_dpi, max(50, save_dpi // 2), max(40, save_dpi // 4)):
+            try:
+                fig.savefig(output_png_path, dpi=attempt_dpi, bbox_inches="tight")
+                if attempt_dpi != save_dpi:
+                    print(f"  [WARN] iteration {iteration}: OOM at dpi={save_dpi}, saved at dpi={attempt_dpi}")
+                last_err = None
+                break
+            except MemoryError:
+                last_err = sys.exc_info()[1]
+                # Raster buffer allocation failed, but the figure is still intact.
+                # Clean up any partial allocations, then retry at a lower dpi
+                # (1/2 dpi → 1/4 pixels → 1/4 memory).
+                gc.collect()
+                continue
+        if last_err is not None:
+            raise last_err
 
         plt.close(fig)
         plt.close('all')
@@ -303,7 +424,8 @@ def find_iteration_dirs(input_dir: str) -> List[Tuple[int, str]]:
 
 
 def render_all_maps(input_dir: str, input_json_path: str, output_dir: str,
-                    max_workers: int = None, fps: float = 5.0) -> List[str]:
+                    max_workers: int = None, fps: float = 5.0,
+                    grid_dpi: int = 80, save_dpi: int = 150) -> List[str]:
     grid_data = load_grid_data(input_json_path)
     precomputed = precompute_terrain(grid_data)
 
@@ -316,11 +438,73 @@ def render_all_maps(input_dir: str, input_json_path: str, output_dir: str,
     print(f"找到 {len(iterations)} 个迭代目录")
     print(f"预计算地形底图: {num_grids} 个网格")
 
+    # ── Pre-render the static terrain base layer as PNG ──
+    # This PNG is shared read-only across all workers; each worker loads it
+    # via imshow() instead of constructing 43K Polygon objects.
+    terrain_png_path = os.path.join(output_dir, "_terrain_base_layer.png")
+    if not os.path.exists(terrain_png_path):
+        print("渲染地形底图 PNG（仅一次）...")
+        try:
+            terrain_extent = _render_terrain_base_map(
+                precomputed['grids'], precomputed['hex_size'],
+                precomputed['boundary_xy'], precomputed['terrain_patches'],
+                grid_dpi, save_dpi, terrain_png_path
+            )
+            precomputed['terrain_png_path'] = terrain_png_path
+            precomputed['terrain_extent'] = terrain_extent
+            print(f"  地形底图已保存: {terrain_png_path}")
+        except MemoryError:
+            print("  [WARN] 地形底图渲染 OOM，退化为每迭代独立渲染")
+            precomputed['terrain_png_path'] = None
+            precomputed['terrain_extent'] = None
+    else:
+        # PNG exists from a previous run — load it to extract extent
+        # (extent is deterministic from grid geometry, but we need the values)
+        print("地形底图 PNG 已存在，跳过渲染")
+        precomputed['terrain_png_path'] = terrain_png_path
+        # Recompute extent quickly without re-rendering
+        from visualize_output import grid_center
+        xmn = xmx = ymn = ymx = None
+        hs = precomputed['hex_size']
+        for g in precomputed['grids']:
+            cx, cy = grid_center(g['q'], g['r'], hs)
+            if xmn is None:
+                xmn = xmx = cx; ymn = ymx = cy
+            else:
+                if cx < xmn: xmn = cx
+                if cx > xmx: xmx = cx
+                if cy < ymn: ymn = cy
+                if cy > ymx: ymx = cy
+        m = hs + 1.5  # margin matching setup_map_ax
+        precomputed['terrain_extent'] = (xmn - m, xmx + m, ymn - m, ymx + m)
+
     maps_dir = os.path.join(output_dir, "deployment_maps")
     os.makedirs(maps_dir, exist_ok=True)
 
+    # ── Create minimal grid index file for workers ──
+    # The full input JSON can be 50+ MB (43K grids with species_densities etc).
+    # Workers only need grid_id, q, r, terrain_type, hex_size — strip everything
+    # else to produce a ~3 MB index file that loads fast and uses little RAM.
+    grid_index_path = os.path.join(output_dir, "_grid_index.json")
+    if not os.path.exists(grid_index_path):
+        print("生成轻量网格索引...")
+        minimal_grids = []
+        for g in precomputed['grids']:
+            minimal_grids.append({
+                'grid_id': g['grid_id'],
+                'q': g['q'],
+                'r': g['r'],
+                'x': g.get('x'),
+                'y': g.get('y'),
+                'terrain_type': g.get('terrain_type', 'SparseGrass'),
+                'hex_size': g.get('hex_size'),
+            })
+        with open(grid_index_path, 'w', encoding='utf-8') as f:
+            json.dump(minimal_grids, f, separators=(',', ':'))
+        print(f"  网格索引已保存: {grid_index_path}")
+
     # ── Build task list with deployment deduplication ──
-    tasks = []       # (best_json_path, output_png_path, iter_num) for rendering
+    tasks = []       # (best_json_path, output_png_path, iter_num, grid_dpi, save_dpi) for rendering
     copy_ops = []    # (dest_path, src_path) — copy after rendering
     prev_deployment = None
     prev_png_path = None
@@ -342,14 +526,14 @@ def render_all_maps(input_dir: str, input_json_path: str, output_dir: str,
         try:
             current_deployment = _read_deployment(best_json_path)
         except Exception:
-            tasks.append((best_json_path, output_png_path, iter_num))
+            tasks.append((best_json_path, output_png_path, iter_num, grid_dpi, save_dpi))
             continue
 
         if prev_deployment is not None and current_deployment == prev_deployment and prev_png_path:
             # Identical deployment → copy from previous map
             copy_ops.append((output_png_path, prev_png_path))
         else:
-            tasks.append((best_json_path, output_png_path, iter_num))
+            tasks.append((best_json_path, output_png_path, iter_num, grid_dpi, save_dpi))
             prev_deployment = current_deployment
             prev_png_path = output_png_path
 
@@ -368,32 +552,63 @@ def render_all_maps(input_dir: str, input_json_path: str, output_dir: str,
     print(f"需要渲染 {len(tasks)} 张 deployment_map（跳过 {len(iterations) - len(tasks) - copied_count} 张已存在的）")
 
     # ── Calculate optimal worker count with memory safety ──
+    # Layered mode: terrain PNG loaded as uint8 once per worker (~57 MB for
+    # 2308×6465), then per-iteration peak is imshow-copy + raster buffer (~250 MB).
     if max_workers is None:
         cpu_count = os.cpu_count() or 4
-        # Estimate memory per figure: ~200 bytes per grid (hex + deployment data)
-        est_mb_per_figure = max(50, num_grids * 0.0002)
+        terrain_png_loaded = bool(precomputed.get('terrain_png_path'))
+        if terrain_png_loaded and os.path.exists(precomputed['terrain_png_path']):
+            # Use actual PNG dimensions for accurate estimation
+            from PIL import Image
+            try:
+                with Image.open(precomputed['terrain_png_path']) as im:
+                    png_w, png_h = im.size
+                # uint8 terrain array + imshow copy + raster buffer (~3x raster)
+                terrain_mb = png_w * png_h * 4 / (1024 * 1024)
+                raster_mb = (png_w + 300) * png_h * 4 / (1024 * 1024)  # +legend width
+                est_mb_per_figure = max(80, int(terrain_mb + raster_mb * 1.5))
+            except Exception:
+                est_mb_per_figure = max(60, int(num_grids * save_dpi * 0.000035))
+        elif terrain_png_loaded:
+            est_mb_per_figure = max(60, int(num_grids * save_dpi * 0.000035))
+        else:
+            est_mb_per_figure = max(80, int(num_grids * save_dpi * 0.10))
         avail_mb = _get_available_memory_mb()
 
         if avail_mb is not None:
-            # Reserve 60% of available RAM for rendering, rest for system
-            safe_mb = avail_mb * 0.6
+            safe_mb = avail_mb * 0.4  # 40% of available RAM for workers
             mem_limit = max(1, int(safe_mb / est_mb_per_figure))
-            max_workers = min(cpu_count, mem_limit, 32)
-            print(f"  系统可用内存: {avail_mb:.0f} MB, 单图估算: {est_mb_per_figure:.0f} MB,  内存安全上限: {mem_limit}")
+            max_workers = min(cpu_count, mem_limit, 24)  # hard cap at 24
+            mode = "layered" if terrain_png_loaded else "polygon"
+            print(f"  可用内存: {avail_mb:.0f} MB, 单worker峰值: ~{est_mb_per_figure:.0f} MB ({mode} mode), "
+                  f"内存上限: {mem_limit} workers")
         else:
-            # No psutil — use a safe conservative default
-            max_workers = min(cpu_count, 16)
-            print(f"  无法检测内存，保守设置 workers={max_workers}")
+            if terrain_png_loaded:
+                max_workers = min(cpu_count, 8)
+            else:
+                max_workers = min(cpu_count, 2)
+            print(f"  无法检测内存，保守设置 workers={max_workers} "
+                  f"(num_grids={num_grids}, save_dpi={save_dpi}, layered={terrain_png_loaded})")
     else:
         max_workers = min(max_workers, os.cpu_count() or 4)
 
     print(f"使用 {max_workers} 个进程并发生成...")
 
+    # Build lightweight init params (no grids/terrain_patches — workers load from file)
+    worker_params = {
+        'input_json_path': input_json_path,
+        'grid_index_path': grid_index_path,
+        'hex_size': precomputed['hex_size'],
+        'boundary_xy': precomputed['boundary_xy'],
+        'terrain_png_path': precomputed.get('terrain_png_path'),
+        'terrain_extent': precomputed.get('terrain_extent'),
+    }
+
     rendered = []
     with ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_worker_init,
-        initargs=(precomputed,)
+        initargs=(worker_params,)
     ) as executor:
         futures = {executor.submit(_render_single_map, task): task for task in tasks}
         for i, future in enumerate(as_completed(futures), 1):
@@ -586,6 +801,10 @@ def main():
     parser.add_argument("--output_dir", "-d", default=None, help="中间图片输出目录 (默认: input_dir 同级)")
     parser.add_argument("--backend", "-b", choices=["cv2", "ffmpeg"], default="cv2",
                         help="视频编码后端 (默认: cv2)")
+    parser.add_argument("--grid_dpi", type=int, default=80,
+                        help="网格渲染分辨率（DPI），控制地图尺寸 (默认: 80)")
+    parser.add_argument("--map_dpi", type=int, default=150,
+                        help="保存图片的 DPI（也即 save_dpi） (默认: 150)")
 
     args = parser.parse_args()
 
@@ -600,12 +819,14 @@ def main():
     print(f"帧率: {args.fps} fps")
     print(f"并发进程: {args.workers or '自动'}")
     print(f"视频后端: {args.backend}")
+    print(f"grid_dpi: {args.grid_dpi}, map_dpi (save_dpi): {args.map_dpi}")
     print("=" * 60)
 
     try:
         image_paths = render_all_maps(
             args.input_dir, args.input_json, output_dir,
-            max_workers=args.workers, fps=args.fps
+            max_workers=args.workers, fps=args.fps,
+            grid_dpi=args.grid_dpi, save_dpi=args.map_dpi
         )
 
         if not image_paths:

@@ -8694,10 +8694,10 @@
     ]
   },
   "time": {
-    "hour_of_day": 12,
-    "season": "DRY"
+    "hour_of_day": 23,
+    "season": "RAINY"
   },
-  "use_temporal_factors": false,
+  "use_temporal_factors": true,
   "risk_model_config": {
     "risk_weights": {
       "human_weight": 0.4,
@@ -8781,16 +8781,27 @@
   },
   "dssa_config": {
     "population_size": 500,
-    "max_iterations": 100,
+    "max_iterations": 400,
     "producer_ratio": 0.2,
     "scout_ratio": 0.2,
-    "ST": 0.6,
+    "ST": 0.7,
     "R2": 0.5,
     "save_iteration_visualization": true,
     "use_risk_priority": true,
     "high_risk_percentage": 0.1,
     "force_full_deployment": true,
-    "high_risk_perturbation_priority": 0.7
+    "high_risk_perturbation_priority": 0.7,
+    "fitness_workers": 32,
+    "output_interval": 10,
+    "parallel_chunksize": 4,
+    "profile_iteration_stages": true,
+    "profile_log_every": 1,
+    "scout_update_interval": 2,
+    "single_wave_role_update": true
+  },
+  "visualization_config": {
+    "show_grid_ids": false,
+    "raw_risk_vmax": 1.0
   },
   "grids": [
     {
