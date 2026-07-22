@@ -3,18 +3,42 @@
 
 Rule addition:
 - Ensure at least 60% of SparseGrass grids have both rhino=0.0 and elephant=0.0.
+
+Usage:
+    python generate_species_densities.py --input input.json --viewer viewer.json --output output.json
+    python generate_species_densities.py -i input.json -v viewer.json -o output.json --seed 42
 """
+import argparse
 import json
 import math
+import os
 import random
 from collections import defaultdict
 from math import ceil
 
-random.seed(42)
 
-INPUT = r"e:\code\immc2026-BAI\hexdynamic\inputs\etosha_input.json"
-VIEWER = r"e:\code\immc2026-BAI\marker\etosha-viewer.json"
-OUTPUT = r"e:\code\immc2026-BAI\hexdynamic\inputs\etosha_species.json"
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Generate species_densities for input map using terrain and waterhole proximity."
+    )
+    parser.add_argument("-i", "--input", required=True,
+                        help="Input map JSON file (e.g. etosha_input.json)")
+    parser.add_argument("-v", "--viewer", required=True,
+                        help="Viewer JSON file with neighbor info (e.g. etosha-viewer.json)")
+    parser.add_argument("-o", "--output", required=True,
+                        help="Output JSON file path (e.g. etosha_species.json)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for reproducibility (default: 42)")
+    parser.add_argument("--min-sparse-zero-ratio", type=float, default=0.7,
+                        help="Minimum ratio of SparseGrass grids with rhino=0 and elephant=0 (default: 0.7)")
+    return parser.parse_args()
+
+
+args = parse_args()
+INPUT = args.input
+VIEWER = args.viewer
+OUTPUT = args.output
+random.seed(args.seed)
 
 with open(INPUT, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -221,7 +245,7 @@ for g in grids:
     g["species_densities"] = density_for(g)
 
 sparse_total, sparse_target, sparse_changed = enforce_sparsegrass_min_no_rhino_elephant(
-    grids, min_ratio=0.7
+    grids, min_ratio=args.min_sparse_zero_ratio
 )
 if sparse_total > 0:
     sparse_zero = sum(
@@ -235,7 +259,7 @@ if sparse_total > 0:
     print(
         f"\nSparseGrass zero rhino+elephant enforced: "
         f"{sparse_zero}/{sparse_total} ({sparse_zero_ratio:.1%}), "
-        f"target >= {sparse_target}/{sparse_total} (70.0%), adjusted={sparse_changed}"
+        f"target >= {sparse_target}/{sparse_total} ({args.min_sparse_zero_ratio:.0%}), adjusted={sparse_changed}"
     )
 
 
@@ -336,8 +360,6 @@ for dist_range, label in [
 
 with open(OUTPUT, "w", encoding="utf-8") as f:
     json.dump(data, f, ensure_ascii=False, indent=2)
-
-import os
 
 print(f"\nSaved: {OUTPUT}")
 print(f"File size: {os.path.getsize(OUTPUT) / 1024 / 1024:.2f} MB")

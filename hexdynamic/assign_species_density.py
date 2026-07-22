@@ -5,6 +5,7 @@ assign_species_density.py
 核心特征：
 - 环盐沼分布（Gaussian Ring）：动物沿盐沼边缘环带分布，中央盐沼低密度
 - 水源驱动：水坑是超级热点节点，动物围绕水坑聚集
+- 道路回避：物种分布优先选择距离道路远的水坑（远离人为干扰）
 - 多物种共存：Zone B（水坑环带）形成 Multi-species Hotspot
 - 大象生态工程师效应：大象改变栖息地结构，犀牛回避大象高密度区（降低密度，非消除）
 - 鸟类-水源-盐沼耦合：鸟类与水源和盐沼边缘强相关
@@ -19,6 +20,12 @@ HSI（栖息适宜度指数）模型：
   Elephant: HSI = w_w*water + w_v*veg + w_r*ring
   Bird:     HSI = w_w*water + w_s*saltmarsh + w_v*veg
 
+道路回避约束：
+  每个水坑根据其到最近道路的距离计算"道路回避惩罚"：
+    penalty = road_penalty * max(0, 1 - road_dist / road_far_threshold)
+  道路旁的水坑 penalty = road_penalty（最大），远离道路的水坑 penalty = 0。
+  水坑的有效距离 = 实际六边形距离 + penalty，从而降低靠近道路水坑的吸引力。
+
 环因子（Gaussian Ring）：
   ring_factor = exp(-((d_saltmarsh - ring_peak)^2) / (2 * ring_sigma^2))
   在盐沼边缘 ring_peak 步处形成密度峰值环带
@@ -31,9 +38,11 @@ HSI（栖息适宜度指数）模型：
     python assign_species_density.py input.json -o output.json
     python assign_species_density.py input.json --seed 42
     python assign_species_density.py input.json --visualize
+    python assign_species_density.py input.json --road-penalty 10 --road-far-threshold 15
 """
 
 import argparse
+import heapq
 import json
 import math
 import os
@@ -70,6 +79,12 @@ VEGETATION_INDEX = {
 }
 
 HEX_DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
+
+# 道路回避约束默认参数
+# road_far_threshold: 水坑距道路 >= 此值时无惩罚（步）
+# road_penalty: 道路旁水坑的最大有效距离惩罚（步）
+DEFAULT_ROAD_FAR_THRESHOLD = 15
+DEFAULT_ROAD_PENALTY = 10
 
 SPECIES_PROFILES = {
     "rhino": {
@@ -143,11 +158,63 @@ def bfs_distance(grids, neighbors, source_indices):
     return dist
 
 
-def compute_spatial_features(grids, neighbors):
+def dijkstra_distance_weighted_sources(grids, neighbors, source_indices, source_costs):
+    """带源点初始代价的多源最短路（Dijkstra）。
+
+    每个源点 source_indices[k] 的初始代价为 source_costs[k]，
+    用于实现"远离道路的水坑更有吸引力"的约束：
+      水坑的有效距离 = 实际六边形距离 + 该水坑的道路回避惩罚
+    """
+    dist = {i: float('inf') for i in range(len(grids))}
+    pq = []
+    for idx, cost in zip(source_indices, source_costs):
+        if cost < dist.get(idx, float('inf')):
+            dist[idx] = cost
+            heapq.heappush(pq, (cost, idx))
+    while pq:
+        d, idx = heapq.heappop(pq)
+        if d > dist[idx]:
+            continue
+        for nb in neighbors.get(idx, []):
+            nd = d + 1
+            if nd < dist[nb]:
+                dist[nb] = nd
+                heapq.heappush(pq, (nd, nb))
+    # 将无穷大替换为 999 以保持与 bfs_distance 一致的语义
+    return {i: (d if d != float('inf') else 999) for i, d in dist.items()}
+
+
+def compute_spatial_features(grids, neighbors,
+                             road_far_threshold=DEFAULT_ROAD_FAR_THRESHOLD,
+                             road_penalty=DEFAULT_ROAD_PENALTY):
+    """计算每个网格到水坑、盐沼、道路的距离。
+
+    水坑距离使用加权多源 Dijkstra：靠近道路的水坑被附加惩罚，
+    使物种分布优先选择远离道路的水坑。
+    """
     water_sources = [i for i, g in enumerate(grids) if g["terrain_type"] == "WaterHole"]
     saltmarsh_sources = [i for i, g in enumerate(grids) if g["terrain_type"] == "SaltMarsh"]
-    water_dist = bfs_distance(grids, neighbors, water_sources) if water_sources else {i: 999 for i in range(len(grids))}
+    road_sources = [i for i, g in enumerate(grids) if g["terrain_type"] == "Road"]
+
     saltmarsh_dist = bfs_distance(grids, neighbors, saltmarsh_sources) if saltmarsh_sources else {i: 999 for i in range(len(grids))}
+
+    if water_sources:
+        if road_sources and road_penalty > 0:
+            # 计算每个水坑到最近道路的距离
+            road_dist = bfs_distance(grids, neighbors, road_sources)
+            source_costs = []
+            for wh_idx in water_sources:
+                r_dist = road_dist.get(wh_idx, 999)
+                # 道路旁水坑惩罚最大，远离道路(>=threshold)惩罚为 0
+                penalty = road_penalty * max(0.0, 1.0 - r_dist / max(1, road_far_threshold))
+                source_costs.append(penalty)
+            water_dist = dijkstra_distance_weighted_sources(
+                grids, neighbors, water_sources, source_costs)
+        else:
+            water_dist = bfs_distance(grids, neighbors, water_sources)
+    else:
+        water_dist = {i: 999 for i in range(len(grids))}
+
     return water_dist, saltmarsh_dist
 
 
@@ -272,7 +339,9 @@ def _assign_one_species(grids, species, profile, neighbors, water_dist, saltmars
     return count, new_elephant_indices
 
 
-def assign_species_densities(grids: List[dict], seed: int = None) -> Dict[str, int]:
+def assign_species_densities(grids: List[dict], seed: int = None,
+                             road_far_threshold: float = DEFAULT_ROAD_FAR_THRESHOLD,
+                             road_penalty: float = DEFAULT_ROAD_PENALTY) -> Dict[str, int]:
     if seed is not None:
         random.seed(seed)
 
@@ -291,7 +360,10 @@ def assign_species_densities(grids: List[dict], seed: int = None) -> Dict[str, i
         return {}
 
     neighbors = build_neighbors_map(grids)
-    water_dist, saltmarsh_dist = compute_spatial_features(grids, neighbors)
+    water_dist, saltmarsh_dist = compute_spatial_features(
+        grids, neighbors,
+        road_far_threshold=road_far_threshold,
+        road_penalty=road_penalty)
 
     stats = {}
     elephant_indices = []
@@ -648,6 +720,12 @@ def parse_args():
                    help="Generate species density preview map")
     p.add_argument("--no-verify", action="store_true",
                    help="Skip constraint verification")
+    p.add_argument("--road-penalty", type=float, default=DEFAULT_ROAD_PENALTY,
+                   help="Max effective-distance penalty for waterholes next to roads (default: %(default)s)")
+    p.add_argument("--road-far-threshold", type=float, default=DEFAULT_ROAD_FAR_THRESHOLD,
+                   help="Waterholes >= this many steps from a road have zero penalty (default: %(default)s)")
+    p.add_argument("--no-road-avoidance", action="store_true",
+                   help="Disable road-avoidance constraint (treat all waterholes equally)")
     return p.parse_args()
 
 
@@ -673,7 +751,12 @@ def main():
         print(f"  {tt}: {cnt}")
 
     neighbors = build_neighbors_map(grids)
-    water_dist, saltmarsh_dist = compute_spatial_features(grids, neighbors)
+    road_penalty = 0.0 if args.no_road_avoidance else args.road_penalty
+    road_far_threshold = args.road_far_threshold
+    water_dist, saltmarsh_dist = compute_spatial_features(
+        grids, neighbors,
+        road_far_threshold=road_far_threshold,
+        road_penalty=road_penalty)
     zones = classify_zones(grids, water_dist, saltmarsh_dist)
     print("\n  Zone classification:")
     for z, cnt in zones.items():
@@ -682,7 +765,14 @@ def main():
     print(f"\nAssigning species densities (seed={args.seed})...")
     print("  Model: Etosha National Park - Ring distribution around salt pan")
     print("  Features: Gaussian ring factor, multi-species overlap, elephant impact field")
-    stats = assign_species_densities(grids, seed=args.seed)
+    if road_penalty > 0:
+        print(f"  Road avoidance: penalty={road_penalty}, far_threshold={road_far_threshold}")
+    else:
+        print("  Road avoidance: disabled")
+    stats = assign_species_densities(
+        grids, seed=args.seed,
+        road_far_threshold=road_far_threshold,
+        road_penalty=road_penalty)
 
     for sp, cnt in stats.items():
         print(f"  {sp}: {cnt} grids ({100 * cnt / len(grids):.1f}%)")

@@ -8,6 +8,7 @@ Flow: compute normalized risk with riskIndex -> optimize deployment with DSSA ->
 import json
 import sys
 import os
+import math
 import numpy as np
 from typing import Dict, Tuple
 
@@ -114,6 +115,59 @@ def build_species_config(species_cfg: dict) -> dict:
             dry_season_multiplier=float(cfg.get('dry_season_multiplier', 1.0))
         )
     return result
+
+
+def smooth_risk_map_gaussian(risk_map: Dict[int, float], grids: list,
+                             sigma: float = 1.5, iterations: int = 1) -> Dict[int, float]:
+    """对风险值做基于六边形邻接的高斯核空间平滑。
+
+    Args:
+        risk_map: {grid_id: risk_value}
+        grids: 输入地图的 grids 列表（含 q, r 坐标）
+        sigma: 高斯核宽度（步数），越大平滑越强
+        iterations: 迭代次数，多次迭代可扩大平滑范围
+
+    Returns:
+        平滑后的 {grid_id: risk_value}
+    """
+    if not risk_map or not grids:
+        return dict(risk_map)
+
+    # 构建 (q, r) -> grid_id 索引和邻接表
+    coord_to_gid = {}
+    for g in grids:
+        coord_to_gid[(g['q'], g['r'])] = g['grid_id']
+
+    HEX_DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
+    neighbors_map = {}
+    for g in grids:
+        gid = g['grid_id']
+        q, r = g['q'], g['r']
+        nb = []
+        for dq, dr in HEX_DIRS:
+            ngid = coord_to_gid.get((q + dq, r + dr))
+            if ngid is not None:
+                nb.append(ngid)
+        neighbors_map[gid] = nb
+
+    # 高斯权重：自身 1.0，邻居 exp(-1 / (2*sigma^2))
+    w_self = 1.0
+    w_nb = math.exp(-1.0 / (2.0 * sigma * sigma))
+
+    smoothed = dict(risk_map)
+    for _ in range(iterations):
+        new_vals = {}
+        for gid, val in smoothed.items():
+            nbs = neighbors_map.get(gid, [])
+            if not nbs:
+                new_vals[gid] = val
+                continue
+            total_w = w_self + len(nbs) * w_nb
+            total_v = w_self * val + w_nb * sum(smoothed.get(n, 0.0) for n in nbs)
+            new_vals[gid] = total_v / total_w
+        smoothed = new_vals
+
+    return smoothed
 
 
 def compute_risk_with_riskindex(data: dict) -> Tuple[Dict[int, float], Dict[int, float], Dict[int, float]]:
@@ -310,6 +364,26 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
 
     print("[2/4] Compute normalized risk with riskIndex...")
     risk_map, temporal_factor_map, raw_risk_map = compute_risk_with_riskindex(data)
+
+    # 可选：对风险值做空间平滑（使风险场连续化）
+    risk_cfg = data.get('risk_config', {})
+    smoothing_cfg = risk_cfg.get('smoothing')
+    if smoothing_cfg and smoothing_cfg.get('enabled', False):
+        sigma = float(smoothing_cfg.get('sigma', 1.5))
+        iterations = int(smoothing_cfg.get('iterations', 1))
+        smooth_raw = bool(smoothing_cfg.get('smooth_raw', True))
+        print(f"      [SMOOTH] 高斯核空间平滑: sigma={sigma}, iterations={iterations}, smooth_raw={smooth_raw}")
+        risk_map = smooth_risk_map_gaussian(risk_map, data['grids'],
+                                             sigma=sigma, iterations=iterations)
+        if smooth_raw:
+            raw_risk_map = smooth_risk_map_gaussian(raw_risk_map, data['grids'],
+                                                    sigma=sigma, iterations=iterations)
+        # 平滑后需要重新归一化 risk_map 到 [0, 1]
+        if risk_map:
+            rmin, rmax = min(risk_map.values()), max(risk_map.values())
+            if rmax > rmin:
+                risk_map = {gid: (v - rmin) / (rmax - rmin) for gid, v in risk_map.items()}
+            print(f"      [SMOOTH] 重新归一化: min={rmin:.4f}, max={rmax:.4f}")
 
     print("[3/4] Build optimization model and run DSSA...")
     loader = build_data_loader(data, risk_map, temporal_factor_map)

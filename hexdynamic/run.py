@@ -376,10 +376,14 @@ def main():
                 # Lazy import heavy rendering/video stack only when needed.
                 from images_to_video import create_video, render_all_maps
 
+                video_grid_dpi = args.grid_dpi
+                if video_grid_dpi is None:
+                    video_grid_dpi = auto_grid_dpi(input_data.get("grids", []))
+
                 image_paths = render_all_maps(
                     iteration_input_dir, args.input, viz_out_dir,
                     max_workers=args.workers,
-                    grid_dpi=args.grid_dpi, save_dpi=args.dpi, fps=5.0
+                    grid_dpi=video_grid_dpi, save_dpi=args.dpi, fps=5.0
                 )
                 if image_paths:
                     video_path = os.path.join(viz_out_dir, "iteration_deployment.mp4")
