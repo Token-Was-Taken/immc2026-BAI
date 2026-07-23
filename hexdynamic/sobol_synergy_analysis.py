@@ -29,8 +29,6 @@ from typing import Dict, List, Tuple, Any, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'hexdynamic'))
 
-from SALib.sample import sobol as sobol_sample
-from SALib.analyze import sobol
 from protection_pipeline import run_pipeline
 
 
@@ -75,9 +73,13 @@ def parse_param_defs(params_input: Optional[str]) -> List[Dict[str, Any]]:
     return param_defs
 
 
-def evaluate_model(base_config: dict, params_dict: Dict[str, Any],
+def evaluate_model(base_config, params_dict: Dict[str, Any],
                    eval_idx: int, output_dir: str,
-                   vectorized: bool = False) -> Dict[str, Any]:
+                   vectorized: bool = False, use_gpu: bool = False) -> Dict[str, Any]:
+    # Load config from file if a path is given (saves memory in parallel mode)
+    if isinstance(base_config, str):
+        with open(base_config, 'r', encoding='utf-8') as f:
+            base_config = json.load(f)
     config = copy.deepcopy(base_config)
 
     if "constraints" not in config:
@@ -104,7 +106,7 @@ def evaluate_model(base_config: dict, params_dict: Dict[str, Any],
         json.dump(config, f, indent=2, ensure_ascii=False)
 
     try:
-        run_pipeline(input_path, output_path, vectorized=vectorized)
+        run_pipeline(input_path, output_path, vectorized=vectorized, use_gpu=use_gpu)
         with open(output_path, 'r', encoding='utf-8') as f:
             result = json.load(f)
         best_fitness = result.get("summary", {}).get("best_fitness", float('nan'))
@@ -128,8 +130,8 @@ def evaluate_model(base_config: dict, params_dict: Dict[str, Any],
 
 
 def _parallel_worker(args_tuple):
-    base_config, params_dict, eval_idx, output_dir, vectorized = args_tuple
-    return evaluate_model(base_config, params_dict, eval_idx, output_dir, vectorized)
+    base_config, params_dict, eval_idx, output_dir, vectorized, use_gpu = args_tuple
+    return evaluate_model(base_config, params_dict, eval_idx, output_dir, vectorized, use_gpu)
 
 
 def compute_sobol_indices(problem: Dict, output_array: np.ndarray,
@@ -138,6 +140,7 @@ def compute_sobol_indices(problem: Dict, output_array: np.ndarray,
     if not np.all(valid_mask):
         print(f"Warning: {np.sum(~valid_mask)} NaN values excluded")
 
+    from SALib.analyze import sobol
     Si = sobol.analyze(problem, output_array, num_resamples=num_bootstrap)
 
     first_order = []
@@ -333,6 +336,7 @@ def main():
     print(f"Num samples: {args.num_samples}")
     print(f"Output dir: {args.output_dir}")
     print(f"Vectorized: {args.vectorized}")
+    print(f"GPU: {args.gpu}")
     print("=" * 60)
 
     with open(args.base_config, 'r', encoding='utf-8') as f:
@@ -350,6 +354,7 @@ def main():
 
     if args.seed is not None:
         np.random.seed(args.seed)
+    from SALib.sample import sobol as sobol_sample
     param_values = sobol_sample.sample(problem, args.num_samples)
 
     for i, name in enumerate(param_names):
@@ -377,16 +382,24 @@ def main():
         for j, params_dict in enumerate(all_params):
             print(f"[Eval {j + 1}/{total_evals}]", end="\r")
             record = evaluate_model(base_config, params_dict, j,
-                                    args.output_dir, args.vectorized)
+                                    args.output_dir, args.vectorized, args.gpu)
             eval_records.append(record)
     else:
-        worker_args = [
-            (base_config, all_params[j], j, args.output_dir, args.vectorized)
-            for j in range(total_evals)
-        ]
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_parallel_worker, a): a[2]
-                       for a in worker_args}
+        # Save base_config to temp file for workers (avoids passing 1MB+ dict per task)
+        base_config_path = os.path.join(args.output_dir, "_base_config.json")
+        with open(base_config_path, 'w', encoding='utf-8') as f:
+            json.dump(base_config, f, ensure_ascii=False)
+
+        from multiprocessing import get_context
+        ctx = get_context('spawn')
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx, max_tasks_per_child=1) as executor:
+            futures = {}
+            for j in range(total_evals):
+                future = executor.submit(
+                    _parallel_worker,
+                    (base_config_path, all_params[j], j, args.output_dir, args.vectorized, args.gpu)
+                )
+                futures[future] = j
             completed = 0
             for future in as_completed(futures):
                 completed += 1
@@ -430,6 +443,7 @@ def main():
         "seed": args.seed,
         "workers": workers,
         "vectorized": args.vectorized,
+        "use_gpu": args.gpu,
         "successful_evaluations": successful,
         "failed_evaluations": failed,
         "analysis_type": "synergy_coefficient_sensitivity"

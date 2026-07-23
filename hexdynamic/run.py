@@ -5,6 +5,7 @@ Flow:
 1) risk calculation + DSSA optimization
 2) optional visualization
 3) optional iteration deployment video
+4) optional temporal risk analysis (--time-risk)
 
 Examples:
     python run.py input.json output.json
@@ -14,6 +15,8 @@ Examples:
     python run.py input.json output.json --no-visualize
     python run.py output.json --visualize-only
     python run.py input.json output.json --all-iters
+    python run.py input.json --time-risk
+    python run.py input.json --time-risk -d ./time_risk_analysis
 """
 
 import argparse
@@ -161,6 +164,23 @@ def visualize(output_path: str, input_path: str, out_dir: str, prefix: str, grid
     print(f"[VIZ] Done, images saved to: {out_dir}")
 
 
+def run_time_risk_analysis(input_path: str, out_dir: str, dpi: int = 150,
+                           grid_dpi: int = None, no_summary: bool = False):
+    """Run temporal risk comparison analysis (Day/Night x DRY/RAINY).
+
+    Delegates to time_risk_analyzer.run() so run.py stays the single entry point.
+    """
+    from time_risk_analyzer import run as tra_run
+
+    tra_run(
+        input_path=input_path,
+        out_dir=out_dir,
+        dpi=dpi,
+        grid_dpi=grid_dpi,
+        no_summary=no_summary,
+    )
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Protection Pipeline + Visualization",
@@ -203,7 +223,7 @@ Examples:
         help="DSSA max iterations (default: input JSON config, fallback 200)",
     )
     parser.add_argument("--warm-start", type=str, default=None, metavar="PATH", help="Warm-start output JSON path")
-    parser.add_argument("--no-gpu", action="store_true", default=False, help="Disable GPU acceleration")
+    parser.add_argument("--gpu", action="store_true", default=False, help="Enable GPU acceleration (disabled by default)")
     parser.add_argument(
         "--all-iters",
         action="store_true",
@@ -214,6 +234,18 @@ Examples:
     # visualization options
     parser.add_argument("--no-visualize", action="store_true", default=False, help="Skip image generation")
     parser.add_argument("--visualize-only", action="store_true", default=False, help="Only generate images")
+    parser.add_argument(
+        "--time-risk",
+        action="store_true",
+        default=False,
+        help="Run temporal risk comparison analysis (Day/Night x DRY/RAINY) on input JSON",
+    )
+    parser.add_argument(
+        "--no-summary",
+        action="store_true",
+        default=False,
+        help="Skip summary file generation (time-risk mode)",
+    )
     parser.add_argument("--input-json", "-i", default=None, dest="input_json", help="Input JSON for visualization")
     parser.add_argument(
         "--out_dir",
@@ -305,6 +337,20 @@ def main():
     args = parse_args()
     viz_out_dir = args.out_dir or "./figures"
 
+    if args.time_risk:
+        if args.input is None:
+            print("Error: --time-risk requires input JSON path", file=sys.stderr)
+            sys.exit(1)
+        tr_out_dir = args.out_dir or "./time_risk_analysis"
+        run_time_risk_analysis(
+            input_path=args.input,
+            out_dir=tr_out_dir,
+            dpi=args.dpi,
+            grid_dpi=args.grid_dpi,
+            no_summary=args.no_summary,
+        )
+        return
+
     if args.visualize_only:
         output_json, input_json = _resolve_viz_only_paths(args)
         if output_json is None and input_json is None:
@@ -349,7 +395,7 @@ def main():
         out_dir=args.out_dir,
         max_iterations=args.max_iterations,
         warm_start_path=args.warm_start,
-        use_gpu=not args.no_gpu,
+        use_gpu=args.gpu,
         only_output_on_best_change=not args.all_iters,
     )
 

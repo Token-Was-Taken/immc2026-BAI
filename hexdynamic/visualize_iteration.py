@@ -19,8 +19,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 from matplotlib.patches import Polygon
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib import cm
+
+# 风险指数统一色阶：0 -> 淡黄，0.5 -> 橙，1 -> 深红（YlOrRd）
+RISK_CMAP = matplotlib.colormaps.get_cmap("YlOrRd")
 
 
 def hex_corners(cx, cy, size):
@@ -162,8 +165,8 @@ def draw_risk_comparison(out, out_map, hex_size, out_dir):
     setup_map_ax(ax_right, grids, hex_size)
 
     risk_vals = [g.get('risk_normalized', 0) for g in grids if g.get('risk_normalized', 0) > 0]
-    norm = Normalize(vmin=min(risk_vals) if risk_vals else 0, vmax=max(risk_vals) if risk_vals else 1)
-    cmap = cm.YlOrRd
+    norm = Normalize(vmin=0, vmax=1)
+    cmap = RISK_CMAP
 
     for g in grids:
         cx, cy = grid_center(g['q'], g['r'], hex_size)

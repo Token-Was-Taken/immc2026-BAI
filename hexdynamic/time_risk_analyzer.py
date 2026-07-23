@@ -31,7 +31,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 from matplotlib.patches import Polygon
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib import cm
 
 import matplotlib.font_manager as fm
@@ -49,6 +49,20 @@ SPECIES_STYLE = {
     "elephant": {"marker": "s", "color": "#708090", "size_scale": 120, "fill_color": "#708090"},
     "bird":     {"marker": "o", "color": "#FF6347",  "size_scale": 80,  "fill_color": "#FF6347"},
 }
+
+# 风险指数统一色阶：0 -> 淡黄，0.5 -> 橙，1 -> 深红（YlOrRd）
+RISK_CMAP = matplotlib.colormaps.get_cmap("YlOrRd")
+
+# 字体缩放基准：grid_dpi=80 时 fs=1.0，地图放大/缩小时字号等比缩放。
+# 注意必须基于 grid_dpi（地图像素密度），而非 save_dpi（后者不改变字号相对比例）。
+FONT_BASE_GRID_DPI = 80
+
+def font_scale(grid_dpi: int) -> float:
+    """根据 grid_dpi 计算字体缩放因子，并限制到合理区间避免过小/过大。"""
+    if not grid_dpi or grid_dpi <= 0:
+        return 1.0
+    fs = grid_dpi / FONT_BASE_GRID_DPI
+    return max(0.6, min(fs, 2.5))
 
 SCENARIOS = [
     {"name": "day_dry",    "hour": 12, "season": "DRY",   "label": "Day + DRY",   "period": "DAY"},
@@ -93,8 +107,28 @@ def compute_scenario_risk(base_data: dict, hour: int, season: str) -> Tuple[Dict
     }
     data['use_temporal_factors'] = True
 
-    from protection_pipeline import compute_risk_with_riskindex
+    from protection_pipeline import compute_risk_with_riskindex, smooth_risk_map_gaussian
     risk_map, temporal_factor_map, raw_risk_map = compute_risk_with_riskindex(data)
+
+    # 与 protection_pipeline.run_pipeline 保持一致：可选高斯核空间平滑
+    risk_cfg = data.get('risk_config', {})
+    smoothing_cfg = risk_cfg.get('smoothing')
+    if smoothing_cfg and smoothing_cfg.get('enabled', False):
+        sigma = float(smoothing_cfg.get('sigma', 1.5))
+        iterations = int(smoothing_cfg.get('iterations', 1))
+        smooth_raw = bool(smoothing_cfg.get('smooth_raw', True))
+        print(f"  [SMOOTH] sigma={sigma}, iterations={iterations}, smooth_raw={smooth_raw}")
+        risk_map = smooth_risk_map_gaussian(risk_map, data['grids'],
+                                             sigma=sigma, iterations=iterations)
+        if smooth_raw:
+            raw_risk_map = smooth_risk_map_gaussian(raw_risk_map, data['grids'],
+                                                    sigma=sigma, iterations=iterations)
+        # 平滑后重新归一化 risk_map 到 [0, 1]
+        if risk_map:
+            rmin, rmax = min(risk_map.values()), max(risk_map.values())
+            if rmax > rmin:
+                risk_map = {gid: (v - rmin) / (rmax - rmin) for gid, v in risk_map.items()}
+
     return risk_map, temporal_factor_map, raw_risk_map
 
 
@@ -151,7 +185,8 @@ def plot_single_risk_heatmap(
     show_grid_ids: bool = False
 ):
     """Plot a single risk heatmap."""
-    cmap = matplotlib.colormaps.get_cmap("YlOrRd")
+    cmap = RISK_CMAP
+    fs = font_scale(grid_dpi)
 
     fig_w, fig_h = 14, 9
     ax_map = None
@@ -241,7 +276,7 @@ def plot_single_risk_heatmap(
             risk_val = risk_map.get(rid, 0.0)
             draw_hex(ax_map, cx, cy, hex_size * 0.97, facecolor=cmap(cmap_norm(risk_val)))
             if show_grid_ids:
-                ax_map.text(cx, cy, str(rid), ha="center", va="center", fontsize=5, zorder=4)
+                ax_map.text(cx, cy, str(rid), ha="center", va="center", fontsize=5*fs, zorder=4)
 
         ax_map.set_aspect("equal")
         ax_map.axis("off")
@@ -252,12 +287,12 @@ def plot_single_risk_heatmap(
         ax_map.set_xlim(min(xs) - margin, max(xs) + margin)
         ax_map.set_ylim(min(ys) - margin, max(ys) + margin)
 
-    ax_map.set_title(title, fontsize=12, fontweight="bold", pad=8)
+    ax_map.set_title(title, fontsize=12*fs, fontweight="bold", pad=8)
 
     sm = cm.ScalarMappable(cmap=cmap, norm=cmap_norm)
     sm.set_array([])
     fig.colorbar(sm, cax=ax_cbar)
-    ax_cbar.tick_params(labelsize=8)
+    ax_cbar.tick_params(labelsize=8*fs)
 
     risk_vals = list(risk_map.values())
     n = len(risk_vals)
@@ -272,10 +307,18 @@ def plot_single_risk_heatmap(
     for label, value, bold in items:
         text = label if value is None else f"{label}: {value}"
         ax_leg.text(0.05, y, text, transform=ax_leg.transAxes,
-                    fontsize=9, va="top",
+                    fontsize=9*fs, va="top",
                     fontweight="bold" if bold else "normal",
                     fontfamily="monospace")
         y -= 0.09
+
+    # 底部统计指标
+    if risk_vals:
+        stats_text = f"Max: {max(risk_vals):.4f}    Min: {min(risk_vals):.4f}    Mean: {np.mean(risk_vals):.4f}    Var: {np.var(risk_vals):.6f}"
+        map_pos = ax_map.get_position()
+        fig.text(map_pos.x0 + map_pos.width / 2, 0.015, stats_text,
+                 ha='center', va='bottom', fontsize=9*fs,
+                 fontfamily='monospace', fontweight='bold')
 
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
@@ -293,8 +336,9 @@ def plot_4panel_comparison(
     diurnal_mode: str = "discrete"
 ):
     """Plot a 4-panel comparison of raw risks across all scenarios."""
-    cmap = matplotlib.colormaps.get_cmap("YlOrRd")
-    cmap_norm = Normalize(vmin=0, vmax=max_raw_risk)
+    cmap = RISK_CMAP
+    cmap_norm = Normalize(vmin=0, vmax=max_raw_risk if max_raw_risk > 0 else 1)
+    fs = font_scale(grid_dpi)
 
     if grids:
         xs, ys = [], []
@@ -367,9 +411,9 @@ def plot_4panel_comparison(
         ax.set_xlim(min(xs) - margin, max(xs) + margin)
         ax.set_ylim(min(ys) - margin, max(ys) + margin)
 
-        ax.set_title(scenario["label"], fontsize=12, fontweight="bold", pad=4)
+        ax.set_title(scenario["label"], fontsize=12*fs, fontweight="bold", pad=4)
 
-    stats_fontsize = 9
+    stats_fontsize = 9*fs
     for scenario, pos in zip(scenarios_data, positions):
         panel_x, panel_y, panel_w, panel_h = pos
         stats_height = 0.05
@@ -402,11 +446,11 @@ def plot_4panel_comparison(
     sm = cm.ScalarMappable(cmap=cmap, norm=cmap_norm)
     sm.set_array([])
     cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.set_label("Raw Risk", fontsize=11)
-    cbar.ax.tick_params(labelsize=10)
+    cbar.set_label("Raw Risk", fontsize=11*fs)
+    cbar.ax.tick_params(labelsize=10*fs)
 
     fig.suptitle("Risk Comparison Across Time Scenarios\n(Raw Risk, Unified Color Scale)",
-                 fontsize=12, fontweight="bold", y=0.98)
+                 fontsize=12*fs, fontweight="bold", y=0.98)
 
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
@@ -474,6 +518,7 @@ def plot_terrain_map(grids, hex_size, save_path, grid_dpi=80, save_dpi=150):
     n_grids = len(grids)
     if n_grids == 0:
         return
+    fs = font_scale(grid_dpi)
 
     xs = [grid_center(g["q"], g["r"], hex_size)[0] for g in grids]
     ys = [grid_center(g["q"], g["r"], hex_size)[1] for g in grids]
@@ -516,12 +561,12 @@ def plot_terrain_map(grids, hex_size, save_path, grid_dpi=80, save_dpi=150):
     ax_map.axis("off")
     ax_map.set_xlim(min(xs) - margin, max(xs) + margin)
     ax_map.set_ylim(min(ys) - margin, max(ys) + margin)
-    ax_map.set_title("Terrain Map", fontsize=13, fontweight="bold", pad=8)
+    ax_map.set_title("Terrain Map", fontsize=13*fs, fontweight="bold", pad=8)
 
     handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, label=t)
                for t, c in TERRAIN_COLORS.items()]
-    ax_leg.legend(handles=handles, loc="center", fontsize=10,
-                  title="Terrain Types", title_fontsize=11,
+    ax_leg.legend(handles=handles, loc="center", fontsize=10*fs,
+                  title="Terrain Types", title_fontsize=11*fs,
                   frameon=True, fancybox=True, edgecolor="gray")
     ax_leg.axis("off")
     fig.savefig(save_path, dpi=save_dpi)
@@ -655,6 +700,7 @@ def plot_species_density_map(grids, hex_size, save_path, grid_dpi=80, save_dpi=1
     n_grids = len(grids)
     if n_grids == 0:
         return
+    fs = font_scale(grid_dpi)
     all_species = set()
     for g in grids:
         for sp, d in g.get("species_densities", {}).items():
@@ -730,7 +776,7 @@ def plot_species_density_map(grids, hex_size, save_path, grid_dpi=80, save_dpi=1
     ax_map.axis("off")
     ax_map.set_xlim(min(xs) - margin, max(xs) + margin)
     ax_map.set_ylim(min(ys) - margin, max(ys) + margin)
-    ax_map.set_title("Species Density Map", fontsize=13, fontweight="bold", pad=8)
+    ax_map.set_title("Species Density Map", fontsize=13*fs, fontweight="bold", pad=8)
 
     terrain_handles = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, alpha=0.5, label=t)
                        for t, c in TERRAIN_COLORS.items()]
@@ -741,13 +787,13 @@ def plot_species_density_map(grids, hex_size, save_path, grid_dpi=80, save_dpi=1
         for sp in all_species
     ]
     all_handles = terrain_handles + species_handles
-    ax_leg.legend(handles=all_handles, loc="center", fontsize=10,
-                  title="Legend", title_fontsize=11,
+    ax_leg.legend(handles=all_handles, loc="center", fontsize=10*fs,
+                  title="Legend", title_fontsize=11*fs,
                   frameon=True, fancybox=True, edgecolor="gray")
     ax_leg.axis("off")
 
     ax_stats.axis("off")
-    ax_stats.text(0.01, 0.9, stats_text, fontsize=9, fontfamily="monospace",
+    ax_stats.text(0.01, 0.9, stats_text, fontsize=9*fs, fontfamily="monospace",
                   verticalalignment="top", transform=ax_stats.transAxes,
                   bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="gray", alpha=0.9))
 
@@ -763,6 +809,7 @@ def plot_species_density_panels(grids, hex_size, save_path, grid_dpi=20, save_dp
     n_grids = len(grids)
     if n_grids == 0:
         return
+    fs = font_scale(grid_dpi)
     all_species = set()
     for g in grids:
         for sp, d in g.get("species_densities", {}).items():
@@ -816,11 +863,11 @@ def plot_species_density_panels(grids, hex_size, save_path, grid_dpi=20, save_dp
         sm = ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = fig.colorbar(sm, cax=ax_cbar)
-        cbar.set_label("Density", fontsize=8)
-        cbar.ax.tick_params(labelsize=7)
+        cbar.set_label("Density", fontsize=8*fs)
+        cbar.ax.tick_params(labelsize=7*fs)
 
         fig.text(left + panel_w * 0.44, bottom + panel_h - title_h * 0.3,
-                 f"{sp.capitalize()} Density", fontsize=11, fontweight="bold",
+                 f"{sp.capitalize()} Density", fontsize=11*fs, fontweight="bold",
                  ha="center", va="bottom")
 
     comp_idx = n_species
@@ -832,7 +879,7 @@ def plot_species_density_panels(grids, hex_size, save_path, grid_dpi=20, save_dp
     ax_comp = fig.add_axes([comp_left, comp_bottom, panel_w, panel_h - title_h])
     _draw_composite(ax_comp, grids, hex_size, all_species)
     fig.text(comp_left + panel_w * 0.5, comp_bottom + panel_h - title_h * 0.3,
-             "Composite Overview", fontsize=11, fontweight="bold", ha="center", va="bottom")
+             "Composite Overview", fontsize=11*fs, fontweight="bold", ha="center", va="bottom")
 
     legend_items = []
     for sp in all_species:
@@ -841,13 +888,13 @@ def plot_species_density_panels(grids, hex_size, save_path, grid_dpi=20, save_dp
                                            linewidth=0.5, alpha=0.7, label=sp))
     terrain_items = [mpatches.Patch(facecolor=c, edgecolor="black", linewidth=0.5, alpha=0.5, label=t)
                      for t, c in TERRAIN_COLORS.items()]
-    ax_comp.legend(handles=terrain_items + legend_items, loc="upper right", fontsize=7, framealpha=0.8)
+    ax_comp.legend(handles=terrain_items + legend_items, loc="upper right", fontsize=7*fs, framealpha=0.8)
 
-    fig.text(0.02, 0.01, stats_text, fontsize=9, fontfamily="monospace",
+    fig.text(0.02, 0.01, stats_text, fontsize=9*fs, fontfamily="monospace",
              verticalalignment="bottom",
              bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor="gray", alpha=0.9))
 
-    fig.suptitle("Species Density Panels", fontsize=14, fontweight="bold", y=0.99)
+    fig.suptitle("Species Density Panels", fontsize=14*fs, fontweight="bold", y=0.99)
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
@@ -876,11 +923,19 @@ def parse_args():
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
+def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
+        grid_dpi: int = None, no_summary: bool = False):
+    """Run temporal risk comparison analysis.
 
-    print(f"[1/4] Loading input: {args.input}")
-    base_data = load_base_input(args.input)
+    Args:
+        input_path: Input JSON file path.
+        out_dir: Output directory.
+        dpi: matplotlib savefig DPI.
+        grid_dpi: Pixels per hex in output image (auto if None).
+        no_summary: Skip summary file generation.
+    """
+    print(f"[1/4] Loading input: {input_path}")
+    base_data = load_base_input(input_path)
 
     grids = base_data.get('grids', [])
     hex_size = 1.0
@@ -889,15 +944,13 @@ def main():
             hex_size = float(g['hex_size'])
             break
 
-    if args.grid_dpi is None:
+    if grid_dpi is None:
         grid_dpi = auto_grid_dpi(grids)
-    else:
-        grid_dpi = args.grid_dpi
 
     print(f"  grids: {len(grids)}, hex_size: {hex_size}")
-    print(f"  grid_dpi: {grid_dpi}, save_dpi: {args.dpi}")
+    print(f"  grid_dpi: {grid_dpi}, save_dpi: {dpi}")
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    os.makedirs(out_dir, exist_ok=True)
 
     print(f"\n[2/5] Computing risks for {len(SCENARIOS)} scenarios...")
     scenarios_data = []
@@ -930,28 +983,28 @@ def main():
     plot_terrain_map(
         grids=grids,
         hex_size=hex_size,
-        save_path=os.path.join(args.out_dir, "terrain_map.png"),
+        save_path=os.path.join(out_dir, "terrain_map.png"),
         grid_dpi=grid_dpi,
-        save_dpi=args.dpi,
+        save_dpi=dpi,
     )
 
     plot_species_density_map(
         grids=grids,
         hex_size=hex_size,
-        save_path=os.path.join(args.out_dir, "species_density_map.png"),
+        save_path=os.path.join(out_dir, "species_density_map.png"),
         grid_dpi=grid_dpi,
-        save_dpi=args.dpi,
+        save_dpi=dpi,
     )
     plot_species_density_panels(
         grids=grids,
         hex_size=hex_size,
-        save_path=os.path.join(args.out_dir, "species_density_panels.png"),
+        save_path=os.path.join(out_dir, "species_density_panels.png"),
         grid_dpi=grid_dpi,
-        save_dpi=args.dpi,
+        save_dpi=dpi,
     )
 
     print(f"\n[4/5] Generating heatmaps...")
-    print(f"  Unified colorbar range: [0, {max_raw_risk:.4f}]")
+    print(f"  Unified colorbar range: [0, 1]")
 
     norm_norm = Normalize(vmin=0, vmax=1)
 
@@ -966,8 +1019,8 @@ def main():
             hex_size=hex_size,
             title=f"{scenario['label']} - Normalized Risk",
             cmap_norm=norm_norm,
-            save_path=os.path.join(args.out_dir, f"{name}_normalized_risk.png"),
-            save_dpi=args.dpi,
+            save_path=os.path.join(out_dir, f"{name}_normalized_risk.png"),
+            save_dpi=dpi,
             grid_dpi=grid_dpi
         )
 
@@ -976,9 +1029,9 @@ def main():
             risk_map=raw_map,
             hex_size=hex_size,
             title=f"{scenario['label']} - Raw Risk",
-            cmap_norm=Normalize(vmin=0, vmax=max_raw_risk),
-            save_path=os.path.join(args.out_dir, f"{name}_raw_risk.png"),
-            save_dpi=args.dpi,
+            cmap_norm=Normalize(vmin=0, vmax=1),
+            save_path=os.path.join(out_dir, f"{name}_raw_risk.png"),
+            save_dpi=dpi,
             grid_dpi=grid_dpi
         )
 
@@ -989,21 +1042,21 @@ def main():
         grids=grids,
         hex_size=hex_size,
         max_raw_risk=max_raw_risk,
-        save_path=os.path.join(args.out_dir, "risk_comparison_4panel.png"),
-        save_dpi=args.dpi,
+        save_path=os.path.join(out_dir, "risk_comparison_4panel.png"),
+        save_dpi=dpi,
         grid_dpi=grid_dpi,
         diurnal_mode=diurnal_mode_cfg
     )
 
-    if not args.no_summary:
+    if not no_summary:
         generate_summary(
             scenarios_data=scenarios_data,
             grids=grids,
-            save_path=os.path.join(args.out_dir, "time_risk_summary.txt")
+            save_path=os.path.join(out_dir, "time_risk_summary.txt")
         )
 
     print(f"\n{'=' * 60}")
-    print(f"  完成！输出目录: {os.path.abspath(args.out_dir)}")
+    print(f"  完成！输出目录: {os.path.abspath(out_dir)}")
     print(f"{'=' * 60}")
     print("\n生成的文件:")
     print("  地形图:")
@@ -1018,9 +1071,20 @@ def main():
         print(f"    - {s['name']}_raw_risk.png")
     print("  四象限对比图:")
     print(f"    - risk_comparison_4panel.png")
-    if not args.no_summary:
+    if not no_summary:
         print("  摘要文件:")
         print(f"    - time_risk_summary.txt")
+
+
+def main():
+    args = parse_args()
+    run(
+        input_path=args.input,
+        out_dir=args.out_dir,
+        dpi=args.dpi,
+        grid_dpi=args.grid_dpi,
+        no_summary=args.no_summary,
+    )
 
 
 if __name__ == "__main__":

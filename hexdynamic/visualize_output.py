@@ -57,11 +57,18 @@ SUBTLE_TEXT_COLOR = "#5f6b7a"
 HEX_EDGE_COLOR = "#253542"
 BOUNDARY_COLOR = "#172b38"
 BOUNDARY_LINEWIDTH = 1.6
-RISK_CMAP = LinearSegmentedColormap.from_list(
-    "risk_rag",
-    ["#1a9850", "#fee08b", "#d73027"],
-    N=256,
-)
+RISK_CMAP = matplotlib.colormaps.get_cmap("YlOrRd")
+
+# 字体缩放基准：grid_dpi=80 时 fs=1.0，地图放大/缩小时字号等比缩放。
+# 注意必须基于 grid_dpi（地图像素密度），而非 save_dpi（后者不改变字号相对比例）。
+FONT_BASE_GRID_DPI = 80
+
+def font_scale(grid_dpi: int) -> float:
+    """根据 grid_dpi 计算字体缩放因子，并限制到合理区间避免过小/过大。"""
+    if not grid_dpi or grid_dpi <= 0:
+        return 1.0
+    fs = grid_dpi / FONT_BASE_GRID_DPI
+    return max(0.6, min(fs, 2.5))
 
 
 # ---------------------------------------------------------------------------
@@ -539,7 +546,7 @@ def draw_deployed_fence_edges(ax, grids, out, hex_size, color=None):
     #     print(f"  - Boundary edges drawn: {boundary_edge_count}")
     #     print(f"  - Internal edges skipped: {internal_edge_skipped}")
 # Legend and colorbar helpers
-def legend_in_ax(ax_leg, handles, title, y_start=1.0, fontsize=9, title_fontsize=9):
+def legend_in_ax(ax_leg, handles, title, y_start=1.0, fontsize=9, title_fontsize=9, fs=1.0):
     """Draw a compact legend section and return next y position."""
     n_items = max(1, len(handles))
     title_gap = 0.040
@@ -557,7 +564,7 @@ def legend_in_ax(ax_leg, handles, title, y_start=1.0, fontsize=9, title_fontsize
         y_start,
         title,
         transform=ax_leg.transAxes,
-        fontsize=title_fontsize,
+        fontsize=title_fontsize*fs,
         fontweight="bold",
         va="top",
         color=TEXT_COLOR,
@@ -614,7 +621,7 @@ def legend_in_ax(ax_leg, handles, title, y_start=1.0, fontsize=9, title_fontsize
             y + marker_y,
             h.get_label(),
             transform=ax_leg.transAxes,
-            fontsize=fontsize,
+            fontsize=fontsize*fs,
             va="center",
             color=SUBTLE_TEXT_COLOR,
         )
@@ -622,15 +629,15 @@ def legend_in_ax(ax_leg, handles, title, y_start=1.0, fontsize=9, title_fontsize
     return y - bottom_gap
 
 
-def add_colorbar(fig, ax_cbar, cmap, norm, label=None, show_text=True):
+def add_colorbar(fig, ax_cbar, cmap, norm, label=None, show_text=True, fs=1.0):
     """Draw colorbar in dedicated axis with optional label/ticks."""
     sm = cm.ScalarMappable(cmap=cmap, norm=norm)
     sm.set_array([])
     cb = fig.colorbar(sm, cax=ax_cbar)
     if show_text:
         if label:
-            cb.set_label(label, fontsize=8, color=TEXT_COLOR, labelpad=3)
-        cb.ax.tick_params(labelsize=7, colors=SUBTLE_TEXT_COLOR, pad=1)
+            cb.set_label(label, fontsize=8*fs, color=TEXT_COLOR, labelpad=3)
+        cb.ax.tick_params(labelsize=7*fs, colors=SUBTLE_TEXT_COLOR, pad=1)
     else:
         cb.set_label("")
         cb.set_ticks([])
@@ -807,6 +814,7 @@ def plot_risk_heatmap(input_data, grid_map, hex_size, boundary_xy, save_path, ou
         print(f"  [skip] {os.path.basename(save_path)} 鈥?鏁版嵁缂哄皯 risk_normalized / raw_risk / fire_risk 瀛楁")
         return
 
+    fs = font_scale(grid_dpi)
     summary = input_data.get("summary", {})
     show_grid_ids = viz_cfg.get("show_grid_ids", False)
     cmap = RISK_CMAP
@@ -818,13 +826,13 @@ def plot_risk_heatmap(input_data, grid_map, hex_size, boundary_xy, save_path, ou
     if show_grid_ids:
         for g in grids:
             cx, cy = grid_center(g["q"], g["r"], hex_size)
-            ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8, zorder=4, color=TEXT_COLOR)
+            ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8*fs, zorder=4, color=TEXT_COLOR)
 
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
-    ax.set_title(title, fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax.set_title(title, fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
-    add_colorbar(fig, ax_cbar, cmap, norm, label=None, show_text=False)
+    add_colorbar(fig, ax_cbar, cmap, norm, label=None, show_text=False, fs=fs)
 
     n_grids = len(grids)
     total_risk = sum(risk_vals)
@@ -844,13 +852,21 @@ def plot_risk_heatmap(input_data, grid_map, hex_size, boundary_xy, save_path, ou
             y,
             text,
             transform=ax_leg.transAxes,
-            fontsize=9,
+            fontsize=9*fs,
             va="top",
             fontweight="bold" if bold else "normal",
             fontfamily="monospace",
             color=TEXT_COLOR if bold else SUBTLE_TEXT_COLOR,
         )
         y -= 0.074 if bold else 0.064
+
+    # 底部统计指标
+    if risk_vals:
+        stats_text = f"Max: {max(risk_vals):.4f}    Min: {min(risk_vals):.4f}    Mean: {np.mean(risk_vals):.4f}    Var: {np.var(risk_vals):.6f}"
+        map_pos = ax.get_position()
+        fig.text(map_pos.x0 + map_pos.width / 2, 0.015, stats_text,
+                 ha='center', va='bottom', fontsize=9*fs,
+                 fontfamily='monospace', fontweight='bold')
 
     try:
         fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
@@ -864,6 +880,7 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path, grid_dpi=80, 
     if not grids or "protection_benefit_normalized" not in grids[0]:
         print(f"  [skip] {os.path.basename(save_path)} 鈥?杈撳嚭鏁版嵁缂哄皯 protection_benefit_normalized 瀛楁")
         return
+    fs = font_scale(grid_dpi)
     summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     cmap = matplotlib.colormaps.get_cmap("Greens")
@@ -884,20 +901,20 @@ def plot_protection_heatmap(out, hex_size, boundary_xy, save_path, grid_dpi=80, 
         if show_grid_ids:
             for g in grids:
                 cx, cy = grid_center(g["q"], g["r"], hex_size)
-                ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8, zorder=4, color=TEXT_COLOR)
+                ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8*fs, zorder=4, color=TEXT_COLOR)
 
         setup_map_ax(ax, grids, hex_size)
         draw_boundary(ax, grids, boundary_xy, hex_size)
-        ax.set_title(title, fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
-        add_colorbar(fig, ax_cbar, cmap, norm, label=None, show_text=False)
+        ax.set_title(title, fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
+        add_colorbar(fig, ax_cbar, cmap, norm, label=None, show_text=False, fs=fs)
 
         y = 0.965
         ax_leg.text(0.05, y, "Summary", transform=ax_leg.transAxes,
-                    fontsize=9, fontweight="bold", va="top", color=TEXT_COLOR)
+                    fontsize=9*fs, fontweight="bold", va="top", color=TEXT_COLOR)
         y -= 0.055
         for k, v in summary_items:
             ax_leg.text(0.05, y, f"{k}: {v}", transform=ax_leg.transAxes,
-                        fontsize=8.5, va="top", fontfamily="monospace", color=SUBTLE_TEXT_COLOR)
+                        fontsize=8.5*fs, va="top", fontfamily="monospace", color=SUBTLE_TEXT_COLOR)
             y -= 0.045
 
         fig.savefig(path, dpi=save_dpi, bbox_inches="tight")
@@ -930,11 +947,13 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, sav
         print("  [skip] risk_comparison.png 鈥?杈撳嚭鏁版嵁缂哄皯 risk_normalized 瀛楁")
         return
 
+    fs = font_scale(grid_dpi)
     cmap = RISK_CMAP
 
     risk_before = [g["risk_normalized"] for g in grids]
     risk_after  = [g["residual_risk_normalized"] for g in grids]
-    norm = Normalize(vmin=0, vmax=1)
+    vmax = max(max(risk_before), max(risk_after)) if risk_before else 1
+    norm = Normalize(vmin=0, vmax=vmax if vmax > 0 else 1)
 
     figsize_single, _ = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar=True)
     fig_w = figsize_single[0]
@@ -958,18 +977,18 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, sav
     if show_grid_ids:
         for g in grids:
             cx, cy = grid_center(g["q"], g["r"], hex_size)
-            ax_before.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8, zorder=4, color=TEXT_COLOR)
-            ax_after.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8, zorder=4, color=TEXT_COLOR)
+            ax_before.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8*fs, zorder=4, color=TEXT_COLOR)
+            ax_after.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8*fs, zorder=4, color=TEXT_COLOR)
 
     setup_map_ax(ax_before, grids, hex_size)
     setup_map_ax(ax_after, grids, hex_size)
     draw_boundary(ax_before, grids, boundary_xy, hex_size)
     draw_boundary(ax_after, grids, boundary_xy, hex_size)
 
-    ax_before.set_title("Before Deployment\n(Normalized Risk)", fontsize=12, fontweight="bold", pad=8, color=TEXT_COLOR)
-    ax_after.set_title("After Deployment\n(Residual Risk)", fontsize=12, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax_before.set_title("Before Deployment\n(Normalized Risk)", fontsize=12*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax_after.set_title("After Deployment\n(Residual Risk)", fontsize=12*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
-    add_colorbar(fig, ax_cbar, cmap, norm, "Risk Level")
+    add_colorbar(fig, ax_cbar, cmap, norm, "Risk Level", fs=fs)
 
     n = len(grids)
     mean_before = sum(risk_before) / n
@@ -995,7 +1014,7 @@ def plot_risk_comparison(out, hex_size, boundary_xy, save_path, grid_dpi=80, sav
     for label, value, bold in items:
         text = label if value is None else f"{label}: {value}"
         ax_leg.text(0.05, y, text, transform=ax_leg.transAxes,
-                    fontsize=8, va="top",
+                    fontsize=8*fs, va="top",
                     fontweight="bold" if bold else "normal",
                     fontfamily="monospace",
                     color=TEXT_COLOR if bold else SUBTLE_TEXT_COLOR)
@@ -1010,6 +1029,7 @@ def plot_terrain_map(input_data, hex_size, boundary_xy, save_path, output_data=N
     """Plot terrain map and optionally overlay deployed fences."""
     grids = input_data["grids"]
     show_grid_ids = input_data.get("visualization_config", {}).get("show_grid_ids", False)
+    fs = font_scale(grid_dpi)
     fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
     facecolors = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
@@ -1017,13 +1037,13 @@ def plot_terrain_map(input_data, hex_size, boundary_xy, save_path, output_data=N
     if show_grid_ids:
         for g in grids:
             cx, cy = grid_center(g["q"], g["r"], hex_size)
-            ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8, zorder=4, color=TEXT_COLOR)
+            ax.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8*fs, zorder=4, color=TEXT_COLOR)
 
     if output_data:
         draw_deployed_fence_edges(ax, grids, output_data, hex_size, color=BOUNDARY_COLOR)
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
-    ax.set_title("Terrain Map", fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax.set_title("Terrain Map", fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
     handles = [mpatches.Patch(facecolor=c, edgecolor=PANEL_EDGE_COLOR, linewidth=0.6, label=t)
                for t, c in TERRAIN_COLORS.items()]
@@ -1032,7 +1052,7 @@ def plot_terrain_map(input_data, hex_size, boundary_xy, save_path, output_data=N
             plt.Line2D([0], [1], color=BOUNDARY_COLOR, linewidth=FENCE_EDGE_LINEWIDTH * 1.5,
                        label="Fence (bold edge)")
         )
-    legend_in_ax(ax_leg, handles, "Terrain Type", y_start=0.97)
+    legend_in_ax(ax_leg, handles, "Terrain Type", y_start=0.97, fs=fs)
 
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
@@ -1044,6 +1064,7 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path, grid_dpi=
     if not grids or "deployment" not in grids[0]:
         print(f"  [skip] {os.path.basename(save_path)} 鈥?杈撳嚭鏁版嵁缂哄皯 deployment 瀛楁")
         return
+    fs = font_scale(grid_dpi)
     edge_ids = _edge_grid_ids(grids, boundary_xy, hex_size)
     fig, ax, _, ax_leg = make_figure(grids=grids, hex_size=hex_size, grid_dpi=grid_dpi, save_dpi=save_dpi, has_colorbar=False)
 
@@ -1054,7 +1075,7 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path, grid_dpi=
     draw_deployed_fence_edges(ax, grids, out, hex_size)
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
-    ax.set_title("Terrain Map with Deployment", fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax.set_title("Terrain Map with Deployment", fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
     terrain_handles = [mpatches.Patch(facecolor=c, edgecolor=PANEL_EDGE_COLOR, linewidth=0.6, alpha=0.6, label=t)
                        for t, c in TERRAIN_COLORS.items()]
@@ -1068,8 +1089,8 @@ def plot_terrain_deployment_map(out, hex_size, boundary_xy, save_path, grid_dpi=
                    label="Fence (bold edge)")
     )
 
-    y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=0.97)
-    legend_in_ax(ax_leg, res_handles, "Resources", y_start=y)
+    y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=0.97, fs=fs)
+    legend_in_ax(ax_leg, res_handles, "Resources", y_start=y, fs=fs)
 
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
@@ -1182,6 +1203,7 @@ def plot_species_map(input_data, species_map, hex_size, boundary_xy, save_path, 
         print("  [skip] species_map.png 鈥?no species data")
         return
 
+    fs = font_scale(grid_dpi)
     all_species = sorted({sp for sd in species_map.values() for sp in sd})
     stats_text = _species_stats_text(species_map, all_species, len(grids))
 
@@ -1221,7 +1243,7 @@ def plot_species_map(input_data, species_map, hex_size, boundary_xy, save_path, 
 
     setup_map_ax(ax, grids, hex_size)
     draw_boundary(ax, grids, boundary_xy, hex_size)
-    ax.set_title("Species Density Map", fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax.set_title("Species Density Map", fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
     terrain_handles = [mpatches.Patch(facecolor=c, edgecolor=PANEL_EDGE_COLOR, linewidth=0.6, alpha=0.55, label=t)
                        for t, c in TERRAIN_COLORS.items()]
@@ -1234,10 +1256,10 @@ def plot_species_map(input_data, species_map, hex_size, boundary_xy, save_path, 
         for sp in all_species
     ]
 
-    y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=0.97)
-    legend_in_ax(ax_leg, species_handles, "Species Density", y_start=y)
+    y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=0.97, fs=fs)
+    legend_in_ax(ax_leg, species_handles, "Species Density", y_start=y, fs=fs)
 
-    fig.text(0.02, 0.01, stats_text, fontsize=9, fontfamily="monospace", color=SUBTLE_TEXT_COLOR,
+    fig.text(0.02, 0.01, stats_text, fontsize=9*fs, fontfamily="monospace", color=SUBTLE_TEXT_COLOR,
              verticalalignment="bottom",
              bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=PANEL_EDGE_COLOR, alpha=0.95))
 
@@ -1283,6 +1305,7 @@ def plot_species_panels(out, species_map, hex_size, boundary_xy, save_path, grid
     if not species_map:
         return
 
+    fs = font_scale(grid_dpi)
     all_species = sorted({sp for sd in species_map.values() for sp in sd})
     stats_text = _species_stats_text(species_map, all_species, len(grids))
     n_species = len(all_species)
@@ -1328,11 +1351,11 @@ def plot_species_panels(out, species_map, hex_size, boundary_xy, save_path, grid
         sm = ScalarMappable(cmap=cmap, norm=norm)
         sm.set_array([])
         cbar = fig.colorbar(sm, cax=ax_cbar)
-        cbar.set_label("Density", fontsize=8, color=TEXT_COLOR)
-        cbar.ax.tick_params(labelsize=7, colors=SUBTLE_TEXT_COLOR)
+        cbar.set_label("Density", fontsize=8*fs, color=TEXT_COLOR)
+        cbar.ax.tick_params(labelsize=7*fs, colors=SUBTLE_TEXT_COLOR)
 
         fig.text(left + panel_w * 0.44, bottom + panel_h - title_h * 0.3,
-                 f"{sp.capitalize()} Density", fontsize=11, fontweight="bold", color=TEXT_COLOR,
+                 f"{sp.capitalize()} Density", fontsize=11*fs, fontweight="bold", color=TEXT_COLOR,
                  ha="center", va="bottom")
 
     comp_idx = n_species
@@ -1344,7 +1367,7 @@ def plot_species_panels(out, species_map, hex_size, boundary_xy, save_path, grid
     ax_comp = fig.add_axes([comp_left, comp_bottom, panel_w, panel_h - title_h])
     _draw_composite(ax_comp, grids, hex_size, all_species, species_map)
     fig.text(comp_left + panel_w * 0.5, comp_bottom + panel_h - title_h * 0.3,
-             "Composite Overview", fontsize=11, fontweight="bold", color=TEXT_COLOR, ha="center", va="bottom")
+             "Composite Overview", fontsize=11*fs, fontweight="bold", color=TEXT_COLOR, ha="center", va="bottom")
 
     legend_items = []
     for sp in all_species:
@@ -1353,13 +1376,13 @@ def plot_species_panels(out, species_map, hex_size, boundary_xy, save_path, grid
                                            linewidth=0.5, alpha=0.7, label=sp))
     terrain_items = [mpatches.Patch(facecolor=c, edgecolor=PANEL_EDGE_COLOR, linewidth=0.6, alpha=0.55, label=t)
                      for t, c in TERRAIN_COLORS.items()]
-    ax_comp.legend(handles=terrain_items + legend_items, loc="upper right", fontsize=7, framealpha=0.95)
+    ax_comp.legend(handles=terrain_items + legend_items, loc="upper right", fontsize=7*fs, framealpha=0.95)
 
-    fig.text(0.02, 0.01, stats_text, fontsize=9, fontfamily="monospace", color=SUBTLE_TEXT_COLOR,
+    fig.text(0.02, 0.01, stats_text, fontsize=9*fs, fontfamily="monospace", color=SUBTLE_TEXT_COLOR,
              verticalalignment="bottom",
              bbox=dict(boxstyle="round,pad=0.4", facecolor="white", edgecolor=PANEL_EDGE_COLOR, alpha=0.95))
 
-    fig.suptitle("Species Density Panels", fontsize=14, fontweight="bold", y=0.99, color=TEXT_COLOR)
+    fig.suptitle("Species Density Panels", fontsize=14*fs, fontweight="bold", y=0.99, color=TEXT_COLOR)
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved: {save_path}")
@@ -1372,6 +1395,7 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
         print(f"  [skip] {os.path.basename(save_path)} 鈥?杈撳嚭鏁版嵁缂哄皯 deployment 瀛楁")
         return
 
+    fs = font_scale(grid_dpi)
     figsize_single, _ = compute_figsize(grids, hex_size, grid_dpi, save_dpi, has_colorbar=False)
     fig_w = figsize_single[0]
     fig_h = figsize_single[1] * 2 + 0.5
@@ -1427,7 +1451,7 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
 
     setup_map_ax(ax1, grids, hex_size)
     draw_boundary(ax1, grids, boundary_xy, hex_size)
-    ax1.set_title("Species Density (Top)", fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax1.set_title("Species Density (Top)", fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
     # ================= 涓嬪崐閮ㄥ垎锛氶儴缃茶祫婧愬浘
     facecolors2 = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
@@ -1438,7 +1462,7 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
     
     setup_map_ax(ax2, grids, hex_size)
     draw_boundary(ax2, grids, boundary_xy, hex_size)
-    ax2.set_title("Deployment (Bottom)", fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax2.set_title("Deployment (Bottom)", fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
     # ================= 鍙充晶鍥句緥
     terrain_handles = [mpatches.Patch(facecolor=c, edgecolor=PANEL_EDGE_COLOR, linewidth=0.6, alpha=0.55, label=t)
@@ -1453,8 +1477,8 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
                    label="Fence (bold edge)")
     )
 
-    y = legend_in_ax(ax_leg1, terrain_handles, "Terrain", y_start=0.97)
-    y = legend_in_ax(ax_leg1, res_handles, "Resources", y_start=y)
+    y = legend_in_ax(ax_leg1, terrain_handles, "Terrain", y_start=0.97, fs=fs)
+    y = legend_in_ax(ax_leg1, res_handles, "Resources", y_start=y, fs=fs)
 
     if species_map:
         species_handles = [
@@ -1465,7 +1489,7 @@ def plot_species_deployment_comparison(out, species_map, hex_size, boundary_xy, 
                        label=f"{sp} (size ~ density)")
             for sp in all_species
         ]
-        legend_in_ax(ax_leg1, species_handles, "Species Density", y_start=y)
+        legend_in_ax(ax_leg1, species_handles, "Species Density", y_start=y, fs=fs)
 
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)
@@ -1478,6 +1502,7 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     if not grids or "protection_benefit_normalized" not in grids[0] or "deployment" not in grids[0]:
         print(f"  [skip] {os.path.basename(save_path)} 鈥?杈撳嚭鏁版嵁缂哄皯淇濇姢鏀剁泭/閮ㄧ讲瀛楁")
         return
+    fs = font_scale(grid_dpi)
     summary = out.get("summary", {})
     show_grid_ids = out.get("visualization_config", {}).get("show_grid_ids", False)
     edge_ids = _edge_grid_ids(grids, boundary_xy, hex_size)
@@ -1510,14 +1535,14 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     if show_grid_ids:
         for g in grids:
             cx, cy = grid_center(g["q"], g["r"], hex_size)
-            ax1.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8, zorder=4, color=TEXT_COLOR)
+            ax1.text(cx, cy, str(g["grid_id"]), ha="center", va="center", fontsize=5.8*fs, zorder=4, color=TEXT_COLOR)
 
     setup_map_ax(ax1, grids, hex_size)
     draw_boundary(ax1, grids, boundary_xy, hex_size)
-    ax1.set_title("Protection Benefit (Top)", fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax1.set_title("Protection Benefit (Top)", fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
     # ================= 涓婂崐閮ㄥ垎棰滆壊鏉?
-    add_colorbar(fig, ax_cbar, cmap, norm, "Protection Benefit (Normalized)")
+    add_colorbar(fig, ax_cbar, cmap, norm, "Protection Benefit (Normalized)", fs=fs)
 
     # ================= 涓嬪崐閮ㄥ垎锛欴eployment Map
     facecolors_dep = [TERRAIN_COLORS.get(g["terrain_type"], "#ccc") for g in grids]
@@ -1528,7 +1553,7 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     
     setup_map_ax(ax2, grids, hex_size)
     draw_boundary(ax2, grids, boundary_xy, hex_size)
-    ax2.set_title("Deployment (Bottom)", fontsize=13, fontweight="bold", pad=8, color=TEXT_COLOR)
+    ax2.set_title("Deployment (Bottom)", fontsize=13*fs, fontweight="bold", pad=8, color=TEXT_COLOR)
 
     # ================= 鍙充晶鍥句緥
     summary_items = [
@@ -1556,7 +1581,7 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     for label, value, bold in summary_items:
         text = label if value is None else f"{label}: {value}"
         ax_leg.text(0.05, y, text, transform=ax_leg.transAxes,
-                    fontsize=8, va="top",
+                    fontsize=8*fs, va="top",
                     fontweight="bold" if bold else "normal",
                     fontfamily="monospace",
                     color=TEXT_COLOR if bold else SUBTLE_TEXT_COLOR)
@@ -1567,7 +1592,7 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
     # 鍦板舰鍥句緥
     terrain_handles = [mpatches.Patch(facecolor=c, edgecolor=PANEL_EDGE_COLOR, linewidth=0.6, alpha=0.55, label=t)
                        for t, c in TERRAIN_COLORS.items()]
-    y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=min(y, 0.64))
+    y = legend_in_ax(ax_leg, terrain_handles, "Terrain", y_start=min(y, 0.64), fs=fs)
     
     # 璧勬簮鍥句緥
     res_handles = [
@@ -1579,7 +1604,7 @@ def plot_protection_deployment_comparison(out, hex_size, boundary_xy, save_path,
         plt.Line2D([0], [1], color=FENCE_COLOR, linewidth=FENCE_EDGE_LINEWIDTH * 2,
                    label="Fence (bold edge)")
     )
-    legend_in_ax(ax_leg, res_handles, "Resources", y_start=min(y, 0.38))
+    legend_in_ax(ax_leg, res_handles, "Resources", y_start=min(y, 0.38), fs=fs)
 
     fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
     plt.close(fig)

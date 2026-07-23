@@ -26,10 +26,6 @@ import numpy as np
 # Add hexdynamic to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'hexdynamic'))
 
-# SALib imports (will be added as dependency)
-from SALib.sample import sobol as sobol_sample
-from SALib.analyze import sobol
-
 # Import the protection pipeline
 from protection_pipeline import run_pipeline
 
@@ -91,6 +87,12 @@ def parse_args():
         "--vectorized",
         action="store_true",
         help="Use vectorized coverage model for faster evaluation"
+    )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        default=False,
+        help="Enable GPU acceleration (disabled by default)"
     )
     return parser.parse_args()
 
@@ -159,6 +161,7 @@ def generate_samples(param_defs: List[Dict], num_samples: int, seed: Optional[in
     if seed is not None:
         np.random.seed(seed)
     
+    from SALib.sample import sobol as sobol_sample
     param_values = sobol_sample.sample(problem, num_samples)
     
     # Convert to integers for resource counts
@@ -167,20 +170,26 @@ def generate_samples(param_defs: List[Dict], num_samples: int, seed: Optional[in
     return problem, param_values
 
 
-def evaluate_model(base_config: dict, params_dict: Dict[str, int], eval_idx: int, output_dir: str, vectorized: bool = False) -> Dict[str, Any]:
+def evaluate_model(base_config, params_dict: Dict[str, int], eval_idx: int, output_dir: str, vectorized: bool = False, use_gpu: bool = False) -> Dict[str, Any]:
     """
     Run a single model evaluation with modified parameters.
     
     Args:
-        base_config: Base configuration dict (will be deep-copied)
+        base_config: Base configuration dict (will be deep-copied) OR path to base config JSON file.
         params_dict: Parameter values to apply
         eval_idx: Evaluation index for tracking
         output_dir: Directory for intermediate files
         vectorized: Use vectorized coverage model
+        use_gpu: Enable GPU acceleration
         
     Returns:
         Evaluation record dict with success status and results
     """
+    # Load config from file if a path is given (saves memory in parallel mode)
+    if isinstance(base_config, str):
+        with open(base_config, 'r', encoding='utf-8') as f:
+            base_config = json.load(f)
+    
     # Deep copy to avoid modifying original
     config = copy.deepcopy(base_config)
     
@@ -231,12 +240,12 @@ def evaluate_model(base_config: dict, params_dict: Dict[str, int], eval_idx: int
 
 def _parallel_worker(args_tuple):
     """Top-level picklable worker function for parallel execution."""
-    base_config, params_dict, eval_idx, output_dir, vectorized = args_tuple
-    return evaluate_model(base_config, params_dict, eval_idx, output_dir, vectorized)
+    base_config, params_dict, eval_idx, output_dir, vectorized, use_gpu = args_tuple
+    return evaluate_model(base_config, params_dict, eval_idx, output_dir, vectorized, use_gpu)
 
 
 def run_analysis(base_config: dict, param_defs: List[Dict], num_samples: int, 
-                 output_dir: str, seed: Optional[int], workers: int, vectorized: bool = False) -> Tuple[Dict, np.ndarray, np.ndarray, List[Dict]]:
+                 output_dir: str, seed: Optional[int], workers: int, vectorized: bool = False, use_gpu: bool = False) -> Tuple[Dict, np.ndarray, np.ndarray, List[Dict]]:
     """
     Orchestrate all model evaluations.
     
@@ -274,6 +283,11 @@ def run_analysis(base_config: dict, param_defs: List[Dict], num_samples: int,
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
+    # Save base_config to a temp file for workers to read (avoids passing 1MB+ dict per task)
+    base_config_path = os.path.join(output_dir, "_base_config.json")
+    with open(base_config_path, 'w', encoding='utf-8') as f:
+        json.dump(base_config, f, ensure_ascii=False)
+    
     # Run evaluations
     eval_records = []
     start_time = time.time()
@@ -282,17 +296,20 @@ def run_analysis(base_config: dict, param_defs: List[Dict], num_samples: int,
         # Sequential execution
         for j, params_dict in enumerate(all_params):
             print(f"[Eval {j+1}/{total_evals}]", end="\r")
-            record = evaluate_model(base_config, params_dict, j, output_dir, vectorized)
+            record = evaluate_model(base_config, params_dict, j, output_dir, vectorized, use_gpu)
             eval_records.append(record)
     else:
-        # Parallel execution
-        worker_args = [
-            (base_config, all_params[j], j, output_dir, vectorized)
-            for j in range(total_evals)
-        ]
-        
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(_parallel_worker, args): args[2] for args in worker_args}
+        # Parallel execution: pass file path instead of dict to save memory
+        from multiprocessing import get_context
+        ctx = get_context('spawn')
+        with ProcessPoolExecutor(max_workers=workers, mp_context=ctx, max_tasks_per_child=1) as executor:
+            futures = {}
+            for j in range(total_evals):
+                future = executor.submit(
+                    _parallel_worker,
+                    (base_config_path, all_params[j], j, output_dir, vectorized, use_gpu)
+                )
+                futures[future] = j
             completed = 0
             for future in as_completed(futures):
                 completed += 1
@@ -335,6 +352,7 @@ def compute_sobol_indices(problem: Dict, output_array: np.ndarray, num_bootstrap
         print(f"Warning: {np.sum(~valid_mask)} NaN values excluded from analysis")
     
     # Compute indices
+    from SALib.analyze import sobol
     Si = sobol.analyze(problem, output_array, num_resamples=num_bootstrap)
     
     # Extract results
@@ -530,7 +548,7 @@ def main():
     
     # Run analysis
     problem, param_values, output_array, eval_records = run_analysis(
-        base_config, param_defs, args.num_samples, args.output_dir, args.seed, workers, args.vectorized
+        base_config, param_defs, args.num_samples, args.output_dir, args.seed, workers, args.vectorized, args.gpu
     )
     
     # Compute Sobol indices
@@ -553,6 +571,7 @@ def main():
         "seed": args.seed,
         "workers": workers,
         "vectorized": args.vectorized,
+        "use_gpu": args.gpu,
         "successful_evaluations": successful,
         "failed_evaluations": failed
     }

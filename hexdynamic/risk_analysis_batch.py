@@ -24,8 +24,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Polygon
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib import cm
+
+# 风险指数统一色阶：0 -> 淡黄，0.5 -> 橙，1 -> 深红（YlOrRd）
+RISK_CMAP = matplotlib.colormaps.get_cmap("YlOrRd")
 
 # Import from risk_analysis
 from risk_analysis import (
@@ -155,8 +158,8 @@ def generate_single_comparison(results: List[dict], risk_key: str,
         axes = axes if hasattr(axes, 'flatten') else [[axes[0, 0], axes[0, 1]], [axes[1, 0], axes[1, 1]]]
     
     # 统一颜色条
-    cmap = matplotlib.colormaps.get_cmap("YlOrRd")
-    norm = Normalize(vmin=0, vmax=min(max_val, 1.0))  # 限制最大值为1.0
+    cmap = RISK_CMAP
+    norm = Normalize(vmin=0, vmax=1)
     
     # 绘制每个场景
     for i in range(n_rows):

@@ -6,7 +6,7 @@ Flow: compute normalized composite risk -> generate risk heatmap + geo/species a
 No DSSA optimization involved.
 
 Output:
-  1. risk_heatmap.png      — 综合风险指数热力图（YlOrRd 色阶）
+  1. risk_heatmap.png      — 综合风险指数热力图（white-yellow-red 色阶）
   2. attributes_map.png    — 2×2 地理+物种属性图
   3. risk_results.json     — 每个网格的风险值及属性数据
 """
@@ -22,9 +22,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import Polygon
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, LinearSegmentedColormap
 from matplotlib import cm
 from typing import Dict, List, Tuple
+
+# 风险指数统一色阶：0 -> 淡黄，0.5 -> 橙，1 -> 深红（YlOrRd）
+RISK_CMAP = matplotlib.colormaps.get_cmap("YlOrRd")
 
 _RISK_SRC = os.path.join(os.path.dirname(__file__), '..', 'riskIndex', 'src')
 sys.path.insert(0, os.path.abspath(_RISK_SRC))
@@ -272,7 +275,7 @@ def compute_risk(data: dict) -> Tuple[Dict[int, float], Dict[int, float]]:
 
 def plot_risk_heatmap(grids: list, risk_map: Dict[int, float],
                       hex_size: float = 1.0, save_path: str = None):
-    cmap = matplotlib.colormaps.get_cmap("YlOrRd")
+    cmap = RISK_CMAP
     # 使用统一的 [0, 1] 范围便于跨场景对比
     norm = Normalize(vmin=0, vmax=1)
 
@@ -306,6 +309,14 @@ def plot_risk_heatmap(grids: list, risk_map: Dict[int, float],
                     fontfamily="monospace")
         y -= 0.09
 
+    # 底部统计指标
+    if risk_vals:
+        stats_text = f"Max: {max(risk_vals):.4f}    Min: {min(risk_vals):.4f}    Mean: {np.mean(risk_vals):.4f}    Var: {np.var(risk_vals):.6f}"
+        map_pos = ax.get_position()
+        fig.text(map_pos.x0 + map_pos.width / 2, 0.015, stats_text,
+                 ha='center', va='bottom', fontsize=9,
+                 fontfamily='monospace', fontweight='bold')
+
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"  Risk heatmap saved -> {save_path}")
@@ -318,7 +329,7 @@ def plot_raw_risk_heatmap(grids: list, raw_risk_map: Dict[int, float],
     
     Uses [0, 1] range for colorbar to enable cross-scenario comparison.
     """
-    cmap = matplotlib.colormaps.get_cmap("YlOrRd")
+    cmap = RISK_CMAP
     
     raw_vals = list(raw_risk_map.values())
     if not raw_vals:
@@ -358,6 +369,14 @@ def plot_raw_risk_heatmap(grids: list, raw_risk_map: Dict[int, float],
                     fontweight="bold" if bold else "normal",
                     fontfamily="monospace")
         y -= 0.09
+
+    # 底部统计指标
+    if risk_vals:
+        stats_text = f"Max: {max(risk_vals):.4f}    Min: {min(risk_vals):.4f}    Mean: {np.mean(risk_vals):.4f}    Var: {np.var(risk_vals):.6f}"
+        map_pos = ax.get_position()
+        fig.text(map_pos.x0 + map_pos.width / 2, 0.015, stats_text,
+                 ha='center', va='bottom', fontsize=9,
+                 fontfamily='monospace', fontweight='bold')
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")

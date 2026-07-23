@@ -98,6 +98,9 @@ SPECIES_PROFILES = {
         "herd_radius": 6,
         "num_herds": (2, 4),
         "density_range": (0.4, 1.0),
+        "background_range": (0.02, 0.15),
+        "background_coverage": 0.3,
+        "road_min_distance": 3,
         "target_ratio": 5,
     },
     "elephant": {
@@ -111,6 +114,9 @@ SPECIES_PROFILES = {
         "herd_radius": 8,
         "num_herds": (2, 3),
         "density_range": (0.3, 0.9),
+        "background_range": (0.02, 0.12),
+        "background_coverage": 0.3,
+        "road_min_distance": 3,
         "target_ratio": 5,
     },
     "bird": {
@@ -198,10 +204,11 @@ def compute_spatial_features(grids, neighbors,
 
     saltmarsh_dist = bfs_distance(grids, neighbors, saltmarsh_sources) if saltmarsh_sources else {i: 999 for i in range(len(grids))}
 
+    # 始终计算到道路的距离（用于物种距道路最小距离约束）
+    road_dist = bfs_distance(grids, neighbors, road_sources) if road_sources else {i: 999 for i in range(len(grids))}
+
     if water_sources:
         if road_sources and road_penalty > 0:
-            # 计算每个水坑到最近道路的距离
-            road_dist = bfs_distance(grids, neighbors, road_sources)
             source_costs = []
             for wh_idx in water_sources:
                 r_dist = road_dist.get(wh_idx, 999)
@@ -215,7 +222,7 @@ def compute_spatial_features(grids, neighbors,
     else:
         water_dist = {i: 999 for i in range(len(grids))}
 
-    return water_dist, saltmarsh_dist
+    return water_dist, saltmarsh_dist, road_dist
 
 
 def compute_hsi(grids, species, profile, water_dist, saltmarsh_dist, elephant_impact=None):
@@ -252,34 +259,28 @@ def compute_hsi(grids, species, profile, water_dist, saltmarsh_dist, elephant_im
     return hsi
 
 
-def bfs_expand(seeds, max_count, neighbors, species_assigned, is_result):
-    result = []
-    visited = set()
-    queue = deque()
-    max_visited = max_count * 10
-    for s in seeds:
-        visited.add(s)
-        queue.append(s)
-    while queue and len(result) < max_count and len(visited) < max_visited:
-        idx = queue.popleft()
-        for nb in neighbors.get(idx, []):
-            if nb not in visited and len(visited) < max_visited:
-                visited.add(nb)
-                queue.append(nb)
-        if idx in species_assigned:
-            continue
-        if not is_result(idx):
-            continue
-        result.append(idx)
-        species_assigned.add(idx)
-    return result
-
-
 def _assign_one_species(grids, species, profile, neighbors, water_dist, saltmarsh_dist,
-                        total, elephant_indices=None):
+                        total, road_dist, elephant_indices=None):
+    """分配单一物种密度。
+
+    采用"背景散落 + 群热点"双层模型：
+      - 背景：从候选网格中随机抽取 background_coverage 比例的网格，按 HSI 给一个
+        低密度基线（background_range），形成稀疏散落（而非全境覆盖）。
+      - 群热点：以分散选取的种子为中心，按到最近种子的指数衰减叠加较高密度，
+        形成由中心向外平滑递减的梯度（无硬截断）。
+    最终密度 = max(背景密度, 群密度)，钳制到 [0, dmax]。
+
+    距道路约束：配置了 road_min_distance 的物种（犀牛/大象）要求候选网格到最近
+    道路距离 >= road_min_distance，否则不分配任何密度。
+    未配置 background_range 的物种（如鸟类）仅保留群热点，保持集中分布。
+    """
     dmin, dmax = profile["density_range"]
     prohibited = profile.get("prohibited_terrains", set())
+    bg_range = profile.get("background_range")  # None => 无背景散落(集中分布)
+    bg_coverage = profile.get("background_coverage", 1.0)  # 背景散落覆盖比例
+    road_min_dist = profile.get("road_min_distance", 0)  # 距道路最小步数，0=不约束
 
+    # 大象竞争影响：仅基于大象群核心（高密度区），而非背景散落
     elephant_impact = None
     if profile["hsi_weights"].get("competition", 0) > 0 and elephant_indices:
         e_dist = bfs_distance(grids, neighbors, elephant_indices)
@@ -288,20 +289,36 @@ def _assign_one_species(grids, species, profile, neighbors, water_dist, saltmars
 
     hsi = compute_hsi(grids, species, profile, water_dist, saltmarsh_dist, elephant_impact)
 
+    # 候选网格：排除禁止地形 + 距道路最小距离约束
     is_result = lambda idx, _p=prohibited: grids[idx]["terrain_type"] not in _p
-    candidates = [i for i in range(total) if is_result(i)]
+    if road_min_dist > 0:
+        candidates = [i for i in range(total)
+                      if is_result(i) and road_dist.get(i, 999) >= road_min_dist]
+    else:
+        candidates = [i for i in range(total) if is_result(i)]
     if not candidates:
         return 0, []
 
+    hsi_max = max(hsi.get(i, 0.001) for i in candidates)
+    if hsi_max <= 0:
+        hsi_max = 1.0
+
+    # ---- 背景散落网格：从候选中随机抽取 background_coverage 比例 ----
+    bg_set = set()
+    if bg_range and bg_coverage < 1.0:
+        n_bg = int(len(candidates) * bg_coverage)
+        bg_set = set(random.sample(candidates, min(n_bg, len(candidates))))
+    elif bg_range:
+        bg_set = set(candidates)
+
+    # ---- 选择群种子：从前 60% 高 HSI 候选中按最小间距分散抽取 ----
+    # 避免种子全部挤在单一水坑/盐沼边缘，使热点分布更自然
     candidates.sort(key=lambda i: hsi.get(i, 0), reverse=True)
-
     num_herds = random.randint(*profile["num_herds"])
-    total_max = max(1, total * profile["target_ratio"] // 100)
-    herd_max = max(3, total_max // num_herds)
-
+    seed_pool = candidates[:max(num_herds * 3, int(len(candidates) * 0.6))]
     min_seed_dist = max(5, int(math.sqrt(total) / 4))
     seed_indices = []
-    for idx in candidates:
+    for idx in seed_pool:
         if len(seed_indices) >= num_herds:
             break
         gq, gr = grids[idx]["q"], grids[idx]["r"]
@@ -311,30 +328,52 @@ def _assign_one_species(grids, species, profile, neighbors, water_dist, saltmars
         )
         if not too_close:
             seed_indices.append(idx)
+    # 兜底：分散后不足时从候选中补足
+    ci = 0
+    while len(seed_indices) < num_herds and ci < len(candidates):
+        if candidates[ci] not in seed_indices:
+            seed_indices.append(candidates[ci])
+        ci += 1
 
-    hsi_max = max(hsi.get(i, 0.001) for i in candidates)
-    if hsi_max <= 0:
-        hsi_max = 1.0
+    herd_radius = profile["herd_radius"]
+    seed_coords = [(grids[si]["q"], grids[si]["r"]) for si in seed_indices]
+    bg_min = bg_max = 0.0
+    if bg_range:
+        bg_min, bg_max = bg_range
 
-    species_assigned = set()
     count = 0
     new_elephant_indices = []
-    for seed_idx in seed_indices:
-        expanded = bfs_expand([seed_idx], herd_max, neighbors, species_assigned, is_result)
-        sq, sr = grids[seed_idx]["q"], grids[seed_idx]["r"]
+    for idx in candidates:
+        g = grids[idx]
+        hsi_norm = max(0.0, hsi.get(idx, 0)) / hsi_max
 
-        for idx in expanded:
-            g = grids[idx]
-            d_center = ((g["q"] - sq) ** 2 + (g["r"] - sr) ** 2) ** 0.5
-            herd_factor = math.exp(-d_center / profile["herd_radius"])
-            hsi_norm = max(0.0, hsi.get(idx, 0)) / hsi_max
+        # 背景稀疏密度（仅当配置了 background_range 且该网格被选中散落）
+        background = 0.0
+        if bg_range and idx in bg_set:
+            background = bg_min + (bg_max - bg_min) * (hsi_norm ** 1.5)
 
-            combined = herd_factor * (0.4 + 0.6 * hsi_norm)
-            val = dmin + (dmax - dmin) * combined
-            g["species_densities"][species] = round(max(dmin, min(dmax, val)), 2)
-            if "elephant" in species.lower():
-                new_elephant_indices.append(idx)
+        # 群密度：到最近种子的指数衰减（连续梯度，无硬截断）
+        herd_factor = 0.0
+        if seed_coords:
+            gq, gr = g["q"], g["r"]
+            for sq, sr in seed_coords:
+                d_center = ((sq - gq) ** 2 + (sr - gr) ** 2) ** 0.5
+                f = math.exp(-d_center / herd_radius)
+                if f > herd_factor:
+                    herd_factor = f
+        herd_density = herd_factor * (dmin + (dmax - dmin) * hsi_norm)
+
+        # 群内显示峰值，群外保留背景散落
+        val = max(background, herd_density)
+        if val > dmax:
+            val = dmax
+        g["species_densities"][species] = round(val, 2)
+
+        if val > 0:
             count += 1
+            # 大象竞争源仅取群核心（herd_factor 较高处），排除背景散落的干扰
+            if "elephant" in species.lower() and herd_factor > 0.3:
+                new_elephant_indices.append(idx)
 
     return count, new_elephant_indices
 
@@ -360,7 +399,7 @@ def assign_species_densities(grids: List[dict], seed: int = None,
         return {}
 
     neighbors = build_neighbors_map(grids)
-    water_dist, saltmarsh_dist = compute_spatial_features(
+    water_dist, saltmarsh_dist, road_dist = compute_spatial_features(
         grids, neighbors,
         road_far_threshold=road_far_threshold,
         road_penalty=road_penalty)
@@ -382,7 +421,7 @@ def assign_species_densities(grids: List[dict], seed: int = None,
         profile = SPECIES_PROFILES.get(species, SPECIES_PROFILES["rhino"])
         count, new_ei = _assign_one_species(
             grids, species, profile, neighbors, water_dist, saltmarsh_dist,
-            total, elephant_indices if elephant_indices else None)
+            total, road_dist, elephant_indices if elephant_indices else None)
         stats[species] = count
         elephant_indices.extend(new_ei)
 
@@ -390,7 +429,7 @@ def assign_species_densities(grids: List[dict], seed: int = None,
         profile = SPECIES_PROFILES["bird"]
         count, _ = _assign_one_species(
             grids, bird_sp, profile, neighbors, water_dist, saltmarsh_dist,
-            total)
+            total, road_dist)
         stats[bird_sp] = count
 
     return stats
@@ -753,7 +792,7 @@ def main():
     neighbors = build_neighbors_map(grids)
     road_penalty = 0.0 if args.no_road_avoidance else args.road_penalty
     road_far_threshold = args.road_far_threshold
-    water_dist, saltmarsh_dist = compute_spatial_features(
+    water_dist, saltmarsh_dist, _road_dist = compute_spatial_features(
         grids, neighbors,
         road_far_threshold=road_far_threshold,
         road_penalty=road_penalty)

@@ -651,9 +651,21 @@ def create_video_with_cv2(image_paths: List[str], output_path: str, fps: float =
         return
 
     height, width = frame.shape[:2]
+
+    # MPEG-4 codecs typically cap at 4096px per dimension. Auto-scale if needed.
+    MAX_DIM = 4096
+    orig_w, orig_h = width, height
     if resize_factor != 1.0:
         width = int(width * resize_factor)
         height = int(height * resize_factor)
+    if max(width, height) > MAX_DIM:
+        scale = MAX_DIM / max(width, height)
+        width = int(width * scale)
+        height = int(height * scale)
+        # Ensure even dimensions (required by some codecs)
+        width = width - (width % 2)
+        height = height - (height % 2)
+        print(f"  [AUTO-RESIZE] {orig_w}x{orig_h} → {width}x{height} (codec limit {MAX_DIM}px)")
 
     print(f"图片尺寸: {width}x{height}")
     print(f"帧率: {fps} fps")
@@ -661,13 +673,22 @@ def create_video_with_cv2(image_paths: List[str], output_path: str, fps: float =
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
 
+    if not out.isOpened():
+        print("  [FALLBACK] mp4v 编码器打开失败，尝试 H.264...")
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+
+    if not out.isOpened():
+        print("错误: 无法初始化视频编码器!")
+        return
+
     print(f"\n开始合成 {len(image_paths)} 张图片为视频...")
     for i, img_path in enumerate(image_paths):
         frame = cv2.imread(img_path)
         if frame is None:
             print(f"警告: 跳过无法读取的图片 {img_path}")
             continue
-        if resize_factor != 1.0:
+        if frame.shape[1] != width or frame.shape[0] != height:
             frame = cv2.resize(frame, (width, height))
         out.write(frame)
         if (i + 1) % 10 == 0 or i + 1 == len(image_paths):
