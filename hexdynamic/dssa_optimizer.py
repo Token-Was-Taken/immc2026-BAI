@@ -2253,7 +2253,10 @@ class DSSAOptimizer:
                 # Calculate total_benefit from cached fitness and total_risk
                 # fitness = total_benefit / total_risk, so total_benefit = fitness * total_risk
                 if not hasattr(self, '_cached_total_risk'):
-                    self._cached_total_risk = sum(self.grid_model.get_grid_risk(gid) for gid in self.grid_ids)
+                    self._cached_total_risk = sum(
+                        self.grid_model.get_grid_risk(gid) * self.grid_model.get_grid_temporal_factor(gid)
+                        for gid in self.grid_ids
+                    )
                 total_benefit = self.best_fitness * self._cached_total_risk if self._cached_total_risk > 0 else 0.0
 
                 iter_elapsed = time.time() - iter_start
