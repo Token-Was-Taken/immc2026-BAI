@@ -643,14 +643,7 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
 
     print("[4/4] Compute metrics and write output...")
     pb_per_grid = coverage_model.calculate_protection_benefit(best_solution)
-    total_risk = sum(grid_model.get_grid_risk(gid) for gid in grid_model.get_all_grid_ids())
-    
-    # 计算时间加权的总风险（如果启用时间感知模式）
-    total_risk_weighted = 0.0
-    for gid in grid_model.get_all_grid_ids():
-        normalized_risk = grid_model.get_grid_risk(gid)
-        temporal_factor = grid_model.get_grid_temporal_factor(gid)
-        total_risk_weighted += normalized_risk * temporal_factor
+    total_risk = sum(raw_risk_map.get(gid, 0.0) for gid in grid_model.get_all_grid_ids())
     
     total_protection_benefit = sum(pb_per_grid.values())
     avg_protection_benefit = float(np.mean(list(pb_per_grid.values())))
@@ -729,7 +722,7 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
         'summary': {
             'total_grids': grid_model.get_grid_count(),
             'total_risk': round(float(total_risk), 6),
-            'total_risk_weighted': round(float(total_risk_weighted), 6),
+            'total_risk_weighted': round(float(total_risk), 6),
             'best_fitness': round(float(best_fitness), 6),
             'total_protection_benefit': round(float(total_protection_benefit), 6),
             'average_protection_benefit': round(float(avg_protection_benefit), 6),

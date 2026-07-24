@@ -242,9 +242,9 @@ class VectorizedCoverageModel(CoverageModel):
         np.exp(factor, out=factor)
         factor *= -1.0
         factor += 1.0
-        total = float(np.dot(self._risk_vec, factor))
-        if self._total_risk > 0:
-            total /= self._total_risk
+        total = float(np.dot(self._risk_weighted_vec, factor))
+        if self._total_risk_weighted > 0:
+            total /= self._total_risk_weighted
         return total
 
     def calculate_protection_benefit(self, solution: DeploymentSolution) -> Dict[int, float]:

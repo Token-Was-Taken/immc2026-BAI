@@ -2835,7 +2835,7 @@
   },
   "dssa_config": {
     "profile_iteration_stages": false,
-    "population_size": 100,
+    "population_size": 30,
     "max_iterations": 400,
     "producer_ratio": 0.2,
     "scout_ratio": 0.2,

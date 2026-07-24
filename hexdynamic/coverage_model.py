@@ -200,7 +200,9 @@ class CoverageModel:
         protection_benefit = self.calculate_protection_benefit(solution)
         total_risk = 0.0
         for grid_id in self.grid_ids:
-            total_risk += self.grid_model.get_grid_risk(grid_id)
+            risk = self.grid_model.get_grid_risk(grid_id)
+            temporal_factor = self.grid_model.get_grid_temporal_factor(grid_id)
+            total_risk += risk * temporal_factor
 
         total_benefit = sum(protection_benefit.values())
         if total_risk > 0:
