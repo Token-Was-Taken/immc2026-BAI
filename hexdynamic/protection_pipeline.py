@@ -643,7 +643,11 @@ def run_pipeline(input_path: str, output_path: str, vectorized: bool = False, al
 
     print("[4/4] Compute metrics and write output...")
     pb_per_grid = coverage_model.calculate_protection_benefit(best_solution)
-    total_risk = sum(raw_risk_map.get(gid, 0.0) for gid in grid_model.get_all_grid_ids())
+    total_risk = 0.0
+    for gid in grid_model.get_all_grid_ids():
+        risk = grid_model.get_grid_risk(gid)
+        temporal_factor = grid_model.get_grid_temporal_factor(gid)
+        total_risk += risk * temporal_factor
     
     total_protection_benefit = sum(pb_per_grid.values())
     avg_protection_benefit = float(np.mean(list(pb_per_grid.values())))

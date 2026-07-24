@@ -191,8 +191,9 @@ class CoverageModel:
 
         for grid_id in self.grid_ids:
             risk = self.grid_model.get_grid_risk(grid_id)
+            temporal_factor = self.grid_model.get_grid_temporal_factor(grid_id)
             E_i = protection_effect[grid_id]
-            protection_benefit[grid_id] = risk * (1 - np.exp(-E_i))
+            protection_benefit[grid_id] = risk * temporal_factor * (1 - np.exp(-E_i))
 
         return protection_benefit
 

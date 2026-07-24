@@ -250,7 +250,7 @@ class VectorizedCoverageModel(CoverageModel):
     def calculate_protection_benefit(self, solution: DeploymentSolution) -> Dict[int, float]:
         pc, dc, cc, fp = self._get_cached_coverage_arrays(solution)
         e = self._combine_effect(pc, dc, cc, fp)
-        benefit = self._risk_vec * (1.0 - np.exp(-e))
+        benefit = self._risk_weighted_vec * (1.0 - np.exp(-e))
         return {gid: float(benefit[i]) for i, gid in enumerate(self.grid_ids)}
 
     def calculate_time_aware_total_benefit(self, solution: DeploymentSolution) -> float:
