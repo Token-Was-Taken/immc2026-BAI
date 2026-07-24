@@ -56,6 +56,10 @@ def parse_args():
     parser.add_argument("--workers", type=int, default=None, help="Parallel workers")
     parser.add_argument("--vectorized", action="store_true",
                         help="Use vectorized coverage model")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Use GPU acceleration (OpenCL) with vectorized model")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from checkpoint.json in output dir if it exists")
     return parser.parse_args()
 
 
@@ -132,6 +136,42 @@ def evaluate_model(base_config, params_dict: Dict[str, Any],
 def _parallel_worker(args_tuple):
     base_config, params_dict, eval_idx, output_dir, vectorized, use_gpu = args_tuple
     return evaluate_model(base_config, params_dict, eval_idx, output_dir, vectorized, use_gpu)
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint for resume support
+# ---------------------------------------------------------------------------
+
+def load_checkpoint(output_dir: str) -> Tuple[Optional[Dict], Dict[int, Dict]]:
+    """Load checkpoint.json if it exists.
+
+    Returns:
+        (meta, {eval_idx: record}) or (None, {}) if no valid checkpoint.
+    """
+    ckpt_path = os.path.join(output_dir, "checkpoint.json")
+    if not os.path.exists(ckpt_path):
+        return None, {}
+    try:
+        with open(ckpt_path, 'r', encoding='utf-8') as f:
+            ckpt = json.load(f)
+        meta = ckpt.get("meta")
+        completed = {int(k): v for k, v in ckpt.get("completed", {}).items()}
+        return meta, completed
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return None, {}
+
+
+def save_checkpoint(output_dir: str, meta: Dict, completed: Dict[int, Dict]) -> None:
+    """Atomically save checkpoint.json (write to .tmp then rename)."""
+    ckpt_path = os.path.join(output_dir, "checkpoint.json")
+    tmp_path = ckpt_path + ".tmp"
+    data = {
+        "meta": meta,
+        "completed": {str(k): v for k, v in completed.items()},
+    }
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp_path, ckpt_path)
 
 
 def compute_sobol_indices(problem: Dict, output_array: np.ndarray,
@@ -375,16 +415,40 @@ def main():
         for j in range(total_evals)
     ]
 
-    eval_records = []
+    # --- Checkpoint / resume ---
+    ckpt_meta = {
+        "num_samples": args.num_samples,
+        "seed": args.seed,
+        "param_defs": param_defs,
+        "total_evals": total_evals,
+    }
+
+    completed_records: Dict[int, Dict] = {}
+    if args.resume:
+        saved_meta, completed_records = load_checkpoint(args.output_dir)
+        if saved_meta is not None:
+            if (saved_meta.get("num_samples") != args.num_samples or
+                    saved_meta.get("seed") != args.seed or
+                    saved_meta.get("total_evals") != total_evals):
+                print("Warning: checkpoint parameters mismatch — starting fresh")
+                completed_records = {}
+            else:
+                print(f"Resumed: {len(completed_records)}/{total_evals} evaluations already completed")
+
+    pending_indices = [j for j in range(total_evals) if j not in completed_records]
+    print(f"Pending: {len(pending_indices)} evaluations")
+
     start_time = time.time()
 
-    if workers == 1:
-        for j, params_dict in enumerate(all_params):
-            print(f"[Eval {j + 1}/{total_evals}]", end="\r")
-            record = evaluate_model(base_config, params_dict, j,
+    if pending_indices and workers == 1:
+        for idx, j in enumerate(pending_indices):
+            print(f"[Eval {j + 1}/{total_evals}] ({idx + 1}/{len(pending_indices)} pending)",
+                  end="\r")
+            record = evaluate_model(base_config, all_params[j], j,
                                     args.output_dir, args.vectorized, args.gpu)
-            eval_records.append(record)
-    else:
+            completed_records[j] = record
+            save_checkpoint(args.output_dir, ckpt_meta, completed_records)
+    elif pending_indices:
         # Save base_config to temp file for workers (avoids passing 1MB+ dict per task)
         base_config_path = os.path.join(args.output_dir, "_base_config.json")
         with open(base_config_path, 'w', encoding='utf-8') as f:
@@ -394,19 +458,24 @@ def main():
         ctx = get_context('spawn')
         with ProcessPoolExecutor(max_workers=workers, mp_context=ctx, max_tasks_per_child=1) as executor:
             futures = {}
-            for j in range(total_evals):
+            for j in pending_indices:
                 future = executor.submit(
                     _parallel_worker,
-                    (base_config_path, all_params[j], j, args.output_dir, args.vectorized, args.gpu)
+                    (base_config_path, all_params[j], j, args.output_dir,
+                     args.vectorized, args.gpu)
                 )
                 futures[future] = j
-            completed = 0
+            done = 0
             for future in as_completed(futures):
-                completed += 1
-                print(f"[Eval {completed}/{total_evals} done]", end="\r")
-                eval_records.append(future.result())
+                done += 1
+                record = future.result()
+                completed_records[record["eval_idx"]] = record
+                save_checkpoint(args.output_dir, ckpt_meta, completed_records)
+                print(f"[Eval {done}/{len(pending_indices)} done] "
+                      f"(total {len(completed_records)}/{total_evals})", end="\r")
 
     elapsed = time.time() - start_time
+    eval_records = [completed_records[j] for j in range(total_evals)]
     eval_records.sort(key=lambda r: r["eval_idx"])
 
     successful = sum(1 for r in eval_records if r["success"])
