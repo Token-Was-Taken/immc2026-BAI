@@ -165,7 +165,8 @@ def visualize(output_path: str, input_path: str, out_dir: str, prefix: str, grid
 
 
 def run_time_risk_analysis(input_path: str, out_dir: str, dpi: int = 150,
-                           grid_dpi: int = None, no_summary: bool = False):
+                           grid_dpi: int = None, no_summary: bool = False,
+                           deploy_json: str = None):
     """Run temporal risk comparison analysis (Day/Night x DRY/RAINY).
 
     Delegates to time_risk_analyzer.run() so run.py stays the single entry point.
@@ -178,6 +179,7 @@ def run_time_risk_analysis(input_path: str, out_dir: str, dpi: int = 150,
         dpi=dpi,
         grid_dpi=grid_dpi,
         no_summary=no_summary,
+        deploy_json=deploy_json,
     )
 
 
@@ -245,6 +247,11 @@ Examples:
         action="store_true",
         default=False,
         help="Skip summary file generation (time-risk mode)",
+    )
+    parser.add_argument(
+        "--deploy-json",
+        default=None,
+        help="DSSA deployment output JSON (with protection_benefit) for R-E scatter plot (time-risk mode)",
     )
     parser.add_argument("--input-json", "-i", default=None, dest="input_json", help="Input JSON for visualization")
     parser.add_argument(
@@ -348,6 +355,7 @@ def main():
             dpi=args.dpi,
             grid_dpi=args.grid_dpi,
             no_summary=args.no_summary,
+            deploy_json=args.deploy_json,
         )
         return
 

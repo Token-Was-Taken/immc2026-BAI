@@ -900,6 +900,113 @@ def plot_species_density_panels(grids, hex_size, save_path, grid_dpi=20, save_dp
     print(f"  saved: {save_path}")
 
 
+def plot_re_scatter_4panel(
+    scenarios_data: List[dict],
+    grids: List[dict],
+    protection_ratio: Dict[int, float],
+    save_path: str,
+    save_dpi: int = 150,
+):
+    """Plot 2x2 R-E scatter (Inherent Risk vs Protection Strength) for 4 scenarios.
+
+    Ri = normalized inherent (pre-deployment) risk per scenario
+    Ei = Ri * protection_ratio  (protection_benefit / risk, derived from best deployment)
+    Diagonal Ei=Ri is ideal; deficit area (Ei < Ri) is shaded pink in panel (d).
+    Points colored by Ri using YlOrRd; dark blue dashed line is empirical trend.
+    """
+    panel_titles = [
+        "(a) Day & Dry: Optimal Matching",
+        "(b) Day & Rainy: Visibility Attenuation",
+        "(c) Night & Dry: Choke-point Defense",
+        "(d) Night & Rainy: Protection Deficit",
+    ]
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    axes = axes.flatten()
+
+    cmap = RISK_CMAP
+    scatter_cmap = matplotlib.colormaps.get_cmap("YlOrRd")
+
+    for idx, (scenario, ax, title) in enumerate(zip(scenarios_data, axes, panel_titles)):
+        risk_map = scenario["norm_risk_map"]
+
+        ris = []
+        eis = []
+        for g in grids:
+            gid = g["grid_id"]
+            ri = risk_map.get(gid, 0.0)
+            ratio = protection_ratio.get(gid, 0.0)
+            ei = ri * ratio
+            if ei > 1.0:
+                ei = 1.0
+            ris.append(ri)
+            eis.append(ei)
+
+        ris = np.array(ris)
+        eis = np.array(eis)
+
+        # Scatter points colored by Ri
+        sc = ax.scatter(ris, eis, c=ris, cmap=scatter_cmap, vmin=0, vmax=1,
+                        s=12, alpha=0.5, edgecolors='none', zorder=2)
+
+        # Ideal baseline Ei=Ri
+        ax.plot([0, 1], [0, 1], color="#E04030", linewidth=1.5, linestyle="-",
+                label=r"Ideal Baseline ($E_i = R_i$)", zorder=3)
+
+        # Empirical trend: Gaussian-weighted moving average (LOESS-style)
+        sorted_idx = np.argsort(ris)
+        r_sorted = ris[sorted_idx]
+        e_sorted = eis[sorted_idx]
+        n_pts = len(r_sorted)
+        trend_x = None
+        trend_y = None
+        if n_pts >= 20:
+            x_eval = np.linspace(0.0, 1.0, 120)
+            bandwidth = 0.10
+            y_smooth = np.zeros_like(x_eval)
+            for k, xv in enumerate(x_eval):
+                w = np.exp(-0.5 * ((r_sorted - xv) / bandwidth) ** 2)
+                w_sum = np.sum(w)
+                y_smooth[k] = np.sum(w * e_sorted) / w_sum if w_sum > 0 else 0.0
+            y_smooth[0] = 0.0
+            for k in range(1, len(y_smooth)):
+                y_smooth[k] = max(y_smooth[k], y_smooth[k - 1])
+            y_smooth = np.clip(y_smooth, 0, 1)
+            trend_x = x_eval
+            trend_y = y_smooth
+            ax.plot(trend_x, trend_y, color="#2C3E50", linewidth=2.8,
+                    linestyle="--", label="Empirical Trend", zorder=4)
+
+        # Protection deficit area (panel d): where risk is high AND protection lags significantly
+        if idx == 3 and trend_x is not None:
+            gap = trend_x - trend_y
+            deficit_mask = (trend_x >= 0.5) & (gap > 0.20)
+            if np.any(deficit_mask):
+                fd_x = trend_x[deficit_mask]
+                fd_y = trend_y[deficit_mask]
+                ax.fill_between(fd_x, fd_y, fd_x, color="#FFB6C1", alpha=0.30,
+                                label="Protection Deficit Area", zorder=1)
+
+        ax.set_xlim(0, 1.02)
+        ax.set_ylim(0, 1.02)
+        ax.set_xlabel(r"Inherent Risk Index ($R_i$)", fontsize=11)
+        ax.set_ylabel(r"Integrated Protection Strength ($E_i$)", fontsize=11)
+        ax.set_title(title, fontsize=13, fontweight="bold", pad=8)
+        ax.legend(loc="upper left", fontsize=9, framealpha=0.9)
+        ax.grid(True, alpha=0.15)
+        ax.set_aspect("equal", adjustable="box")
+
+    # Shared colorbar on the right
+    fig.subplots_adjust(right=0.90, wspace=0.25, hspace=0.28)
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
+    cbar = fig.colorbar(sc, cax=cbar_ax)
+    cbar.set_label(r"Inherent Risk Intensity ($R_i$)", fontsize=11, rotation=270, labelpad=18)
+
+    fig.savefig(save_path, dpi=save_dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved: {save_path}")
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="时序风险对比分析 - 分析 Day/Night × DRY/RAINY 四种时间组合",
@@ -920,11 +1027,13 @@ def parse_args():
                    help="每个网格在输出图片中的像素宽度（默认自动计算）")
     p.add_argument("--no-summary", action="store_true",
                    help="不生成摘要文件")
+    p.add_argument("--deploy-json", default=None,
+                   help="DSSA 部署输出 JSON（含 protection_benefit），用于生成 R-E 散点图")
     return p.parse_args()
 
 
 def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
-        grid_dpi: int = None, no_summary: bool = False):
+        grid_dpi: int = None, no_summary: bool = False, deploy_json: str = None):
     """Run temporal risk comparison analysis.
 
     Args:
@@ -933,6 +1042,7 @@ def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
         dpi: matplotlib savefig DPI.
         grid_dpi: Pixels per hex in output image (auto if None).
         no_summary: Skip summary file generation.
+        deploy_json: Path to DSSA output JSON (with protection_benefit) for R-E scatter plot.
     """
     print(f"[1/4] Loading input: {input_path}")
     base_data = load_base_input(input_path)
@@ -952,7 +1062,7 @@ def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
 
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"\n[2/5] Computing risks for {len(SCENARIOS)} scenarios...")
+    print(f"\n[2/6] Computing risks for {len(SCENARIOS)} scenarios...")
     scenarios_data = []
     max_raw_risk = 0.0
 
@@ -978,7 +1088,7 @@ def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
         print(f"raw_risk: [{scenario_min:.4f}, {scenario_max:.4f}]")
         max_raw_risk = max(max_raw_risk, scenario_max)
 
-    print(f"\n[3/5] Generating terrain & species maps...")
+    print(f"\n[3/6] Generating terrain & species maps...")
 
     plot_terrain_map(
         grids=grids,
@@ -1003,7 +1113,7 @@ def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
         save_dpi=dpi,
     )
 
-    print(f"\n[4/5] Generating heatmaps...")
+    print(f"\n[4/6] Generating heatmaps...")
     print(f"  Unified colorbar range: [0, 1]")
 
     norm_norm = Normalize(vmin=0, vmax=1)
@@ -1035,7 +1145,7 @@ def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
             grid_dpi=grid_dpi
         )
 
-    print(f"\n[5/5] Generating 4-panel comparison...")
+    print(f"\n[5/6] Generating 4-panel comparison...")
     diurnal_mode_cfg = base_data.get("risk_model_config", {}).get("temporal_weights", {}).get("diurnal_mode", "discrete")
     plot_4panel_comparison(
         scenarios_data=scenarios_data,
@@ -1047,6 +1157,33 @@ def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
         grid_dpi=grid_dpi,
         diurnal_mode=diurnal_mode_cfg
     )
+
+    protection_ratio = None
+    if deploy_json and os.path.exists(deploy_json):
+        print(f"\n[6/6] Generating R-E scatter plot (Risk vs Protection)...")
+        with open(deploy_json, 'r', encoding='utf-8') as f:
+            deploy_data = json.load(f)
+        dep_grids = {g['grid_id']: g for g in deploy_data.get('grids', [])}
+        protection_ratio = {}
+        for g in grids:
+            gid = g['grid_id']
+            dg = dep_grids.get(gid, {})
+            rn = dg.get('risk_normalized', 0.0)
+            pb = dg.get('protection_benefit_raw', 0.0)
+            if rn > 1e-8:
+                ratio = pb / rn
+                protection_ratio[gid] = min(max(ratio, 0.0), 1.0)
+            else:
+                protection_ratio[gid] = 0.0
+        plot_re_scatter_4panel(
+            scenarios_data=scenarios_data,
+            grids=grids,
+            protection_ratio=protection_ratio,
+            save_path=os.path.join(out_dir, "re_scatter_4panel.png"),
+            save_dpi=dpi,
+        )
+    else:
+        print(f"\n[6/6] Skipping R-E scatter plot (--deploy-json not provided)")
 
     if not no_summary:
         generate_summary(
@@ -1071,6 +1208,9 @@ def run(input_path: str, out_dir: str = "./time_risk_analysis", dpi: int = 150,
         print(f"    - {s['name']}_raw_risk.png")
     print("  四象限对比图:")
     print(f"    - risk_comparison_4panel.png")
+    if protection_ratio is not None:
+        print("  R-E 散点图(风险-防护匹配):")
+        print(f"    - re_scatter_4panel.png")
     if not no_summary:
         print("  摘要文件:")
         print(f"    - time_risk_summary.txt")
@@ -1084,6 +1224,7 @@ def main():
         dpi=args.dpi,
         grid_dpi=args.grid_dpi,
         no_summary=args.no_summary,
+        deploy_json=args.deploy_json,
     )
 
 

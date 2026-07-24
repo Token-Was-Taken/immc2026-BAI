@@ -94,6 +94,12 @@ def parse_args():
         default=False,
         help="Enable GPU acceleration (disabled by default)"
     )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        default=False,
+        help="Discard existing checkpoint and start fresh"
+    )
     return parser.parse_args()
 
 
@@ -244,11 +250,48 @@ def _parallel_worker(args_tuple):
     return evaluate_model(base_config, params_dict, eval_idx, output_dir, vectorized, use_gpu)
 
 
-def run_analysis(base_config: dict, param_defs: List[Dict], num_samples: int, 
+def _checkpoint_path(output_dir: str) -> str:
+    """Return the checkpoint file path."""
+    return os.path.join(output_dir, "_checkpoint.json")
+
+
+def load_checkpoint(output_dir: str) -> Dict[int, Dict]:
+    """
+    Load completed evaluations from checkpoint file.
+
+    Returns:
+        Dict mapping eval_idx -> eval_record for completed evaluations.
+        Empty dict if no checkpoint exists.
+    """
+    ckpt_path = _checkpoint_path(output_dir)
+    if not os.path.exists(ckpt_path):
+        return {}
+    try:
+        with open(ckpt_path, 'r', encoding='utf-8') as f:
+            records = json.load(f)
+        return {r["eval_idx"]: r for r in records}
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"Warning: checkpoint file corrupted, starting fresh: {e}")
+        return {}
+
+
+def save_checkpoint(output_dir: str, eval_records: List[Dict]):
+    """
+    Atomically save all eval records to checkpoint file.
+    Writes to a temp file first, then renames to avoid corruption.
+    """
+    ckpt_path = _checkpoint_path(output_dir)
+    tmp_path = ckpt_path + ".tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(eval_records, f, ensure_ascii=False)
+    os.replace(tmp_path, ckpt_path)
+
+
+def run_analysis(base_config: dict, param_defs: List[Dict], num_samples: int,
                  output_dir: str, seed: Optional[int], workers: int, vectorized: bool = False, use_gpu: bool = False) -> Tuple[Dict, np.ndarray, np.ndarray, List[Dict]]:
     """
-    Orchestrate all model evaluations.
-    
+    Orchestrate all model evaluations with checkpoint/resume support.
+
     Args:
         base_config: Base configuration dict
         param_defs: Parameter definitions
@@ -257,80 +300,105 @@ def run_analysis(base_config: dict, param_defs: List[Dict], num_samples: int,
         seed: Random seed
         workers: Number of parallel workers
         vectorized: Use vectorized coverage model
-        
+
     Returns:
         Tuple of (problem, param_values, output_array, eval_records)
     """
     # Generate samples
     problem, param_values = generate_samples(param_defs, num_samples, seed)
     total_evals = len(param_values)
-    
+
     print(f"Generated {total_evals} parameter combinations (N={num_samples}, k={len(param_defs)})")
     print(f"Total evaluations: {total_evals} (Saltelli sampling: N × (2k+2) = {num_samples} × {2*len(param_defs)+2})")
-    print(f"Estimated time: {total_evals * 0.1:.0f}s sequential (with ~0.1s per eval)")
+
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Load checkpoint
+    completed = load_checkpoint(output_dir)
+    if completed:
+        print(f"[RESUME] Found checkpoint with {len(completed)} completed evaluations")
+
+    pending_indices = [j for j in range(total_evals) if j not in completed]
+    print(f"  Already done: {len(completed)}, Pending: {len(pending_indices)}")
+
+    if not pending_indices:
+        print("  All evaluations already completed, skipping to analysis")
+        eval_records = [completed[j] for j in range(total_evals)]
+        eval_records.sort(key=lambda r: r["eval_idx"])
+        output_array = np.array([r["best_fitness"] for r in eval_records])
+        return problem, param_values, output_array, eval_records
+
+    print(f"Estimated time: {len(pending_indices) * 0.1:.0f}s sequential (with ~0.1s per eval)")
     print(f"Running {'sequential' if workers == 1 else f'parallel with {workers} workers'}...")
     print("-" * 60)
     if vectorized:
         print("Using vectorized coverage model")
-    
-    # Pre-generate all params_dict objects
+
+    # Pre-generate params_dict objects for pending evaluations only
     param_names = problem["names"]
-    all_params = [
-        {param_names[i]: int(param_values[j, i]) for i in range(len(param_names))}
-        for j in range(total_evals)
-    ]
-    
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
-    
+    all_params = {
+        j: {param_names[i]: int(param_values[j, i]) for i in range(len(param_names))}
+        for j in pending_indices
+    }
+
     # Save base_config to a temp file for workers to read (avoids passing 1MB+ dict per task)
     base_config_path = os.path.join(output_dir, "_base_config.json")
     with open(base_config_path, 'w', encoding='utf-8') as f:
         json.dump(base_config, f, ensure_ascii=False)
-    
+
     # Run evaluations
-    eval_records = []
+    eval_records = list(completed.values())
     start_time = time.time()
-    
+
     if workers == 1:
         # Sequential execution
-        for j, params_dict in enumerate(all_params):
-            print(f"[Eval {j+1}/{total_evals}]", end="\r")
-            record = evaluate_model(base_config, params_dict, j, output_dir, vectorized, use_gpu)
+        for n, j in enumerate(pending_indices):
+            print(f"[Eval {n+1}/{len(pending_indices)}] (idx={j})", end="\r")
+            record = evaluate_model(base_config, all_params[j], j, output_dir, vectorized, use_gpu)
             eval_records.append(record)
+            # Save checkpoint every 10 evaluations or on last one
+            if (n + 1) % 10 == 0 or n == len(pending_indices) - 1:
+                eval_records.sort(key=lambda r: r["eval_idx"])
+                save_checkpoint(output_dir, eval_records)
     else:
         # Parallel execution: pass file path instead of dict to save memory
         from multiprocessing import get_context
         ctx = get_context('spawn')
         with ProcessPoolExecutor(max_workers=workers, mp_context=ctx, max_tasks_per_child=1) as executor:
             futures = {}
-            for j in range(total_evals):
+            for j in pending_indices:
                 future = executor.submit(
                     _parallel_worker,
                     (base_config_path, all_params[j], j, output_dir, vectorized, use_gpu)
                 )
                 futures[future] = j
-            completed = 0
+            completed_count = 0
             for future in as_completed(futures):
-                completed += 1
-                print(f"[Eval {completed}/{total_evals} done]", end="\r")
+                completed_count += 1
+                print(f"[Eval {completed_count}/{len(pending_indices)} done]", end="\r")
                 record = future.result()
                 eval_records.append(record)
-    
+                # Save checkpoint every 10 evaluations or on last one
+                if completed_count % 10 == 0 or completed_count == len(pending_indices):
+                    eval_records.sort(key=lambda r: r["eval_idx"])
+                    save_checkpoint(output_dir, eval_records)
+
     elapsed = time.time() - start_time
-    
-    # Sort by eval_idx
+
+    # Final checkpoint save
     eval_records.sort(key=lambda r: r["eval_idx"])
-    
+    save_checkpoint(output_dir, eval_records)
+
     # Extract output arrays for SALib
     output_array = np.array([r["best_fitness"] for r in eval_records])
-    
+
     # Print summary
     successful = sum(1 for r in eval_records if r["success"])
     failed = total_evals - successful
-    print(f"\nCompleted {total_evals} evaluations in {elapsed:.1f}s ({total_evals/elapsed:.2f} eval/s)")
+    print(f"\nCompleted {total_evals} evaluations in {elapsed:.1f}s ({len(pending_indices)/elapsed:.2f} eval/s this run)")
     print(f"Successful: {successful}, Failed: {failed}")
-    
+
     return problem, param_values, output_array, eval_records
 
 
@@ -541,7 +609,14 @@ def main():
     
     # Load base config
     base_config = load_base_config(args.base_config)
-    
+
+    # Clear checkpoint if --restart
+    if args.restart:
+        ckpt_path = os.path.join(args.output_dir, "_checkpoint.json")
+        if os.path.exists(ckpt_path):
+            os.remove(ckpt_path)
+            print(f"[RESTART] Deleted checkpoint: {ckpt_path}")
+
     # Parse parameter definitions
     param_defs = parse_param_defs(args.params)
     print(f"Parameters: {[p['name'] for p in param_defs]}")
